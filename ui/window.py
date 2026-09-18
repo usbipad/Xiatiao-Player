@@ -26,6 +26,13 @@ from models import (
 )
 from providers import create_provider
 from providers.base import BaseMusicProvider
+from services.shortcuts import (
+    SHORTCUT_ACTIONS,
+    get_shortcuts,
+    match_shortcut,
+    mods_from_state,
+    parse_shortcut,
+)
 
 from .now_playing import NowPlayingPage
 from .pages import LocalLibraryPage
@@ -2300,56 +2307,17 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception as exc:
             log.warning("打开可视化窗口失败: %s", exc, exc_info=True)
 
-    #: 快捷键动作名 → 处理函数（键位从配置读）
-    _SHORTCUT_ACTIONS = ("play_pause", "prev", "next", "seek_back", "seek_fwd", "vol_up", "vol_down")
+    #: 快捷键动作名（供设置页展示；解析/匹配见 services/shortcuts.py）
+    _SHORTCUT_ACTIONS = SHORTCUT_ACTIONS
 
     @staticmethod
     def _parse_shortcut(spec: str):
-        """把 'Ctrl+Alt+Left' / 'space' 解析为 (mods: frozenset, keyval: int)。
-
-        mods 为修饰键集合（'ctrl'/'alt'/'shift'/'super'）；解析失败返回 None。
-        """
-        try:
-            s = (spec or "").strip()
-            if not s:
-                return None
-            mods = set()
-            parts = s.split("+")
-            keyname = parts[-1]
-            for p in parts[:-1]:
-                pl = p.strip().lower()
-                if pl in ("ctrl", "control"):
-                    mods.add("ctrl")
-                elif pl == "alt":
-                    mods.add("alt")
-                elif pl == "shift":
-                    mods.add("shift")
-                elif pl in ("super", "meta"):
-                    mods.add("super")
-            # 用 Gdk 键名 → keyval
-            keyval = Gdk.keyval_from_name(keyname)
-            if not keyval:
-                keyval = Gdk.keyval_from_name(keyname.lower())
-            if not keyval:
-                return None
-            return (frozenset(mods), int(keyval))
-        except Exception:
-            return None
+        """兼容入口：委托 services/shortcuts.parse_shortcut。"""
+        return parse_shortcut(spec)
 
     def _get_shortcuts(self) -> dict:
-        """读取快捷键配置（键位字符串），带默认兜底。"""
-        defaults = {
-            "play_pause": "", "prev": "", "next": "",
-            "seek_back": "", "seek_fwd": "",
-            "vol_up": "", "vol_down": "",
-        }
-        try:
-            saved = get_config().get("shortcuts")
-            if isinstance(saved, dict):
-                defaults.update({k: v for k, v in saved.items() if isinstance(v, str)})
-        except Exception:
-            pass
-        return defaults
+        """兼容入口：委托 services/shortcuts.get_shortcuts。"""
+        return get_shortcuts()
 
     def _on_window_key(self, _ctrl, keyval, _code, state) -> bool:
         """全局快捷键（主界面，非输入框焦点时）。键位来自配置，可自定义。"""
@@ -2357,25 +2325,11 @@ class MainWindow(Adw.ApplicationWindow):
             focus = self.get_focus()
             if isinstance(focus, Gtk.Editable):
                 return False
-            # 当前按下的修饰键集合
-            cur_mods = set()
-            if state & Gdk.ModifierType.CONTROL_MASK:
-                cur_mods.add("ctrl")
-            if state & Gdk.ModifierType.ALT_MASK:
-                cur_mods.add("alt")
-            if state & Gdk.ModifierType.SHIFT_MASK:
-                cur_mods.add("shift")
-            if state & Gdk.ModifierType.SUPER_MASK:
-                cur_mods.add("super")
-            shortcuts = self._get_shortcuts()
-            for action in self._SHORTCUT_ACTIONS:
-                parsed = self._parse_shortcut(shortcuts.get(action, ""))
-                if not parsed:
-                    continue
-                exp_mods, exp_keyval = parsed
-                if int(keyval) == exp_keyval and cur_mods == set(exp_mods):
-                    self._run_shortcut(action)
-                    return True
+            mods = mods_from_state(state)
+            action = match_shortcut(get_shortcuts(), int(keyval), mods)
+            if action is not None:
+                self._run_shortcut(action)
+                return True
         except Exception:
             pass
         return False

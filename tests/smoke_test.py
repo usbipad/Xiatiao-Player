@@ -222,12 +222,41 @@ def test_track_info_rows() -> None:
     check("编码格式", d.get("编码格式") == "FLAC")
 
 
+def test_shortcuts() -> None:
+    section("快捷键解析与匹配")
+    from services.shortcuts import parse_shortcut, match_shortcut, SHORTCUT_ACTIONS
+
+    p = parse_shortcut("space")
+    check("space 可解析", p is not None)
+    mods, kv = p if p else (frozenset(), 0)
+    check("space 无修饰键", len(mods) == 0)
+
+    p2 = parse_shortcut("Ctrl+Alt+Left")
+    check("Ctrl+Alt+Left 可解析", p2 is not None)
+    if p2:
+        check("含 ctrl/alt", set(p2[0]) == {"ctrl", "alt"}, f"got={p2[0]}")
+
+    check("空串返回 None", parse_shortcut("") is None)
+    check("非法键返回 None", parse_shortcut("NotAKey!!!") is None)
+
+    # 匹配
+    cfg = {name: "" for name in SHORTCUT_ACTIONS}
+    cfg["play_pause"] = "space"
+    cfg["next"] = "Ctrl+Right"
+    sp = parse_shortcut("space")
+    check("匹配 play_pause", match_shortcut(cfg, sp[1], sp[0]) == "play_pause")
+    cr = parse_shortcut("Ctrl+Right")
+    check("匹配 next", match_shortcut(cfg, cr[1], cr[0]) == "next")
+    check("无匹配返回 None", match_shortcut(cfg, 999999, set()) is None)
+
+
 def main() -> int:
     print("=" * 56)
     print("夏条播放器 重构冒烟测试")
     print("=" * 56)
     tests = [test_imports, test_track_model, test_playlist,
-             test_config, test_cache_roundtrip, test_track_info_rows]
+             test_config, test_cache_roundtrip, test_track_info_rows,
+             test_shortcuts]
     for fn in tests:
         try:
             fn()
