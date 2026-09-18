@@ -2461,12 +2461,17 @@ class MainWindow(Adw.ApplicationWindow):
                     pass
 
     def _on_close_request(self, *_args) -> bool:
-        # 先统一取消所有定时器，避免窗口销毁后回调访问已析构控件
+        """窗口关闭：取消定时器 → 保存状态 → 停止各服务。"""
         try:
             self._cancel_all_timers()
         except Exception:
             log.debug("取消定时器失败", exc_info=True)
-        # 关闭前保存最新播放会话（索引/位置/模式等）
+        self._persist_on_close()
+        self._shutdown_services()
+        return False
+
+    def _persist_on_close(self) -> None:
+        """关闭前持久化：队列会话 + 缓存 + 音量/窗口尺寸偏好。"""
         try:
             self._save_queue()
         except Exception:
@@ -2483,21 +2488,21 @@ class MainWindow(Adw.ApplicationWindow):
                     cfg.set_int("window_height", self.get_height())
         except Exception:
             pass
-        # 停止可视化：关闭读取线程（渲染随组件销毁自动停止）
+
+    def _shutdown_services(self) -> None:
+        """停止可视化 / MPRIS / 托盘 / 播放内核。"""
         if self._viz_pipeline is not None:
             try:
                 self._viz_pipeline.stop()
             except Exception:
                 pass
             self._viz_pipeline = None
-        # 停止 MPRIS：释放总线名并移除 Position 定时器，避免残留
         try:
             mpris = getattr(self, "_mpris", None)
             if mpris is not None:
                 mpris.stop()
         except Exception:
             log.debug("停止 MPRIS 失败", exc_info=True)
-        # 停止托盘
         try:
             tray = getattr(self, "_tray", None)
             if tray is not None:
@@ -2505,7 +2510,6 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             log.debug("停止托盘失败", exc_info=True)
         self.player.shutdown()
-        return False
 
     def _show_shortcuts(self) -> None:
         """显示键盘快捷键窗口（列出当前应用内绑定的快捷键）。"""
@@ -2610,77 +2614,86 @@ class MainWindow(Adw.ApplicationWindow):
             idx = int(data.get("index", 0) or 0)
             if idx < 0:
                 # 没有当前项：仅恢复队列，不设当前
-                self._restoring = True
-                try:
-                    self.playlist.set_tracks(tracks, autoplay_index=-1)
-                finally:
-                    self._restoring = False
+                self._apply_restored_tracks(tracks, autoplay_index=-1)
                 return False
             idx = max(0, min(idx, len(tracks) - 1))
-            # 恢复时抑制自动播放（只恢复队列与当前项，不启动音频）
-            self._restoring = True
-            try:
-                # 恢复模式（随机/循环）
+            self._apply_restored_tracks(tracks, idx, data)
+            self._refresh_ui_after_restore(idx)
+            self._restore_volume(data)
+            self._restore_position(data)
+            return False
+        except Exception as exc:
+            log.debug("恢复队列失败: %s", exc)
+            return False
+
+    def _apply_restored_tracks(self, tracks, autoplay_index: int = -1, data=None) -> None:
+        """在 _restoring 保护下设置队列与当前索引，并恢复播放模式。"""
+        self._restoring = True
+        try:
+            if data is not None:
                 try:
                     self.playlist.set_shuffle(bool(data.get("shuffle", False)))
                     self.playlist.set_repeat_mode(int(data.get("repeat", 0) or 0))
                 except Exception:
                     pass
-                self.playlist.set_tracks(tracks, autoplay_index=-1)
-                self.playlist.set_current_index(idx)
+            self.playlist.set_tracks(tracks, autoplay_index=-1)
+            if autoplay_index >= 0:
+                self.playlist.set_current_index(autoplay_index)
+        finally:
+            self._restoring = False
+
+    def _refresh_ui_after_restore(self, idx: int) -> None:
+        """恢复后刷新播放界面（_restoring=True 包住，不触发播放）。"""
+        try:
+            self._restoring = True
+            try:
+                self._on_playlist_current_changed(self.playlist, idx)
             finally:
                 self._restoring = False
-            # 主动刷新播放界面：用 _restoring=True 包住，避免触发播放（保持暂停）
-            try:
-                self._restoring = True
+        except Exception:
+            pass
+
+    def _restore_volume(self, data: dict) -> None:
+        """恢复音量并同步滑块。"""
+        try:
+            vol = float(data.get("volume", 1.0) or 1.0)
+            vol = max(0.0, min(1.0, vol))
+            self.player.set_volume(vol)
+            if getattr(self.player_panel, "volume", None) is not None:
+                self.player_panel.volume.set_value(vol)
+        except Exception:
+            pass
+
+    def _restore_position(self, data: dict) -> None:
+        """延迟恢复播放位置（等当前曲目装载完）。"""
+        try:
+            pos = float(data.get("position", 0.0) or 0.0)
+            if pos <= 0.5:
+                return
+
+            def _seek_restore():
                 try:
-                    self._on_playlist_current_changed(self.playlist, idx)
-                finally:
-                    self._restoring = False
-            except Exception:
-                pass
-            # 恢复音量
-            try:
-                vol = float(data.get("volume", 1.0) or 1.0)
-                vol = max(0.0, min(1.0, vol))
-                self.player.set_volume(vol)
-                if getattr(self.player_panel, "volume", None) is not None:
-                    self.player_panel.volume.set_value(vol)
-            except Exception:
-                pass
-            # 恢复播放位置（延迟应用，等当前曲目装载完）
-            try:
-                pos = float(data.get("position", 0.0) or 0.0)
-                if pos > 0.5:
-                    def _seek_restore():
-                        # 设置总时长（从曲目数据取，恢复时 UI 未自动设）
-                        try:
-                            cur = self.playlist.current_track()
-                            dur = float(getattr(cur, "duration_seconds", 0.0) or 0.0)
-                            if dur > 0:
-                                self.player_panel.set_duration(dur)
-                                self.now_playing.set_duration(dur)
-                        except Exception:
-                            pass
-                        # seek 到恢复位置
-                        try:
-                            self.player.seek_seconds(pos)
-                        except Exception:
-                            pass
-                        # 同步进度条与时间显示到恢复位置
-                        try:
-                            self.player_panel.set_position(pos)
-                            self.now_playing.set_position(pos)
-                        except Exception:
-                            pass
-                        return False
-                    GLib.timeout_add(800, _seek_restore)
-            except Exception:
-                pass
-            return False
-        except Exception as exc:
-            log.debug("恢复队列失败: %s", exc)
-            return False
+                    cur = self.playlist.current_track()
+                    dur = float(getattr(cur, "duration_seconds", 0.0) or 0.0)
+                    if dur > 0:
+                        self.player_panel.set_duration(dur)
+                        self.now_playing.set_duration(dur)
+                except Exception:
+                    pass
+                try:
+                    self.player.seek_seconds(pos)
+                except Exception:
+                    pass
+                try:
+                    self.player_panel.set_position(pos)
+                    self.now_playing.set_position(pos)
+                except Exception:
+                    pass
+                return False
+
+            GLib.timeout_add(800, _seek_restore)
+        except Exception:
+            pass
 
     # ============================================================
     # 工具
