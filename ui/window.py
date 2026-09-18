@@ -190,7 +190,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_effect_settings=self._on_open_effect_settings,
             on_queue_activate=self._on_queue_activate,
             on_queue_action=self._on_queue_action,
-            on_add_queue=self._on_add_current_to_queue,
+            on_add_queue=self._on_add_current_to_playlist,
         )
         # 主页音效按钮改为弹出模态对话框（6 个内置预设 + DSP 设置入口）
         self.player_panel.use_effect_dialog = True
@@ -972,17 +972,13 @@ class MainWindow(Adw.ApplicationWindow):
         if self._active_source == "liked":
             self._refresh_liked_page()
 
-    def _on_add_current_to_queue(self) -> None:
-        """把当前播放曲目添加到播放队列末尾。"""
+    def _on_add_current_to_playlist(self) -> None:
+        """把当前播放曲目加入歌单（弹出歌单选择对话框）。"""
         track = self.playlist.current_track()
         if track is None:
             self._toast("当前没有播放曲目")
             return
-        try:
-            self.playlist.append(track)
-            self._toast(_("已添加到播放队列：{title}").format(title=track.title))
-        except Exception as exc:
-            log.debug("添加到播放队列失败: %s", exc)
+        self._on_add_tracks_to_playlist([track])
 
     def _on_playlist_current_changed(self, _playlist, index: int) -> None:
         """当前曲目变化：协调 UI 更新、历史记录、播放启动、资产加载。"""

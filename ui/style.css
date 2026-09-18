@@ -575,17 +575,16 @@ button.unset-key {
     border-radius: 12px;
 }
 
-/* 喜欢按钮激活：深浓红色实心爱心（深红 + 强制不透明） */
+/* 喜欢按钮激活：实心爱心，颜色跟随主题前景色（浅色黑 / 暗色白），
+   并强制不透明，避免 symbolic 图标被主题淡化。 */
 button.np-skip-btn.liked-active,
 button.np-skip-btn.liked-active:hover {
-    color: #c00000;
     opacity: 1;
 }
 
 image.like-icon-active,
-image.heart-filled-symbolic,
 button.np-skip-btn.liked-active image {
-    color: #c00000;
+    color: inherit;
     opacity: 1;
     -gtk-icon-filter: none;
 }
@@ -593,7 +592,6 @@ button.np-skip-btn.liked-active image {
 /* 覆盖主题对 symbolic 图标的淡化（dim） */
 button.np-skip-btn.liked-active image:disabled,
 button.np-skip-btn.liked-active:disabled {
-    color: #c00000;
     opacity: 1;
 }
 

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- 分享：三个圆点 + 连线。纯 fill（GTK symbolic 可靠渲染）。 -->
+  <g fill="currentColor">
+    <!-- 连线（细矩形，用路径旋转不便，改为斜线多边形） -->
+    <path d="M11.6 3.4 L 12.7 4.6 L 4.9 11.4 L 3.8 10.2 Z"/>
+    <path d="M3.8 5.8 L 4.9 4.6 L 12.7 11.4 L 11.6 12.6 Z"/>
+    <!-- 三个节点 -->
+    <circle cx="12.7" cy="4" r="1.8"/>
+    <circle cx="3.3" cy="8" r="1.8"/>
+    <circle cx="12.7" cy="12" r="1.8"/>
+  </g>
+</svg>

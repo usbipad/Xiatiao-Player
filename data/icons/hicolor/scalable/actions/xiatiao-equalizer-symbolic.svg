@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- 音效图标：竖向律动条（5 条，中间高两边矮，圆头细柱）。
+       类似音频律动/均衡器造型；currentColor 跟随主题前景色。 -->
+  <g fill="currentColor">
+    <!-- 5 条竖柱，居中、圆头、等间距、中间高两边矮 -->
+    <rect x="2.0"  y="6.5" width="1.6" height="3.0"  rx="0.8"/>
+    <rect x="4.3"  y="4.5" width="1.6" height="7.0"  rx="0.8"/>
+    <rect x="7.2"  y="2.5" width="1.6" height="11.0" rx="0.8"/>
+    <rect x="10.1" y="4.5" width="1.6" height="7.0"  rx="0.8"/>
+    <rect x="12.4" y="6.5" width="1.6" height="3.0"  rx="0.8"/>
+  </g>
+</svg>

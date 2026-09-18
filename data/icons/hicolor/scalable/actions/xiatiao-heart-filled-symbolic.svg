@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- 喜欢（已选）：实心爱心。颜色由外部 CSS（liked-active）控制。 -->
+  <path d="M8 13.5
+           C 8 13.5, 1.5 9.5, 1.5 5.6
+           C 1.5 3.5, 3.2 2, 5 2
+           C 6.3 2, 7.4 2.8, 8 3.9
+           C 8.6 2.8, 9.7 2, 11 2
+           C 12.8 2, 14.5 3.5, 14.5 5.6
+           C 14.5 9.5, 8 13.5, 8 13.5 Z"
+        fill="currentColor"/>
+</svg>
