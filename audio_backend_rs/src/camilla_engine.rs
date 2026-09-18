@@ -187,6 +187,10 @@ impl CamillaEngine {
         config::validate_config(&mut conf, None)
             .map_err(|e| format!("camilla 配置无效: {e}"))?;
 
+        // 诊断：记录本次是「平滑更新」还是「重建」
+        let has_prev = self.last_conf.is_some() && self.pipeline.is_some();
+        let same = self.last_conf.as_ref().map(|p| same_structure(p, &conf)).unwrap_or(false);
+        eprintln!("[camilla] set_yaml: 有旧管线={} 结构相同={}", has_prev, same);
         // 已有管线，且结构未变 → 平滑原地更新参数（不中断音频）
         if let Some(prev) = self.last_conf.as_ref() {
             if self.pipeline.is_some() && same_structure(prev, &conf) {

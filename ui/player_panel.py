@@ -254,7 +254,7 @@ class PlayerPanel(Gtk.Box):
         func_box.append(self._vol_btn)
 
         # 喜欢按钮（接通本地喜欢）
-        self.btn_like = Gtk.Button(icon_name="emblem-favorite-symbolic")
+        self.btn_like = Gtk.Button(icon_name="non-starred-symbolic")
         self.btn_like.add_css_class("flat")
         self.btn_like.add_css_class("np-skip-btn")
         self.btn_like.set_tooltip_text(_("喜欢"))
@@ -268,7 +268,7 @@ class PlayerPanel(Gtk.Box):
         # 音效：点击弹出模态对话框（预设列表 + DSP 设置入口）
         self._effect_btn = Gtk.Button()
         self._effect_btn.set_child(Gtk.Image.new_from_icon_name(
-            "multimedia-equalizer-symbolic"))
+            "applications-multimedia-symbolic"))
         self._effect_btn.add_css_class("flat")
         self._effect_btn.add_css_class("np-skip-btn")
         self._effect_btn.set_tooltip_text(_("音效"))
@@ -763,16 +763,16 @@ class PlayerPanel(Gtk.Box):
             if liked:
                 self.btn_like.add_css_class("liked-active")
                 self.btn_like.set_tooltip_text(_("取消喜欢"))
-                if img is not None:
-                    try:
-                        img.set_from_icon_name(self._RED_HEART)
-                    except Exception:
-                        img.set_from_icon_name("heart-filled-symbolic")
             else:
                 self.btn_like.remove_css_class("liked-active")
                 self.btn_like.set_tooltip_text(_("喜欢"))
-                if img is not None:
-                    img.set_from_icon_name("emblem-favorite-symbolic")
+            # 使用系统标准星标图标（Adwaita 自带，跨发行版稳定）：
+            # 已喜欢=starred-symbolic，未喜欢=non-starred-symbolic；
+            # 颜色由 CSS 类 liked-active 控制（style.css 里为深红）。
+            # 不再用自定义图标名（缺失时会显示为圆圈一杠）。
+            if img is not None:
+                img.set_from_icon_name(
+                    "starred-symbolic" if liked else "non-starred-symbolic")
         except Exception:
             pass
 
