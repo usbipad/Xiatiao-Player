@@ -76,7 +76,7 @@ fn pulse_peak(ir: &str, dry: f32, wet: f32) -> (Option<usize>, usize) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let ir = args.get(1).map(|s| s.as_str())
-        .unwrap_or("/home/faith/文档/163个脉冲样本/dolby_home_theater_v4_04.irs");
+        .unwrap_or("/tmp/ir.wav");
     let in_path = args.get(2).map(|s| s.as_str()).unwrap_or("/tmp/conv_src.wav");
     let prefix = args.get(3).map(|s| s.as_str()).unwrap_or("/tmp/conv_out");
 
