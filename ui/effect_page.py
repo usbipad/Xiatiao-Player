@@ -1030,12 +1030,12 @@ class EffectPage(Adw.PreferencesPage):
         group = Adw.PreferencesGroup()
         group.set_title(_("响度补偿 (Loudness)"))
         self.add(group)
-        # Loudness 归 Camilla → 整组随 Camilla 开关置灰
-        self._camilla_groups.append(group)
+        # 注：Loudness 由 Rust 动态实现（随播放器音量补偿两端），
+        # 不归 Camilla，故不随 Camilla 开关置灰。
 
         lsw = Adw.SwitchRow()
         lsw.set_title(_("启用响度补偿"))
-        lsw.set_subtitle(_("小音量下提升低频"))
+        lsw.set_subtitle(_("随音量动态补偿低/高频（小音量时更明显）"))
         lsw.set_active(bool(self._params.get("loudness_enabled", False)))
         lsw.connect("notify::active", self._on_loudness_toggled)
         group.add(lsw)
