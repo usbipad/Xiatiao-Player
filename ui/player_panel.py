@@ -641,7 +641,16 @@ class PlayerPanel(Gtk.Box):
         group = Adw.PreferencesGroup()
         group.set_title(_("内置音效"))
 
+        # 当前选中：优先从配置实时读（DSP 页改开关后会更新 effect_preset），
+        # 避免用可能过期的 _effect_current 导致勾选与实际不符。
         cur = getattr(self, "_effect_current", "")
+        try:
+            from config.settings import get_config
+            _cfg_cur = get_config().get("effect_preset")
+            if isinstance(_cfg_cur, str):
+                cur = _cfg_cur
+        except Exception:
+            pass
         self._effect_dialog_buttons = {}
         for preset in BUILTIN_PRESETS:
             name = preset["name"]
@@ -653,20 +662,22 @@ class PlayerPanel(Gtk.Box):
             check.connect("toggled", self._on_effect_dialog_choice, name, row)
             row.add_suffix(check)
             row.set_activatable(True)
-            row.connect("activated", lambda _r, _n=name: self._select_effect(_n))
+            # 点整行 = 勾选该行（触发 toggled → 统一走单选逻辑）
+            row.connect("activated", lambda _r, _c=check: _c.set_active(True))
             group.add(row)
             self._effect_dialog_buttons[name] = (row, check)
         body.append(group)
 
         # ---- 「我的预设」：DSP 设置页保存的自定义预设（可删除）----
+        # 注意：勾选统一用 cur（= self._effect_current），与内置区共享同一
+        # 「当前音效」状态；不能用 dsp_store.current() 单独判断，否则内置与
+        # 自定义可能同时被勾选（显示冲突）。
         try:
             from core.dsp_store import get_dsp_preset_store
             store = get_dsp_preset_store()
             custom_names = store.names()
-            cur_custom = store.current() or ""
         except Exception:
             custom_names = []
-            cur_custom = ""
         custom_group = Adw.PreferencesGroup()
         custom_group.set_title(_("我的预设"))
         if custom_names:
@@ -674,7 +685,7 @@ class PlayerPanel(Gtk.Box):
                 row = Adw.ActionRow()
                 row.set_title(name)
                 check = Gtk.CheckButton()
-                check.set_active(name == cur_custom)
+                check.set_active(name == cur)
                 check.set_valign(Gtk.Align.CENTER)
                 check.connect("toggled", self._on_effect_dialog_choice, name, row)
                 row.add_suffix(check)
@@ -686,7 +697,8 @@ class PlayerPanel(Gtk.Box):
                 del_btn.connect("clicked", self._on_effect_dialog_delete, name)
                 row.add_suffix(del_btn)
                 row.set_activatable(True)
-                row.connect("activated", lambda _r, _n=name: self._select_effect(_n))
+                # 点整行 = 勾选该行（触发 toggled → 统一走单选逻辑）
+                row.connect("activated", lambda _r, _c=check: _c.set_active(True))
                 custom_group.add(row)
                 self._effect_dialog_buttons[name] = (row, check)
         else:

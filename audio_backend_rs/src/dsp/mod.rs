@@ -12,6 +12,7 @@
 //! 归属规则：功能重叠时优先 Camilla（见 params::camilla_should_engage）。
 
 mod biquad;
+mod loudness;
 mod params;
 
 pub use biquad::Biquad;
@@ -36,6 +37,13 @@ pub struct DspChain {
     treble_r: Biquad,
     loudness_l: Biquad,
     loudness_r: Biquad,
+    // 动态等响度：高频补偿（低频复用 loudness_l/r）
+    loudness_high_l: Biquad,
+    loudness_high_r: Biquad,
+    /// 当前播放器音量（0.0~1.0），由 set_volume 实时更新，供动态等响度用
+    volume: f32,
+    /// 上次计算等响度时的音量（变化才重建滤波器，省开销）
+    loudness_last_vol: f32,
     // 限幅器增益（平滑）
     limiter_gain: f32,
     // 压缩器包络（平滑）
@@ -81,6 +89,10 @@ impl DspChain {
             treble_r: Biquad::identity(),
             loudness_l: Biquad::identity(),
             loudness_r: Biquad::identity(),
+            loudness_high_l: Biquad::identity(),
+            loudness_high_r: Biquad::identity(),
+            volume: 1.0,
+            loudness_last_vol: -1.0,
             limiter_gain: 1.0,
             comp_env: 0.0,
             cf_buf_l: vec![0.0; 64],
@@ -99,6 +111,11 @@ impl DspChain {
             cur_bal_r: 1.0,
             smooth_init: false,
         }
+    }
+
+    /// 更新当前播放器音量（供动态等响度用）。
+    pub fn set_volume(&mut self, v: f32) {
+        self.volume = v.clamp(0.0, 1.0);
     }
 
     /// 运行时设置全局开关。Camilla 是否参与由归属表推导。
@@ -204,24 +221,50 @@ impl DspChain {
         let mut tr = Biquad::highshelf(p.treble_freq, p.treble_gain_db, self.in_rate);
         tr.x1 = x1; tr.x2 = x2; tr.y1 = y1; tr.y2 = y2;
         self.treble_r = tr;
-        // Loudness（低频提升，强度映射到增益 0~6dB）
-        let loud_gain = if p.loudness_enabled { p.loudness_amount.clamp(0.0, 1.0) * 6.0 } else { 0.0 };
-        let (x1, x2, y1, y2) = (self.loudness_l.x1, self.loudness_l.x2, self.loudness_l.y1, self.loudness_l.y2);
-        let mut ll = Biquad::lowshelf(120.0, loud_gain, self.in_rate);
-        ll.x1 = x1; ll.x2 = x2; ll.y1 = y1; ll.y2 = y2;
-        self.loudness_l = ll;
-        let (x1, x2, y1, y2) = (self.loudness_r.x1, self.loudness_r.x2, self.loudness_r.y1, self.loudness_r.y2);
-        let mut lr = Biquad::lowshelf(120.0, loud_gain, self.in_rate);
-        lr.x1 = x1; lr.x2 = x2; lr.y1 = y1; lr.y2 = y2;
-        self.loudness_r = lr;
-
         self.params = p;
+        // 参数更新后：按当前音量重建等响度（算法见 loudness 模块）。
+        // 音量后续变化会在 process_post 里重建。
+        self.rebuild_loudness();
         // 参数变化后重新推导 Camilla 参与状态
         self.refresh_camilla_flag();
     }
 
     pub fn params(&self) -> &DspParams {
         &self.params
+    }
+
+    /// 按当前音量 + 参数重建等响度滤波器（低/高频 shelf）。
+    /// 仅参数开启等响度时生效；否则置为 identity（直通）。
+    fn rebuild_loudness(&mut self) {
+        let p = &self.params;
+        if !p.loudness_enabled || p.loudness_amount <= 1e-6 {
+            self.loudness_l = Biquad::identity();
+            self.loudness_r = Biquad::identity();
+            self.loudness_high_l = Biquad::identity();
+            self.loudness_high_r = Biquad::identity();
+            self.loudness_last_vol = self.volume;
+            return;
+        }
+        let comp = loudness::compute(self.volume, p.loudness_amount);
+        // 低频 Lowshelf（保留状态，避免爆音）
+        let (x1, x2, y1, y2) = (self.loudness_l.x1, self.loudness_l.x2, self.loudness_l.y1, self.loudness_l.y2);
+        let mut ll = Biquad::lowshelf(loudness::low_freq(), comp.low_db, self.in_rate);
+        ll.x1 = x1; ll.x2 = x2; ll.y1 = y1; ll.y2 = y2;
+        self.loudness_l = ll;
+        let (x1, x2, y1, y2) = (self.loudness_r.x1, self.loudness_r.x2, self.loudness_r.y1, self.loudness_r.y2);
+        let mut lr = Biquad::lowshelf(loudness::low_freq(), comp.low_db, self.in_rate);
+        lr.x1 = x1; lr.x2 = x2; lr.y1 = y1; lr.y2 = y2;
+        self.loudness_r = lr;
+        // 高频 Highshelf
+        let (x1, x2, y1, y2) = (self.loudness_high_l.x1, self.loudness_high_l.x2, self.loudness_high_l.y1, self.loudness_high_l.y2);
+        let mut hl = Biquad::highshelf(loudness::high_freq(), comp.high_db, self.in_rate);
+        hl.x1 = x1; hl.x2 = x2; hl.y1 = y1; hl.y2 = y2;
+        self.loudness_high_l = hl;
+        let (x1, x2, y1, y2) = (self.loudness_high_r.x1, self.loudness_high_r.x2, self.loudness_high_r.y1, self.loudness_high_r.y2);
+        let mut hr = Biquad::highshelf(loudness::high_freq(), comp.high_db, self.in_rate);
+        hr.x1 = x1; hr.x2 = x2; hr.y1 = y1; hr.y2 = y2;
+        self.loudness_high_r = hr;
+        self.loudness_last_vol = self.volume;
     }
 
     /// 处理一块交错立体声样本（原地）。兼容入口：未串联时整段跑。
@@ -257,17 +300,19 @@ impl DspChain {
             return;
         }
 
+        // 动态等响度：音量变化时重建滤波器（须在借 self.params 之前做）。
+        if self.params.loudness_enabled && self.params.loudness_amount > 0.0
+            && (self.volume - self.loudness_last_vol).abs() > 0.005
+        {
+            self.rebuild_loudness();
+        }
+
         let p = &self.params;
         let headroom = if p.headroom_enabled { 10f32.powf(p.headroom_db / 20.0) } else { 1.0 };
-        // Camilla 参与时：预增益/Loudness 归 Camilla，Rust 只保留 headroom。
+        // Camilla 参与时：预增益归 Camilla，Rust 只保留 headroom。
         let cam = self.camilla_enabled;
-        let loud_comp = if !cam && p.loudness_enabled {
-            10f32.powf(-(p.loudness_amount.clamp(0.0, 1.0) * 6.0 * 0.5) / 20.0)
-        } else {
-            1.0
-        };
         let pre_gain_lin = if cam { 1.0 } else { 10f32.powf(p.pre_gain_db / 20.0) };
-        let pre = pre_gain_lin * headroom * loud_comp;
+        let pre = pre_gain_lin * headroom;
         let target_width = if p.width_enabled { p.stereo_width.clamp(0.0, 2.0) } else { 1.0 };
         let target_balance = p.balance.clamp(-1.0, 1.0);
         let target_bal_l = if target_balance > 0.0 { 1.0 - target_balance } else { 1.0 };
@@ -295,7 +340,8 @@ impl DspChain {
         let cf_amt = p.crossfeed_amount.clamp(0.0, 1.0);
         let cf_delay = ((p.crossfeed_delay_ms.max(0.0) / 1000.0) * self.in_rate) as usize;
         let cf_delay = cf_delay.min(self.cf_buf_l.len().saturating_sub(1));
-        let loud_on = !cam && p.loudness_enabled && p.loudness_amount > 0.0;
+        // 动态等响度归 Rust（不依赖 Camilla；用播放器音量驱动）。
+        let loud_on = p.loudness_enabled && p.loudness_amount > 0.0;
         let phase_inv = !cam && p.phase_invert;
         let ch_mode = if cam { "off".to_string() } else { p.channel_matrix.clone() };
         let reverb_on = p.reverb_enabled;
@@ -364,6 +410,8 @@ impl DspChain {
             if loud_on {
                 l = self.loudness_l.process(l);
                 r = self.loudness_r.process(r);
+                l = self.loudness_high_l.process(l);
+                r = self.loudness_high_r.process(r);
             }
             if (self.cur_width - 1.0).abs() > 1e-6 {
                 let m = (l + r) * 0.5;
@@ -421,5 +469,70 @@ impl DspChain {
         }
         self.tube = tube;
         self.bbe = bbe;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 测某音量下、某频点的增益（dB，相对输入）。
+    fn gain_at(chain: &mut DspChain, freq: f32, rate: f32) -> f32 {
+        let frames = 24000usize;
+        let mut buf = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let s = (2.0 * std::f32::consts::PI * freq * (i as f32 / rate)).sin() * 0.25;
+            buf.push(s);
+            buf.push(s);
+        }
+        let in_rms = {
+            let st = frames / 4;
+            let mut sum = 0.0f32;
+            let mut n = 0usize;
+            for i in st..frames {
+                sum += buf[i * 2] * buf[i * 2];
+                n += 1;
+            }
+            (sum / n as f32).sqrt()
+        };
+        chain.process_interleaved(&mut buf, 2);
+        let out_rms = {
+            let st = frames / 4;
+            let mut sum = 0.0f32;
+            let mut n = 0usize;
+            for i in st..frames {
+                sum += buf[i * 2] * buf[i * 2];
+                n += 1;
+            }
+            (sum / n as f32).sqrt()
+        };
+        20.0 * (out_rms / in_rms.max(1e-9)).log10()
+    }
+
+    /// 动态等响度：音量越低，两端补偿越多。
+    #[test]
+    fn loudness_dynamic_by_volume() {
+        let rate = 48000.0f32;
+        let mut params = DspParams::default();
+        params.enabled = true;
+        params.loudness_enabled = true;
+        params.loudness_amount = 1.0;
+
+        let measure = |vol: f32| -> (f32, f32) {
+            let mut chain = DspChain::new(48000);
+            chain.set_volume(vol);
+            chain.set_params(params.clone());
+            (gain_at(&mut chain, 80.0, rate), gain_at(&mut chain, 10000.0, rate))
+        };
+
+        let (low_full, high_full) = measure(1.0);
+        let (low_mid, high_mid) = measure(0.5);
+        let (low_low, high_low) = measure(0.1);
+        println!("音量1.0: 低频{low_full:+.2}dB 高频{high_full:+.2}dB");
+        println!("音量0.5: 低频{low_mid:+.2}dB 高频{high_mid:+.2}dB");
+        println!("音量0.1: 低频{low_low:+.2}dB 高频{high_low:+.2}dB");
+        assert!(low_low > low_mid + 0.5, "音量越低低频补偿越多");
+        assert!(low_mid > low_full + 0.5, "音量中等比满音量补偿多");
+        assert!(high_low > high_full, "高频也应随音量降低而补偿");
     }
 }

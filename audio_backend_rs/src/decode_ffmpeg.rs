@@ -204,6 +204,8 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
         let dsp_json = shared.dsp_params.lock().map(|p| p.clone()).unwrap_or(serde_json::Value::Null);
         dsp.set_params(DspParams::from_json(&dsp_json));
         dsp.set_engine(true);
+        // 把播放器音量传给 DSP（供动态等响度用）
+        dsp.set_volume(vol);
         let cam_on = dsp.camilla_active();
         if let Ok((td, ba)) = shared.coloring.lock().map(|g| *g) {
             dsp.set_coloring(td, ba);

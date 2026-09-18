@@ -216,7 +216,8 @@ pub fn camilla_features(p: &DspParams) -> Vec<(&'static str, bool)> {
         ("convolution", p.convolution_enabled),
         ("bass", p.bass_enabled),
         ("treble", p.treble_gain_db.abs() > 1e-6),
-        ("loudness", p.loudness_enabled),
+        // 注：Loudness 不归 Camilla——由 Rust 动态实现（依赖播放器音量，
+        // Camilla 拿不到音量）。见 dsp/loudness.rs 与 DspChain.rebuild_loudness。
         ("compressor", p.compressor_enabled),
         ("channel_matrix", p.channel_matrix != "off"),
         ("phase_invert", p.phase_invert),

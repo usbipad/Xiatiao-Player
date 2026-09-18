@@ -407,6 +407,89 @@ mod tests {
         assert!(b < a * 0.5, "低架应大幅衰减，实际 a={a} b={b}");
     }
 
+    /// 测任意 YAML 的频响：对每个频点喂正弦，算输出/输入增益（dB），打印。
+    fn measure_response(yaml: &str, label: &str) {
+        let rate = 48000.0f32;
+        let freqs = [20.0, 40.0, 60.0, 100.0, 150.0, 250.0, 400.0, 630.0,
+                     1000.0, 1600.0, 2500.0, 4000.0, 6300.0, 8000.0, 12000.0, 16000.0];
+        let frames = 24000usize; // 0.5s
+        // 先算所有频点增益，再以 1kHz 为 0dB 基准（相对曲线，消除 pre_gain 整体偏移）
+        let mut gains: Vec<(f32, f32)> = Vec::new();
+        for &f in freqs.iter() {
+            let mut pcm = Vec::with_capacity(frames * 2);
+            for i in 0..frames {
+                let s = (2.0 * std::f32::consts::PI * f * (i as f32 / rate)).sin() * 0.25;
+                pcm.push(s);
+                pcm.push(s);
+            }
+            // 输入 RMS（稳定段）
+            let in_rms = {
+                let st = frames / 4;
+                let mut sum = 0.0f32;
+                let mut n = 0usize;
+                for i in st..frames {
+                    sum += pcm[i * 2] * pcm[i * 2];
+                    n += 1;
+                }
+                (sum / n as f32).sqrt()
+            };
+            let mut eng = CamillaEngine::new(48000);
+            if eng.set_yaml(yaml).is_err() { print!("[{f:.0}Hz:配置错] "); continue; }
+            for c in pcm.chunks_mut(4096) { eng.process_interleaved(c, 2); }
+            let out_rms = {
+                let st = frames / 4;
+                let mut sum = 0.0f32;
+                let mut n = 0usize;
+                for i in st..frames {
+                    sum += pcm[i * 2] * pcm[i * 2];
+                    n += 1;
+                }
+                (sum / n as f32).sqrt()
+            };
+            let db = 20.0 * (out_rms / in_rms.max(1e-9)).log10();
+            gains.push((f, db));
+        }
+        // 以最接近 1kHz 的频点为基准
+        let ref_db = gains.iter().min_by(|a, b|
+            (a.0 - 1000.0).abs().partial_cmp(&(b.0 - 1000.0).abs()).unwrap())
+            .map(|x| x.1).unwrap_or(0.0);
+        print!("[响应] {label}: ");
+        for (f, db) in gains.iter() {
+            print!("{f:.0}Hz={:+.1}dB ", db - ref_db);
+        }
+        println!();
+    }
+
+    /// 排查：单个滤波器对频响的影响（确认多滤波器叠加是否异常）。
+    #[test]
+    fn dump_single_filter() {
+        let y = |name: &str, t: &str, f: f32, g: f32, q: f32| format!(
+            "devices:\n  samplerate: 48000\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters:\n  f0:\n    type: Biquad\n    parameters:\n      type: {t}\n      freq: {f}\n      gain: {g}\n      q: {q}\nprocessors: {{}}\nmixers: {{}}\npipeline:\n- type: Filter\n  channels:\n  - 0\n  - 1\n  names:\n  - f0\n");
+        measure_response(&y("x", "Highshelf", 8000.0, 1.5, 0.8), "单 Highshelf 8k +1.5");
+        measure_response(&y("x", "Peaking", 3000.0, -1.0, 1.4), "单 Peaking 3k -1");
+        measure_response(&y("x", "Lowshelf", 150.0, 4.5, 1.0), "单 Lowshelf 150 +4.5 q1");
+    }
+
+    /// 批量测 /tmp/xiatiao_presets 下所有预设 YAML 的频响。
+    ///
+    /// 先用 python3 tools/dump_preset_yamls.py 生成 YAML。
+    #[test]
+    fn dump_all_preset_responses() {
+        let dir = "/tmp/xiatiao_presets";
+        let index_path = format!("{dir}/index.json");
+        let idx_str = match std::fs::read_to_string(&index_path) {
+            Ok(s) => s,
+            Err(_) => { println!("未找到 {index_path}，跳过（先跑 tools/dump_preset_yamls.py）"); return; }
+        };
+        let names: Vec<String> = serde_json::from_str(&idx_str).unwrap_or_default();
+        for name in names {
+            let path = format!("{dir}/{name}.yaml");
+            if let Ok(yaml) = std::fs::read_to_string(&path) {
+                measure_response(&yaml, &name);
+            }
+        }
+    }
+
     /// 同一引擎：先直通，再平滑更新为低架，输出应变化。
     #[test]
     fn smooth_update_changes_output() {

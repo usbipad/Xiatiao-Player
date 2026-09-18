@@ -2135,6 +2135,13 @@ class MainWindow(Adw.ApplicationWindow):
             _cfg = get_config()
             _cfg.set("dsp_params", params)
             _cfg.set_bool("dsp_enabled", bool(params.get("enabled", False)))
+            # 同步「当前音效」标记：
+            # - DSP 关闭 → 音效对话框应勾「关闭」
+            # - DSP 开着但手动调了参数 → 已不是任何预设，清空标记（不勾预设）
+            if not params.get("enabled", False):
+                _cfg.set("effect_preset", "关闭")
+            else:
+                _cfg.set("effect_preset", "")
             # 同步回主界面 DSP 页参数 + UI（高级窗口改动后，主界面也是最新的）
             if getattr(self, "dsp_page", None) is not None:
                 self.dsp_page._params.update(params)  # noqa: SLF001
