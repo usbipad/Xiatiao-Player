@@ -1,0 +1,10 @@
+# 项目级 cargo 配置。
+# 当前使用官方 crates.io 源（VPN 环境下 USTC 镜像连不上）。
+# 无 VPN 时，可改回 USTC：
+#   [source.crates-io]
+#   replace-with = "ustc"
+#   [source.ustc]
+#   registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
+
+[net]
+retry = 5

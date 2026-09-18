@@ -1,0 +1,26 @@
+devices:
+  samplerate: 44100
+  chunksize: 1024
+  capture:
+    type: Stdin
+    channels: 2
+    format: F32_LE
+  playback:
+    type: Stdout
+    channels: 2
+    format: F32_LE
+
+filters:
+  peq_boost:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 1000
+      gain: 6.0
+      q: 1.0
+
+pipeline:
+  - type: Filter
+    channels: [0, 1]
+    names:
+      - peq_boost

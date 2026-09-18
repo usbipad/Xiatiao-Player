@@ -1,0 +1,30 @@
+__pycache__/
+*.pyc
+audio_backend_rs/target/
+*.sock
+
+# 工具目录的构建产物（camilladsp 源码本身保留，便于离线构建）
+tools/camilladsp-src/target/
+tools/pwrs-check/target/
+tools/pwrs-check/Cargo.lock
+
+# CamillaDSP 预编译二进制（构建/下载产物，不入库）
+tools/camilladsp/camilladsp
+
+# 第三方源码中的非构建必需目录（CI / 编辑器配置）
+tools/camilladsp-src/.github/
+tools/camilladsp-src/.vscode/
+
+# 嵌套 git 仓库（自带版本控制，不纳入主仓库）
+tools/pwrs-check/
+
+# 本地代码快照备份
+backups/
+
+# 补丁残留文件（*.bak / *.tmp / *.orig / *.pre_* / 编辑器临时文件）
+*.bak
+*.bak_*
+*.tmp
+*.orig
+*.pre_*
+*~

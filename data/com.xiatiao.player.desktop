@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Xiatiao
+Name[zh_CN]=虾条播放器
+GenericName=Music Player
+GenericName[zh_CN]=音乐播放器
+Comment=Local music player
+Comment[zh_CN]=本地音乐播放器
+Exec=python3 /home/faith/项目/qqmusic-gtk-local/main.py
+Icon=xiatiao
+Terminal=false
+Categories=AudioVideo;Audio;Player;GTK;
+StartupNotify=true

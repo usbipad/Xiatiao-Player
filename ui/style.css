@@ -1,0 +1,664 @@
+/* ============================================================
+   启动闪屏（Splash）
+   ============================================================ */
+.splash-overlay {
+    /* 跟随窗口背景色（亮/暗主题自动适配） */
+    background-color: @window_bg_color;
+}
+
+.splash-title {
+    font-size: 1.5em;
+    font-weight: bold;
+    color: @window_fg_color;
+}
+
+.splash-subtitle {
+    font-size: 0.92em;
+    color: alpha(@window_fg_color, 0.6);
+}
+
+.splash-logo {
+    opacity: 0.96;
+}
+
+/* ============================================================
+   通用
+   ============================================================ */
+.card {
+    background-color: alpha(currentColor, 0.06);
+    border-radius: 12px;
+}
+
+.nav-active {
+    background-color: alpha(@accent_bg_color, 0.9);
+    color: @accent_fg_color;
+}
+
+/* 无封面占位：柔和渐变背景 + 居中淡音符图标 */
+.cover-placeholder-box {
+    border-radius: 24px;
+    background: linear-gradient(135deg, alpha(@accent_bg_color, 0.18), alpha(@accent_bg_color, 0.06));
+    min-width: 140px;
+    min-height: 140px;
+}
+
+.cover-placeholder-icon {
+    color: alpha(@window_fg_color, 0.35);
+    opacity: 1;
+    -gtk-icon-filter: none;
+}
+
+/* 沉浸页占位封面：不透明背景 + 提亮。
+   基础 .cover-placeholder-box 是半透明渐变，叠在主界面主题亮底上没问题；
+   但沉浸页底下是动态封面主色（偏暗），半透明渐变会透出暗底显暗。
+   这里垫一层不透明底，并整体提亮（比 @window_bg_color 更白一点），
+   让沉浸页占位封面比主界面更亮、不发暗。*/
+.np-cover-placeholder {
+    background-color: mix(@window_bg_color, white, 0.35);
+    background-image: linear-gradient(135deg, alpha(@accent_bg_color, 0.20), alpha(white, 0.55));
+    background-repeat: no-repeat;
+}
+
+/* 主界面封面：圆角 + 阴影，无边框、无底色。
+   圆角须与代码里图片圆角(24px)一致，否则图片透明角会露出容器白底。
+   用 Box 承载阴影（非 AspectFrame），避免 GTK 默认方形边框。*/
+/* 封面 AspectFrame：去掉 GTK 默认边框/底色 */
+aspectframe,
+.aspectframe {
+    border: none;
+    box-shadow: none;
+    background: transparent;
+}
+
+.cover-shadow {
+    border-radius: 24px;
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+/* 封面尺寸约束：仅设下限；固定尺寸由代码 set_size_request 保证 */
+.cover-fixed {
+    min-width: 140px;
+    min-height: 140px;
+}
+
+/* ============================================================
+   全屏播放页（Apple Music 风格）
+   ============================================================ */
+.now-playing-root {
+    background-color: @window_bg_color;
+}
+
+/* 前景内容跟随主题前景色，深浅自动适配 */
+.np-content {
+    color: @window_fg_color;
+}
+
+.np-content label {
+    color: @window_fg_color;
+}
+
+/* 背景偏暗时（模糊封面图较暗），前景整体切亮色，保证可读性。
+   由 now_playing.py 的 _set_dark_bg 动态增删 .np-dark-bg 类。 */
+.now-playing-root.np-dark-bg .np-content,
+.now-playing-root.np-dark-bg .np-content label {
+    color: #ffffff;
+}
+
+.now-playing-root.np-dark-bg .np-track-name {
+    color: #ffffff;
+}
+
+.now-playing-root.np-dark-bg .np-secondary,
+.now-playing-root.np-dark-bg .np-content .dim-label {
+    color: alpha(#ffffff, 0.65);
+}
+
+.now-playing-root.np-dark-bg .np-content .lyric-line {
+    color: alpha(#ffffff, 0.45);
+}
+
+.now-playing-root.np-dark-bg .np-content .lyric-active {
+    color: #ffffff;
+}
+
+.now-playing-root.np-dark-bg .np-skip-btn,
+.now-playing-root.np-dark-bg .np-skip-btn.np-aux-btn,
+.now-playing-root.np-dark-bg .np-play-btn,
+.now-playing-root.np-dark-bg .np-vol-btn {
+    color: #ffffff;
+}
+
+.now-playing-root.np-dark-bg .np-skip-btn.np-aux-btn {
+    color: alpha(#ffffff, 0.75);
+}
+
+.now-playing-root.np-dark-bg .np-skip-btn:hover {
+    background-color: alpha(#ffffff, 0.12);
+}
+
+/* 播放按钮：暗背景下用白色实心圆 + 深色图标，保证对比 */
+.now-playing-root.np-dark-bg .np-play-btn {
+    background-color: #ffffff;
+    color: #1a1a1a;
+}
+
+.now-playing-root.np-dark-bg .np-play-btn:hover {
+    background-color: alpha(#ffffff, 0.9);
+}
+
+/* 播放模式激活态：暗背景用亮强调色。
+   同样用 background 简写覆盖 .np-skip-btn 的 background:none。*/
+.now-playing-root.np-dark-bg .np-skip-btn.np-toggle-on,
+.now-playing-root.np-dark-bg .np-skip-btn.np-aux-btn.np-toggle-on {
+    color: #ffffff;
+    background: alpha(#ffffff, 0.25);
+}
+
+/* 歌名 / 标题：大字号 semibold */
+.np-title {
+    font-size: 26px;
+    font-weight: 600;
+}
+
+/* 次要文字：歌手、时间、参数 */
+.np-secondary,
+.np-content .dim-label {
+    color: alpha(@window_fg_color, 0.55);
+    font-size: 16px;
+}
+
+/* 封面：圆角用容器遮罩（overflow:hidden + border-radius）实现，
+   图片本身是方角，被裁成圆角——省掉在图片上画圆角。
+   420px 大图配 28px 圆角更协调。*/
+.np-cover {
+    border-radius: 28px;
+    background: transparent;
+}
+
+/* 投影：单独一层，避免被 .np-cover 的 overflow:hidden 裁掉 */
+.np-cover-shadow {
+    border-radius: 28px;
+    box-shadow: 0 16px 44px rgba(0, 0, 0, 0.30);
+}
+
+/* 歌名（封面下方）：大号加粗，Apple Music 风格 */
+.np-track-name {
+    font-size: 28px;
+    font-weight: 700;
+    color: @window_fg_color;
+}
+
+/* 歌词区顶/底渐隐遮罩。
+   背景已是模糊封面图，渐隐层不再用实色（会和背景对不上、露出色带），
+   改为完全透明——由滚动区的自然边缘过渡即可。*/
+.np-fade-top,
+.np-fade-bottom {
+    background: transparent;
+}
+
+
+
+/* 歌词行：平滑过渡（模拟聚焦）*/
+.np-content .lyric-line {
+    font-size: 19px;
+    color: alpha(@window_fg_color, 0.40);
+    transition: font-size 250ms ease, color 250ms ease;
+}
+
+.np-content .lyric-active {
+    font-size: 26px;
+    font-weight: 700;
+    color: @window_fg_color;
+}
+
+/* 紧凑歌词（左侧窄面板）：字号更小、行距更紧 */
+/* 容器背景透明：避免 ScrolledWindow/Overlay 默认底色在歌词后形成灰框 */
+.np-lyrics-compact,
+.np-lyrics-compact > scrolledwindow,
+.np-lyrics-compact scrolledwindow > viewport {
+    background: transparent;
+    background-color: transparent;
+}
+
+.np-lyrics-compact .lyric-line {
+    font-size: 14px;
+    color: alpha(@window_fg_color, 0.5);
+}
+
+.np-lyrics-compact .lyric-active {
+    font-size: 16px;
+    font-weight: 600;
+    color: @window_fg_color;
+}
+
+/* 紧凑歌词的顶/底渐隐：用面板背景色 */
+.np-lyrics-compact .np-fade-top {
+    background: linear-gradient(to bottom, @window_bg_color, alpha(@window_bg_color, 0));
+}
+
+.np-lyrics-compact .np-fade-bottom {
+    background: linear-gradient(to top, @window_bg_color, alpha(@window_bg_color, 0));
+}
+
+/* 上一曲 / 下一曲：裸图标按钮，无底色 */
+.np-skip-btn {
+    background: none;
+    border: none;
+    box-shadow: none;
+    color: @window_fg_color;
+    min-width: 34px;
+    min-height: 34px;
+    padding: 0;
+}
+
+.np-skip-btn:hover {
+    background-color: alpha(@window_fg_color, 0.08);
+}
+
+/* 辅助按钮（随机/循环）：比核心控件更小、更淡，弱化权重 */
+.np-skip-btn.np-aux-btn {
+    min-width: 26px;
+    min-height: 26px;
+    color: alpha(@window_fg_color, 0.6);
+}
+
+/* 播放 / 暂停：实心强调色大圆（Apple Music 风格，核心焦点）*/
+.np-play-btn {
+    background-color: @accent_bg_color;
+    color: @accent_fg_color;
+    border: none;
+    box-shadow: none;
+    min-width: 58px;
+    min-height: 58px;
+    border-radius: 999px;
+}
+
+.np-play-btn:hover {
+    background-color: shade(@accent_bg_color, 1.1);
+}
+
+/* 进度条：Apple Music 风——细轨、圆头、用前景色深浅（不用蓝色）。
+   在 widget 级覆盖强调色变量，只影响进度条，不动全局强调色。*/
+.np-progress {
+    --accent-bg-color: @window_fg_color;
+    --accent-color: @window_fg_color;
+    --accent-fg-color: @window_bg_color;
+}
+
+.np-progress trough {
+    min-height: 4px;
+    border-radius: 2px;
+    background-color: alpha(@window_fg_color, 0.18);
+}
+
+/* 进度条已播段：强制压过 Adwaita 的强调色（含 background-image 渐变）*/
+.np-progress trough > highlight,
+scale.np-progress > trough > highlight {
+    background-image: none;
+    background-color: alpha(@window_fg_color, 0.72);
+    border-radius: 2px;
+}
+
+/* 部分 Adwaita 版本用 .fill / progress 元素 */
+.np-progress progress,
+.np-progress .fill {
+    background-image: none;
+    background-color: alpha(@window_fg_color, 0.72);
+}
+
+.np-progress slider {
+    min-width: 11px;
+    min-height: 11px;
+    background-image: none;
+    background-color: @window_fg_color;
+    border: none;
+    box-shadow: none;
+}
+
+/* 播放模式按钮激活态（随机/循环开启）：图标用强调色 + 淡强调色底，
+   开/关一眼可辨。
+   注意：必须用 background 简写，否则会被 .np-skip-btn 的 `background: none`
+   重置掉 background-image 等子属性，导致淡色底显示不出来。*/
+.np-skip-btn.np-toggle-on,
+.np-skip-btn.np-aux-btn.np-toggle-on {
+    color: @accent_bg_color;
+    background: alpha(@accent_bg_color, 0.22);
+    border-radius: 999px;
+}
+
+.np-skip-btn.np-toggle-on:hover,
+.np-skip-btn.np-aux-btn.np-toggle-on:hover {
+    background: alpha(@accent_bg_color, 0.32);
+}
+
+/* 顶部栏导航按钮 */
+.nav-pill {
+    border-radius: 999px;
+    padding: 2px 14px;
+    font-weight: 500;
+}
+
+.nav-pill.nav-active {
+    background-color: alpha(@accent_bg_color, 0.9);
+    color: @accent_fg_color;
+}
+
+/* 左侧播放面板：浅色背景，与右侧内容区分（Tonearm 风格）*/
+.player-panel {
+    background-color: @window_bg_color;
+    border-radius: 12px;
+}
+
+/* 面板整体缩放：字号三档（图标/间距由代码按比例调）*/
+.player-panel.scale-sm .heading { font-size: 15px; }
+.player-panel.scale-sm .caption { font-size: 10px; }
+.player-panel.scale-md .heading { font-size: 17px; }
+.player-panel.scale-md .caption { font-size: 11px; }
+.player-panel.scale-lg .heading { font-size: 19px; }
+.player-panel.scale-lg .caption { font-size: 12px; }
+
+/* 右侧内容区：视图底色（更亮），与左侧侧栏区分（Tonearm 风格）*/
+.content-area {
+    background-color: @view_bg_color;
+}
+
+/* 曲库歌曲列表：整体透明、无外框。
+   之前 ColumnView 带 .card 会在列表外画一层与内容区不同色的"框"，
+   这里彻底去掉，只保留行级 hover/选中高亮（现代媒体库风格）。*/
+/* 精简模式：隐藏 ColumnView 表头 */
+.columnview.no-header > header {
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+    opacity: 0;
+    border: none;
+    box-shadow: none;
+}
+
+.track-list,
+.columnview,
+listview {
+    background: transparent;
+    background-color: transparent;
+    box-shadow: none;
+    border: none;
+}
+
+/* 表头：融入背景，仅作浅色分隔，不画整块底色 */
+.track-list > header,
+.columnview > header {
+    background: transparent;
+    background-color: transparent;
+    box-shadow: none;
+    border: none;
+}
+
+.track-list > header button,
+.columnview > header button {
+    background: transparent;
+    box-shadow: none;
+    font-weight: 500;
+    color: alpha(@window_fg_color, 0.55);
+}
+
+/* 行：圆角高亮 + 上下留白（更透气，Tonearm 风） */
+.track-list > listview > row,
+.columnview > listview > row {
+    border-radius: 10px;
+    margin-top: 1px;
+    margin-bottom: 1px;
+}
+
+/* 鼠标悬停：柔和反馈 */
+.track-list > listview > row:hover,
+.columnview > listview > row:hover,
+listview > row:hover {
+    background-color: alpha(currentColor, 0.05);
+    border-radius: 10px;
+}
+
+/* 当前播放行：由跳动指示器标识（见 PlayingIndicator）*/
+
+/* 封面图片圆角（与图片内绘制圆角一致）*/
+.cover-img {
+    border-radius: 24px;
+}
+
+/* 播放队列列表：扁平、当前项高亮 */
+.queue-list {
+    background: transparent;
+}
+
+.queue-list > row {
+    border-radius: 8px;
+}
+.queue-list > row:hover {
+    background-color: alpha(currentColor, 0.06);
+}
+.queue-list > row.queue-current {
+    background-color: alpha(@accent_bg_color, 0.20);
+}
+
+/* ============================================================
+   现代媒体卡片（首页 / 探索 / 收藏）
+   ============================================================ */
+.media-card {
+    padding: 10px;
+    border-radius: 16px;
+    transition: background-color 150ms ease;
+}
+
+.media-card:hover {
+    background-color: alpha(currentColor, 0.07);
+}
+
+.media-card-cover {
+    border-radius: 12px;
+    background-color: alpha(currentColor, 0.08);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.14);
+}
+
+/* 卡片标题：更粗、更接近 Apple Music 的字重层级 */
+.media-card-title {
+    font-size: 14px;
+    font-weight: 700;
+    margin-top: 4px;
+}
+
+/* 卡片副标题（歌手/数量）：更淡、更小，弱化权重 */
+.media-card-subtitle {
+    font-size: 12px;
+    font-weight: 400;
+    color: alpha(currentColor, 0.50);
+}
+
+/* Hi-Res 徽标：金色胶囊，叠加在封面右下角 */
+.hires-badge {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    padding: 0 4px;
+    margin: 3px;
+    border-radius: 4px;
+    background-color: alpha(#d4a017, 0.95);
+    color: #1a1a1a;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.30);
+}
+
+/* CD 级徽标：蓝色胶囊，与 Hi-Res 金色区分 */
+.cd-badge {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    padding: 0 4px;
+    margin: 3px;
+    border-radius: 4px;
+    background-color: alpha(#3b82f6, 0.95);
+    color: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.30);
+}
+
+/* DSD 徽标：紫色胶囊，最高音质档 */
+.dsd-badge {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    padding: 0 4px;
+    margin: 3px;
+    border-radius: 4px;
+    background-color: alpha(#8b5cf6, 0.95);
+    color: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.30);
+}
+
+/* 快捷键未设置：占位框（虚线边，提示可点击录制）*/
+button.unset-key {
+    border: 1px dashed alpha(currentColor, 0.4);
+    border-radius: 6px;
+    color: alpha(currentColor, 0.5);
+    padding: 2px 10px;
+    min-height: 24px;
+}
+
+/* 定位当前播放：右下角悬浮按钮（透明背景 + 黑色图标，无阴影无边框） */
+.locate-fab {
+    min-width: 48px;
+    min-height: 48px;
+    padding: 0;
+    border-radius: 999px;
+    background-color: transparent;
+    background-image: none;
+    color: #000000;
+    border: none;
+    box-shadow: none;
+}
+
+.locate-fab:hover {
+    background-color: transparent;
+    box-shadow: none;
+}
+
+.locate-fab:active {
+    background-color: transparent;
+}
+
+/* 按钮内图标：黑色、不透明，避免被主题淡化 */
+.locate-fab image {
+    color: #000000;
+    opacity: 1;
+    -gtk-icon-filter: none;
+}
+
+/* 队列行小封面 */
+.queue-row-cover {
+    border-radius: 4px;
+    background-color: alpha(currentColor, 0.08);
+}
+
+.media-card-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background-color: alpha(@accent_bg_color, 0.9);
+    color: @accent_fg_color;
+    margin: 6px;
+}
+
+/* 歌单右键菜单：半透明、无纯白背景 */
+.media-menu,
+.media-menu > contents {
+    background-color: alpha(@window_bg_color, 0.72);
+    border-radius: 12px;
+}
+
+/* 喜欢按钮激活：深浓红色实心爱心（深红 + 强制不透明） */
+button.np-skip-btn.liked-active,
+button.np-skip-btn.liked-active:hover {
+    color: #c00000;
+    opacity: 1;
+}
+
+image.like-icon-active,
+image.heart-filled-symbolic,
+button.np-skip-btn.liked-active image {
+    color: #c00000;
+    opacity: 1;
+    -gtk-icon-filter: none;
+}
+
+/* 覆盖主题对 symbolic 图标的淡化（dim） */
+button.np-skip-btn.liked-active image:disabled,
+button.np-skip-btn.liked-active:disabled {
+    color: #c00000;
+    opacity: 1;
+}
+
+/* 页顶「重置本页」：去卡片背景，只留右上角浮动圆钮。
+   Adw.PreferencesGroup 内部结构是 box > list.boxed-list > row，
+   需覆盖到 .boxed-list 与 row 才能去掉卡片白底。 */
+/* 注意：GTK CSS 不支持 !important，写了会被当作非法值导致整条规则报错。
+   这里靠选择器特异性覆盖即可。*/
+.reset-bar,
+.reset-bar > box,
+.reset-bar .boxed-list,
+.reset-bar list,
+.reset-bar row,
+.reset-bar-row {
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+    min-height: 0;
+}
+
+/* 承载行本身不显示（只留后缀里的按钮） */
+.reset-bar-row {
+    min-height: 0;
+}
+
+/* 顶部用户头像：圆形 */
+.user-avatar {
+    border-radius: 999px;
+    background-color: alpha(currentColor, 0.08);
+}
+
+/* 卡片无封面时的占位图标 */
+.media-card-placeholder {
+    color: alpha(currentColor, 0.25);
+}
+
+/* 热门搜索标签 */
+.hot-key-chip {
+    background-color: alpha(currentColor, 0.08);
+    font-size: 13px;
+    padding: 4px 16px;
+}
+
+.hot-key-chip:hover {
+    background-color: alpha(@accent_bg_color, 0.85);
+    color: @accent_fg_color;
+}
+
+/* 收藏页卡片网格 */
+.media-flow {
+    padding: 2px;
+}
+
+.media-flow > flowboxchild {
+    padding: 0;
+    background: none;
+    border-radius: 14px;
+}
+
+.media-flow > flowboxchild:focus,
+.media-flow > flowboxchild:selected {
+    background: none;
+    outline: none;
+}

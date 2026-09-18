@@ -1,0 +1,34 @@
+[package]
+name = "xiatiao-audio-backend"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "xiatiao-audio-backend"
+path = "src/main.rs"
+
+[dependencies]
+# 解码：mp3/flac/aac/ogg/wav/alac 等（0.5 为稳定版）
+symphonia = { version = "0.5", features = ["mp3", "flac", "aac", "ogg", "wav", "isomp4", "alac"] }
+# IPC 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# FFT（卷积混响）
+rustfft = "6"
+
+# 输出：通过 pw-cat 子进程走 PipeWire（不绑定 libpipewire，避免版本兼容问题）
+
+# CamillaDSP 引擎（嵌入验证用；暂不启用 pipewire-backend，避免缺 libpipewire-0.3-dev）
+# 注意：包名是 CamillaDSP，lib 名是 camillalib（代码里 use camillalib::）
+CamillaDSP = { path = "../tools/camilladsp-src", default-features = false }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+# camillalib 用它从字符串加载配置（避免写临时文件）
+yaml_serde = "0.10"
+# 可视化旁路：以标准方式打开非阻塞 FIFO（O_NONBLOCK）
+nix = { version = "0.30", features = ["fs"] }
+
+# 原生 PipeWire 输出后端（XIATIAO_AUDIO_BACKEND=pipewire 启用）
+# 相比 pw-cat 子进程：可自定义 client.name，少一层进程。
+pipewire = "0.10"
+libspa-sys = "0.10"
