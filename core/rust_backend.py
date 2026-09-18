@@ -31,19 +31,32 @@ DEFAULT_SOCKET = "/tmp/xiatiao-audio-backend.sock"
 
 
 def _find_binary() -> Optional[str]:
-    """定位 Rust 后端可执行文件。"""
+    """定位 Rust 后端可执行文件。
+
+    查找顺序（兼容「开发」与「安装后」两种布局）：
+      1. 与 main.py 同目录（.deb 安装后：/usr/lib/xiatiao-player/）；
+      2. 开发构建产物 audio_backend_rs/target/{release,debug}/；
+      3. 系统 PATH（额外安装到 /usr/bin 等场景）。
+    """
     here = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(here)
+    bin_name = "xiatiao-audio-backend"
     candidates = [
-        os.path.join(project_root, "audio_backend_rs", "target", "debug",
-                     "xiatiao-audio-backend"),
-        os.path.join(project_root, "audio_backend_rs", "target", "release",
-                     "xiatiao-audio-backend"),
+        # 安装后：后端与 main.py 同目录（/usr/lib/xiatiao-player/）。
+        os.path.join(project_root, bin_name),
+        # 开发：cargo 构建产物（优先 release）。
+        os.path.join(project_root, "audio_backend_rs", "target", "release", bin_name),
+        os.path.join(project_root, "audio_backend_rs", "target", "debug", bin_name),
+        # 系统 PATH 兜底。
+        os.path.join("/usr/bin", bin_name),
+        os.path.join("/usr/local/bin", bin_name),
     ]
     for path in candidates:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
-    return None
+    # 最后：在 PATH 中查找。
+    import shutil as _shutil
+    return _shutil.which(bin_name)
 
 
 class RustBackend(AudioBackend):
