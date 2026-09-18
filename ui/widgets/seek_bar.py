@@ -139,7 +139,7 @@ class SeekBar(Gtk.DrawingArea):
         # 否则下一帧轮询会用 seek 前的旧位置把进度条拉回（视觉闪一下）。
         self._freeze_after_seek()
 
-    def _freeze_after_seek(self, ms: int = 500) -> None:
+    def _freeze_after_seek(self, ms: int = 1500) -> None:
         """seek 后冻结位置跟随 ms 毫秒，之后恢复。"""
         self._seeking = True
         if self._seek_freeze_id is not None:

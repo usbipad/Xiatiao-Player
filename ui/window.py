@@ -277,6 +277,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._viz_timer = None
         self._init_visualizer()
 
+        # ---- 应用持久化的音频输出设置到后端 ----
+        # 后端启动时输出设备默认为空（PipeWire）、DSD 模式为 auto，
+        # 需把上次保存的选择下发，避免 UI 显示与后端实际不一致。
+        self._apply_audio_output_settings()
+
         # ---- 首屏：窗口先显示，重活丢到主循环空闲时做（避免启动卡半拍）----
         self._switch_page("home")
         GLib.idle_add(self._apply_cache_async)
@@ -1974,6 +1979,24 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
 
+    def _apply_audio_output_settings(self) -> None:
+        """启动时把持久化的输出设备 / DSD 模式下发到后端。
+
+        后端启动时输出设备为空（PipeWire）、DSD 模式为 auto，
+        若用户上次选了外置 DAC，需在启动时同步，否则 UI 显示与
+        实际输出不一致（显示选了设备，实际走默认）。
+        """
+        try:
+            cfg = get_config()
+            dev = cfg.get_str("output_device", "")
+            mode = cfg.get_str("dsd_output_mode", "auto")
+            # 先设 DSD 模式，再设输出设备（避免切设备后续播时用错模式）。
+            self.apply_dsd_mode(mode)
+            self.apply_output_device(dev)
+            log.info("启动应用音频输出设置: device=%r dsd_mode=%r", dev, mode)
+        except Exception as exc:
+            log.info("应用启动音频输出设置失败: %s", exc)
+
     # PlayerCore 信号
     # ============================================================
     def _connect_player_signals(self) -> None:
@@ -2681,6 +2704,22 @@ class MainWindow(Adw.ApplicationWindow):
     # ============================================================
     def _toast(self, message: str) -> None:
         try:
-            self._toast_overlay.add_toast(Adw.Toast.new(message))
+            # 若存在可见的模态子窗口（如设置窗），把 toast 加到它上面，
+            # 否则会被子窗口遮挡（用户看不到提示）。
+            target = self._visible_child_window()
+            if target is not None and hasattr(target, "add_toast"):
+                target.add_toast(Adw.Toast.new(message))
+            else:
+                self._toast_overlay.add_toast(Adw.Toast.new(message))
         except Exception:
             log.info("提示: %s", message)
+
+    def _visible_child_window(self):
+        """返回当前可见的模态子窗口（设置窗等）；没有则返回 None。"""
+        win = getattr(self, "_settings_win", None)
+        try:
+            if win is not None and win.get_visible():
+                return win
+        except Exception:
+            pass
+        return None

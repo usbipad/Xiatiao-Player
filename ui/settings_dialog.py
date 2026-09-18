@@ -21,6 +21,9 @@ class SettingsWindow(Adw.PreferencesWindow):
                  on_viz_changed=None, on_open_viz_window=None,
                  on_coloring=None) -> None:
         super().__init__()
+        # 保存父窗口：构建期 self.get_root() 可能为 None，
+        # 因此统一通过 _get_window() 获取主窗口（用于访问 player）。
+        self._parent = parent
         self.set_transient_for(parent)
         self.set_modal(True)
         self.set_title(_("设置"))
@@ -41,6 +44,13 @@ class SettingsWindow(Adw.PreferencesWindow):
         self._build_appearance_page()
         self._build_about_page()
         self._reload_dir_rows()
+
+    def _get_window(self):
+        """获取主窗口（用于访问 player）。
+
+        构建期 self.get_root() 可能为 None，故优先用构造时保存的 parent。
+        """
+        return self._parent if self._parent is not None else self.get_root()
 
     # ------------------------------------------------------------
     # 快捷键页
@@ -550,7 +560,7 @@ class SettingsWindow(Adw.PreferencesWindow):
                 cfg.set_str("dsd_output_mode", self._dsd_mode_values[idx])
                 # 下发到后端
                 try:
-                    win = self.get_root()
+                    win = self._get_window()
                     if win is not None and hasattr(win, "apply_dsd_mode"):
                         win.apply_dsd_mode(self._dsd_mode_values[idx])
                 except Exception:
@@ -561,14 +571,20 @@ class SettingsWindow(Adw.PreferencesWindow):
         # 输出设备
         dev_row = Adw.ComboRow()
         dev_row.set_title(_("输出设备"))
-        dev_row.set_subtitle(_("选择音频输出设备；自动=系统默认"))
+        dev_row.set_subtitle(_("自动=系统默认；选择具体设备则以 ALSA 独占直连硬件"))
         self._dev_values = [""]
         dev_model = Gtk.StringList()
         dev_model.append(_("自动（系统默认）"))
         try:
-            for name, desc in self._list_audio_sinks():
-                self._dev_values.append(name)
-                dev_model.append(desc)
+            win = self._get_window()
+            player = getattr(win, "player", None) if win is not None else None
+            if player is not None and hasattr(player, "list_output_devices"):
+                for dev in player.list_output_devices():
+                    dev_id = dev.get("id", "")
+                    desc = dev.get("description", dev_id)
+                    if dev_id:
+                        self._dev_values.append(dev_id)
+                        dev_model.append(desc)
         except Exception:
             pass
         dev_row.set_model(dev_model)
@@ -583,7 +599,7 @@ class SettingsWindow(Adw.PreferencesWindow):
             if 0 <= idx < len(self._dev_values):
                 cfg.set_str("output_device", self._dev_values[idx])
                 try:
-                    win = self.get_root()
+                    win = self._get_window()
                     if win is not None and hasattr(win, "apply_output_device"):
                         win.apply_output_device(self._dev_values[idx])
                 except Exception:
@@ -714,30 +730,6 @@ class SettingsWindow(Adw.PreferencesWindow):
         row.set_active(cfg.get_bool("close_to_tray", False))
         row.connect("notify::active", lambda r, _p: cfg.set_bool("close_to_tray", r.get_active()))
         behave.add(row)
-
-    @staticmethod
-    def _list_audio_sinks():
-        """列出系统 PipeWire sink，返回 [(name, 描述), ...]。"""
-        import subprocess
-        out = []
-        try:
-            r = subprocess.run(["pactl", "list", "sinks"],
-                               capture_output=True, text=True, timeout=3)
-            name = desc = None
-            for line in r.stdout.splitlines():
-                line = line.strip()
-                if line.startswith("Name:"):
-                    name = line.split(":", 1)[1].strip()
-                elif line.startswith("Description:"):
-                    desc = line.split(":", 1)[1].strip()
-                elif line.startswith("Sample Specification:") and name:
-                    # 用描述 + 采样率作为显示
-                    if desc:
-                        out.append((name, f"{desc} ({line.split(':',1)[1].strip()})"))
-                    name = desc = None
-        except Exception:
-            pass
-        return out
 
     def _on_theme_changed(self, row, _pspec) -> None:
         idx = row.get_selected()
