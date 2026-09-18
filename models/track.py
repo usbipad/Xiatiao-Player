@@ -125,7 +125,7 @@ class TrackItem(GObject.Object):
                 return False
             # 必须是无损格式
             ext = self._lossless_ext()
-            if not ext:
+            if not ext or ext not in self._LOSSLESS_EXTS:
                 return False
             return True
         except Exception:
