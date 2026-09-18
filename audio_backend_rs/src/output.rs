@@ -201,6 +201,8 @@ pub struct PipewireOutput {
     stop: Arc<AtomicBool>,
     /// PipeWire 线程句柄。
     thread: Mutex<Option<JoinHandle<()>>>,
+    /// 中断 write 的标志（切歌时让卡在 write 的解码线程退出，不销毁 stream）。
+    abort_write: Arc<AtomicBool>,
 }
 
 impl PipewireOutput {
@@ -220,7 +222,18 @@ impl PipewireOutput {
             device: Mutex::new(String::new()),
             stop: Arc::new(AtomicBool::new(false)),
             thread: Mutex::new(None),
+            abort_write: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 中断 write：让卡在 write 的解码线程立即返回（切歌用，不销毁 stream）。
+    pub fn abort_write(&self) {
+        self.abort_write.store(true, Ordering::SeqCst);
+    }
+
+    /// 清除中断标志（开始新播放前）。
+    pub fn clear_abort(&self) {
+        self.abort_write.store(false, Ordering::SeqCst);
     }
 
     /// 设置输出设备（PipeWire sink 名；空=默认）。会重建 stream 使新设备生效。
@@ -265,7 +278,9 @@ impl PipewireOutput {
             let wrote_frames = self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).push(&pcm[off..]);
             off += wrote_frames * ch;
             if off < pcm.len() {
-                if self.stop.load(Ordering::Relaxed) {
+                if self.stop.load(Ordering::Relaxed)
+                    || self.abort_write.load(Ordering::Relaxed)
+                {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(2));
@@ -540,4 +555,128 @@ fn run_pipewire(
 
     mainloop.run();
     Ok(())
+}
+
+// ============================================================
+// 统一输出后端（PipeWire 默认 / ALSA 独占）
+// ============================================================
+//
+// Engine 与解码层通过本枚举写入，无需关心底层是 PipeWire 还是 ALSA：
+//   - 输出设备为空（默认）→ PipeWire（系统默认音频接口）；
+//   - 指定了 ALSA hw 设备 → ALSA 独占直连。
+//
+// 设计：不使用 trait 对象，避免改动解码函数签名时的借用复杂度；
+// 用枚举转发，语义清晰，性能无损耗。
+
+use crate::output_alsa::AlsaOutput;
+
+/// 输出后端选择。
+pub enum AudioOut {
+    /// PipeWire（默认，走系统音频服务）。
+    Pipewire(PipewireOutput),
+    /// ALSA 独占硬件设备。
+    Alsa(AlsaOutput),
+}
+
+impl AudioOut {
+    /// 写入一块交错 f32 PCM。
+    pub fn write(&self, pcm: &[f32], rate: u32, channels: u32) {
+        match self {
+            AudioOut::Pipewire(p) => p.write(pcm, rate, channels),
+            AudioOut::Alsa(a) => a.write(pcm, rate, channels),
+        }
+    }
+
+    /// 清空输出缓冲（切歌 / seek）。
+    pub fn flush(&self) {
+        match self {
+            AudioOut::Pipewire(p) => p.flush(),
+            AudioOut::Alsa(a) => a.flush(),
+        }
+    }
+
+    pub fn pause(&self) {
+        match self {
+            AudioOut::Pipewire(p) => p.pause(),
+            AudioOut::Alsa(a) => a.pause(),
+        }
+    }
+
+    pub fn resume(&self) {
+        match self {
+            AudioOut::Pipewire(p) => p.resume(),
+            AudioOut::Alsa(a) => a.resume(),
+        }
+    }
+
+    pub fn played_frames(&self) -> u64 {
+        match self {
+            AudioOut::Pipewire(p) => p.played_frames(),
+            AudioOut::Alsa(a) => a.played_frames(),
+        }
+    }
+
+    pub fn reset_played_frames(&self, value: u64) {
+        match self {
+            AudioOut::Pipewire(p) => p.reset_played_frames(value),
+            AudioOut::Alsa(a) => a.reset_played_frames(value),
+        }
+    }
+
+    pub fn latency(&self) -> Duration {
+        match self {
+            AudioOut::Pipewire(p) => p.latency(),
+            AudioOut::Alsa(a) => a.latency(),
+        }
+    }
+
+    pub fn stop(&self) {
+        match self {
+            AudioOut::Pipewire(p) => p.stop(),
+            AudioOut::Alsa(a) => a.stop(),
+        }
+    }
+
+    /// 取出并清空后端产生的运行时错误（目前仅 ALSA 独占后端的写线程会写入）。
+    pub fn take_error(&self) -> Option<String> {
+        match self {
+            AudioOut::Pipewire(_) => None,
+            AudioOut::Alsa(a) => a.take_error(),
+        }
+    }
+
+    /// 后端是否已失败退出（ALSA 写线程失败时为 true）。
+    pub fn is_failed(&self) -> bool {
+        match self {
+            AudioOut::Pipewire(_) => false,
+            AudioOut::Alsa(a) => a.is_failed(),
+        }
+    }
+
+    /// 中断 write（切歌时让卡在 write 的解码线程退出，不销毁 stream）。
+    pub fn abort_write(&self) {
+        match self {
+            AudioOut::Pipewire(p) => p.abort_write(),
+            AudioOut::Alsa(a) => a.abort_write(),
+        }
+    }
+
+    /// 清除中断标志（开始新播放前）。
+    pub fn clear_abort(&self) {
+        match self {
+            AudioOut::Pipewire(p) => p.clear_abort(),
+            AudioOut::Alsa(a) => a.clear_abort(),
+        }
+    }
+
+    /// 以 DSD 模式写入原始 DSD 数据（仅 ALSA 独占后端支持）。
+    pub fn write_dsd(&self, data: &crate::dsd::DsdData, mode: crate::output_alsa::DsdOutputMode) {
+        match self {
+            AudioOut::Alsa(a) => a.write_dsd(data, mode),
+            // PipeWire 后端不支持原生 DSD 直通：此处不应被调用（由解码层分流）。
+            AudioOut::Pipewire(_) => {
+                eprintln!("[output] PipeWire 后端不支持 DSD 直通，已忽略（应由解码层走 pcm 软解）");
+            }
+        }
+    }
 }

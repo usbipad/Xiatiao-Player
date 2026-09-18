@@ -241,6 +241,58 @@ class RustBackend(AudioBackend):
             self.emit("effect-changed", self._effect)
         return False
 
+    def list_output_devices(self, timeout: float = 3.0) -> list:
+        """枚举可用的 ALSA 硬件输出设备（同步短连接直读）。
+
+        返回 [{"id": "hw:...", "description": "..."}, ...]。
+        后端不可用或超时时返回空列表。
+
+        说明：用独立的一次性 socket 连接直接读响应，绕开主线程事件队列。
+        若复用主连接 + 等 event，在 UI 主线程调用会与 GLib.idle_add
+        派发互相阻塞，导致永远拿不到结果（下拉为空）。
+        """
+        if not os.path.exists(self._socket_path):
+            log.warning("后端 socket 不存在，无法获取设备列表")
+            return []
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            s.connect(self._socket_path)
+        except Exception as exc:
+            log.warning("连接后端失败（获取设备列表）: %s", exc)
+            return []
+        try:
+            s.sendall((json.dumps({"cmd": "list_output_devices"}) + "\n").encode("utf-8"))
+            buf = b""
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    data = s.recv(4096)
+                except socket.timeout:
+                    break
+                if not data:
+                    break
+                buf += data
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    if not line.strip():
+                        continue
+                    try:
+                        evt = json.loads(line.decode("utf-8"))
+                    except Exception:
+                        continue
+                    if evt.get("event") == "output_devices":
+                        return [d for d in (evt.get("devices") or [])
+                                if isinstance(d, dict)]
+        except Exception as exc:
+            log.warning("获取设备列表失败: %s", exc)
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+        return []
+
     def _try_reconnect(self) -> bool:
         """尝试重新连接后端 socket（断线后自愈）。"""
         if not os.path.exists(self._socket_path):

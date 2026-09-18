@@ -153,10 +153,24 @@ class PlayerCore(GObject.Object):
             fn(mode)
 
     def set_output_device(self, name: str) -> None:
-        """下发输出设备（PipeWire sink 名；空=默认）。"""
+        """下发输出设备（ALSA hw 设备名；空=默认走 PipeWire）。"""
         fn = getattr(self._backend, "set_output_device", None)
         if callable(fn):
             fn(name)
+
+    def list_output_devices(self) -> list:
+        """枚举可用的 ALSA 硬件输出设备。
+
+        返回 [{"id": "hw:...", "description": "..."}, ...]。
+        后端不支持时返回空列表。
+        """
+        fn = getattr(self._backend, "list_output_devices", None)
+        if callable(fn):
+            try:
+                return fn()
+            except Exception:
+                return []
+        return []
 
     # ---- 查询 ----
     def state(self) -> str:

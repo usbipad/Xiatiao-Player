@@ -32,3 +32,7 @@ nix = { version = "0.30", features = ["fs", "process"] }
 # 相比 pw-cat 子进程：可自定义 client.name，少一层进程。
 pipewire = "0.10"
 libspa-sys = "0.10"
+
+# ALSA 硬件直连输出（指定输出设备时启用，绕过音频服务，独占 hw: 设备）
+# 需要系统安装 libasound2-dev（头文件）。
+alsa = "0.9"

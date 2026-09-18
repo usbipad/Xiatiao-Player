@@ -26,8 +26,10 @@ pub enum Request {
     ResetDsp,
     /// 设置 DSD 输出模式（auto/native/dop/pcm）。
     SetDsdMode { mode: String },
-    /// 设置输出设备（PipeWire sink 名；空=默认）。
+    /// 设置输出设备（ALSA hw 设备名；空=默认走 PipeWire）。
     SetOutputDevice { name: String },
+    /// 枚举可用的 ALSA 硬件输出设备。
+    ListOutputDevices,
     /// 加载卷积 IR（wav 文件路径），后续播放生效。
 
     /// 清除已加载的卷积 IR。
@@ -51,6 +53,15 @@ pub enum Event {
     AudioInfo { info: serde_json::Value },
     Effect { preset: String },
     Dsp { params: serde_json::Value },
+    /// 输出设备列表：[{"id":"hw:...","description":"..."}]。
+    OutputDevices { devices: Vec<DeviceInfo> },
+}
+
+/// 输出设备信息。
+#[derive(Debug, Serialize, Clone)]
+pub struct DeviceInfo {
+    pub id: String,
+    pub description: String,
 }
 
 impl Event {

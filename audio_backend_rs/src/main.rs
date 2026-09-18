@@ -24,6 +24,8 @@ mod decode;
 mod decode_ffmpeg;
 mod deps;
 mod output;
+mod output_alsa;
+mod dsd;
 mod reverb;
 mod ipc;
 mod protocol;

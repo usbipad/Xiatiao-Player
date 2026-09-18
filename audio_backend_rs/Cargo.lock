@@ -2299,6 +2299,7 @@ name = "xiatiao-audio-backend"
 version = "0.1.0"
 dependencies = [
  "CamillaDSP",
+ "alsa",
  "crossbeam-channel",
  "libspa-sys",
  "nix",
