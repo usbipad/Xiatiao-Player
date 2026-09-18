@@ -1663,81 +1663,86 @@ class MainWindow(Adw.ApplicationWindow):
             return
         # 用权威对象（避免拿到包装对象导致参数为默认值）
         track = self._resolve_track(track) or track
-        import os as _os
         try:
-            # 编码格式：从文件扩展名推断
-            src = getattr(track, "filepath", "") or getattr(track, "stream_url", "") or ""
-            fmt = ""
-            if "." in src:
-                pp = src.split("?", 1)[0]
-                if "." in pp:
-                    fmt = pp.rsplit(".", 1)[-1].upper()
-            # 采样率（Hz → kHz）
-            sr = int(getattr(track, "sample_rate", 0) or 0)
-            sr_txt = f"{sr / 1000:.1f} kHz".replace(".0 kHz", " kHz") if sr else "未知"
-            # 位深
-            bd = int(getattr(track, "bit_depth", 0) or 0)
-            bd_txt = f"{bd} bit" if bd else "未知"
-            # 声道
-            ch = int(getattr(track, "channels", 0) or 0)
-            ch_txt = {1: "单声道 (1)", 2: "立体声 (2)"}.get(ch, f"{ch} 声道") if ch else "未知"
-            # 码率（bps → kbps）
-            br = int(getattr(track, "bitrate", 0) or 0)
-            br_txt = f"{br // 1000} kbps" if br else "未知"
-            rows = [
-                ("歌名", track.title or ""),
-                ("歌手", track.artist or ""),
-                ("专辑", track.album or ""),
-                ("时长", track.duration or ""),
-                (_("编码格式"), fmt or _("未知")),
-                ("采样率", sr_txt),
-                ("位深", bd_txt),
-                ("声道", ch_txt),
-                ("码率", br_txt),
-            ]
-            path = getattr(track, "filepath", "") or ""
-            if path:
-                rows.append(("文件路径", path))
-                try:
-                    size = _os.path.getsize(path)
-                    rows.append(("文件大小", _human_size(size)))
-                except OSError:
-                    pass
-            # 构造弹窗
-            dialog = Adw.Dialog()
-            dialog.set_title(_("歌曲信息"))
-            dialog.set_content_width(520)
-            dialog.set_content_height(400)
-            toolbar = Adw.ToolbarView()
-            toolbar.add_top_bar(Adw.HeaderBar())
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-            box.set_margin_top(16)
-            box.set_margin_bottom(16)
-            box.set_margin_start(16)
-            box.set_margin_end(16)
-            for label, value in rows:
-                lb = Gtk.Label()
-                lb.set_markup(f"<b>{_glib_escape(label)}</b>")
-                lb.set_halign(Gtk.Align.START)
-                box.append(lb)
-                vl = Gtk.Label(label=value or "—")
-                vl.set_halign(Gtk.Align.START)
-                vl.set_selectable(True)
-                vl.set_wrap(True)
-                vl.add_css_class("dim-label")
-                box.append(vl)
-            scroll = Gtk.ScrolledWindow()
-            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-            scroll.set_vexpand(True)
-            scroll.set_child(box)
-            toolbar.set_content(scroll)
-            dialog.set_child(toolbar)
-            dialog.present(self)
+            rows = self._build_track_info_rows(track)
+            self._show_info_dialog(rows)
         except Exception as exc:
             log.debug("查看歌曲信息失败: %s", exc)
 
+    @staticmethod
+    def _build_track_info_rows(track) -> list:
+        """收集曲目信息行 [(标签, 值), ...]（纯逻辑，不碰 UI）。"""
+        import os as _os
+        # 编码格式：从文件扩展名推断
+        src = getattr(track, "filepath", "") or getattr(track, "stream_url", "") or ""
+        fmt = ""
+        if "." in src:
+            pp = src.split("?", 1)[0]
+            if "." in pp:
+                fmt = pp.rsplit(".", 1)[-1].upper()
+        sr = int(getattr(track, "sample_rate", 0) or 0)
+        sr_txt = f"{sr / 1000:.1f} kHz".replace(".0 kHz", " kHz") if sr else "未知"
+        bd = int(getattr(track, "bit_depth", 0) or 0)
+        bd_txt = f"{bd} bit" if bd else "未知"
+        ch = int(getattr(track, "channels", 0) or 0)
+        ch_txt = {1: "单声道 (1)", 2: "立体声 (2)"}.get(ch, f"{ch} 声道") if ch else "未知"
+        br = int(getattr(track, "bitrate", 0) or 0)
+        br_txt = f"{br // 1000} kbps" if br else "未知"
+        rows = [
+            ("歌名", track.title or ""),
+            ("歌手", track.artist or ""),
+            ("专辑", track.album or ""),
+            ("时长", track.duration or ""),
+            (_("编码格式"), fmt or _("未知")),
+            ("采样率", sr_txt),
+            ("位深", bd_txt),
+            ("声道", ch_txt),
+            ("码率", br_txt),
+        ]
+        path = getattr(track, "filepath", "") or ""
+        if path:
+            rows.append(("文件路径", path))
+            try:
+                rows.append(("文件大小", _human_size(_os.path.getsize(path))))
+            except OSError:
+                pass
+        return rows
+
+    def _show_info_dialog(self, rows: list) -> None:
+        """用信息行构建并显示歌曲信息弹窗。"""
+        dialog = Adw.Dialog()
+        dialog.set_title(_("歌曲信息"))
+        dialog.set_content_width(520)
+        dialog.set_content_height(400)
+        toolbar = Adw.ToolbarView()
+        toolbar.add_top_bar(Adw.HeaderBar())
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        for label, value in rows:
+            lb = Gtk.Label()
+            lb.set_markup(f"<b>{_glib_escape(label)}</b>")
+            lb.set_halign(Gtk.Align.START)
+            box.append(lb)
+            vl = Gtk.Label(label=value or "—")
+            vl.set_halign(Gtk.Align.START)
+            vl.set_selectable(True)
+            vl.set_wrap(True)
+            vl.add_css_class("dim-label")
+            box.append(vl)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+        scroll.set_child(box)
+        toolbar.set_content(scroll)
+        dialog.set_child(toolbar)
+        dialog.present(self)
+
     def _track_ctx_copy_path(self, track) -> None:
         """复制文件路径到剪贴板。"""
+        # （_track_ctx_info 已拆为 _build_track_info_rows + _show_info_dialog）
         if not isinstance(track, TrackItem):
             return
         path = getattr(track, "filepath", "") or ""
