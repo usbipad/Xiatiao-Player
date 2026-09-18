@@ -152,8 +152,15 @@ class MainWindow(Adw.ApplicationWindow):
         # 外层 Overlay：承载启动闪屏（叠在内容之上，淡出后移除）
         self._root_overlay = Gtk.Overlay()
         self._root_overlay.set_child(self._toast_overlay)
-        self._splash = self._build_splash()
-        self._root_overlay.add_overlay(self._splash)
+        # 闪屏控制器（见 ui/splash.py）：通过回调注入依赖，与窗口解耦
+        from .splash import SplashController
+        self._splash_ctrl = SplashController(
+            overlay_provider=lambda: self._root_overlay,
+            has_library_to_load=self._has_library_to_load,
+            is_library_loaded=self._is_local_library_loaded,
+            is_cover_busy=self._is_cover_busy,
+        )
+        self._root_overlay.add_overlay(self._splash_ctrl.build())
         self.set_content(self._root_overlay)
 
         self._main_stack.add_named(root_box, "main")
@@ -354,167 +361,25 @@ class MainWindow(Adw.ApplicationWindow):
             )
 
     # ============================================================
-    # 启动闪屏（Splash）
+    # 启动闪屏（Splash）—— 逻辑已抽到 ui/splash.py，此处仅做转发
     # ============================================================
-    _SPLASH_MIN_MS = 400      # 最短显示时长（避免一闪而过）
-    _SPLASH_FADE_MS = 400     # 淡出时长
-    _SPLASH_MAX_MS = 5000     # 兜底：最长等待，超时强制淡出
-    _COVER_POLL_MS = 200      # 轮询封面是否空闲的间隔
-    _COVER_IDLE_TICKS = 3     # 连续多少次空闲才认为稳定（3×200=600ms 静默）
-
-    def _build_splash(self) -> Gtk.Widget:
-        """构建启动闪屏：居中 logo + 应用名 + spinner。"""
-        import time as _time
-        self._splash_t0 = _time.monotonic()
-        self._splash_fade_id = 0
-        self._splash_timeout_id = 0
-        self._splash_want_fade = False
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        box.set_halign(Gtk.Align.CENTER)
-        box.set_valign(Gtk.Align.CENTER)
-
-        # logo：优先用项目根目录的 image.png，其次内置 256px 图标
-        logo = Gtk.Image()
-        logo.set_pixel_size(128)
-        logo.add_css_class("splash-logo")
-        try:
-            project_root = os.path.dirname(os.path.dirname(__file__))
-            candidates = [
-                os.path.join(project_root, "image.png"),
-                os.path.join(project_root, "data", "icons", "xiatiao-256.png"),
-            ]
-            logo_path = next((p for p in candidates if os.path.isfile(p)), None)
-            if logo_path:
-                logo.set_from_file(logo_path)
-            else:
-                logo.set_from_icon_name("xiatiao")
-        except Exception:
-            logo.set_from_icon_name("xiatiao")
-        box.append(logo)
-
-        title = Gtk.Label(label="Xiatiao")
-        title.add_css_class("splash-title")
-        box.append(title)
-
-        subtitle = Gtk.Label(label=_("虾条播放器"))
-        subtitle.add_css_class("splash-subtitle")
-        box.append(subtitle)
-
-        spinner = Adw.Spinner()
-        spinner.set_size_request(24, 24)
-        spinner.set_halign(Gtk.Align.CENTER)
-        box.append(spinner)
-
-        # 整层背景：跟随窗口背景色
-        overlay = Gtk.Box()
-        overlay.add_css_class("splash-overlay")
-        overlay.set_hexpand(True)
-        overlay.set_vexpand(True)
-        overlay.append(box)
-        return overlay
-
-    def _on_window_mapped(self, *_args) -> None:
-        """窗口首次 map（显示）后决定何时淡出 splash。
-
-        - 无音乐目录 / 曲库为空：没有封面要等，直接淡出显示空界面；
-        - 有曲库：等首屏封面加载完成再淡出，并挂兜底超时。
-        """
-        if not self._has_library_to_load():
-            # 没有内容可等：直接按最短显示时长淡出，不进入封面轮询
-            self._splash_want_fade = True
-            import time as _time
-            elapsed_ms = (_time.monotonic() - getattr(self, "_splash_t0", 0.0)) * 1000.0
-            delay = max(0, int(self._SPLASH_MIN_MS - elapsed_ms))
-            self._splash_fade_id = GLib.timeout_add(delay, self._start_splash_fade)
-            return
-        # 就绪条件可能已经满足（如 map 前缓存已填），先检查一次
-        self._mark_splash_ready_if_loaded()
-        # 兜底：无论是否就绪，最多等 _SPLASH_MAX_MS 强制淡出
-        if not self._splash_timeout_id:
-            self._splash_timeout_id = GLib.timeout_add(
-                self._SPLASH_MAX_MS, self._on_splash_timeout)
-
     def _has_library_to_load(self) -> bool:
-        """是否有音乐目录需要加载（决定是否值得等封面）。
-
-        只看「是否配置了音乐目录」：有目录就可能要扫描/加载封面，值得等；
-        没目录则无内容可等，直接退。不能用当前库是否已填充判断——首次
-        扫描未完成时库为空，但确实有内容要加载。
-        """
+        """是否有音乐目录需要加载（决定是否值得等封面）。"""
         try:
             return bool(get_config().get_music_dirs())
         except Exception:
             return False
 
-    def _on_splash_timeout(self) -> bool:
-        """兜底超时：强制淡出 splash，避免封面卡住时一直不消失。"""
-        self._splash_timeout_id = 0
-        self._splash_want_fade = True
-        if self._splash_fade_id:
-            return False
-        import time as _time
-        elapsed_ms = (_time.monotonic() - getattr(self, "_splash_t0", 0.0)) * 1000.0
-        delay = max(0, int(self._SPLASH_MIN_MS - elapsed_ms))
-        self._splash_fade_id = GLib.timeout_add(delay, self._start_splash_fade)
-        return False
-
-    def _mark_splash_ready_if_loaded(self) -> None:
-        """若首屏数据已就绪（缓存已填 / 曲库已有），请求淡出。"""
+    def _is_local_library_loaded(self) -> bool:
+        """本地曲库是否已就绪（供闪屏判断可否淡出）。"""
         try:
             provider = self._get_provider(SOURCE_LOCAL)
-            has_lib = bool(provider is not None and provider.get_library())
+            return bool(provider is not None and provider.get_library())
         except Exception:
-            has_lib = False
-        if has_lib:
-            self._request_splash_fade()
-
-    def _request_splash_fade(self) -> None:
-        """请求淡出 splash：进入「等首屏封面加载完成」阶段。
-
-        不立即淡出：缓存读完时列表可能还没开始 bind，此刻封面尚未加载，
-        直接退会看到「主界面空白 → 封面闪出」。改为轮询封面加载状态，
-        连续多次空闲（静默期）才认为首屏稳定，再淡出。
-        """
-        if getattr(self, "_splash", None) is None:
-            return
-        if getattr(self, "_splash_want_fade", False):
-            return
-        self._splash_want_fade = True
-        self._cover_idle_ticks = 0
-        if self._splash_fade_id:
-            return
-        self._splash_fade_id = GLib.timeout_add(
-            self._COVER_POLL_MS, self._poll_splash_ready)
-
-    def _poll_splash_ready(self) -> bool:
-        """轮询首屏是否稳定：封面连续空闲 _COVER_IDLE_TICKS 次就淡出。
-
-        返回 True 继续轮询。用「连续静默」而非「一次空闲」判断，可吸收
-        「忙→闲→忙」（新一批行 bind）的抖动，等封面真正加载/渲染稳定后
-        再露出主界面。
-        """
-        if getattr(self, "_splash", None) is None:
             return False
-        if self._cover_busy():
-            self._cover_idle_ticks = 0
-            return True
-        self._cover_idle_ticks = getattr(self, "_cover_idle_ticks", 0) + 1
-        if self._cover_idle_ticks < self._COVER_IDLE_TICKS:
-            return True
-        # 稳定：满足最短显示时长后执行淡出
-        self._splash_fade_id = 0
-        import time as _time
-        elapsed_ms = (_time.monotonic() - getattr(self, "_splash_t0", 0.0)) * 1000.0
-        delay = max(0, int(self._SPLASH_MIN_MS - elapsed_ms))
-        if delay > 0:
-            self._splash_fade_id = GLib.timeout_add(delay, self._start_splash_fade)
-        else:
-            self._start_splash_fade()
-        return False
 
     @staticmethod
-    def _cover_busy() -> bool:
+    def _is_cover_busy() -> bool:
         """首屏是否有封面仍在加载。"""
         try:
             from ui.pages import cover_activity
@@ -522,54 +387,29 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             return False
 
+    def _on_window_mapped(self, *_args) -> None:
+        """窗口首次 map（显示）后交给闪屏控制器决定何时淡出。"""
+        ctrl = getattr(self, "_splash_ctrl", None)
+        if ctrl is not None:
+            ctrl.on_window_mapped()
+
     def _on_cover_activity_changed(self, _obj, busy: bool) -> None:
-        """封面加载忙闲变化：变空闲时立即检查一次，加快淡出（无需等轮询周期）。"""
-        if busy:
-            return
-        if getattr(self, "_splash", None) is None:
-            return
-        if not getattr(self, "_splash_want_fade", False):
-            return
-        # 已在等待淡出则交给轮询；否则立即起一轮轮询
-        if not self._splash_fade_id:
-            self._cover_idle_ticks = 0
-            self._splash_fade_id = GLib.timeout_add(
-                self._COVER_POLL_MS, self._poll_splash_ready)
+        """封面加载忙闲变化：转发给闪屏控制器。"""
+        ctrl = getattr(self, "_splash_ctrl", None)
+        if ctrl is not None:
+            ctrl.on_cover_activity_changed(busy)
 
-    def _start_splash_fade(self) -> bool:
-        """开始淡出 splash；结束后从 overlay 移除。"""
-        self._splash_fade_id = 0
-        splash = getattr(self, "_splash", None)
-        if splash is None:
-            return False
-        try:
-            anim = Adw.TimedAnimation.new(
-                splash, 1.0, 0.0, self._SPLASH_FADE_MS,
-                Adw.PropertyAnimationTarget.new(splash, "opacity"),
-            )
-            anim.connect("done", self._on_splash_faded)
-            anim.play()
-        except Exception:
-            log.debug("启动闪屏淡出失败，直接移除", exc_info=True)
-            self._on_splash_faded(None)
-        return False
+    def _mark_splash_ready_if_loaded(self) -> None:
+        """若首屏数据已就绪（缓存已填 / 曲库已有），请求淡出。"""
+        ctrl = getattr(self, "_splash_ctrl", None)
+        if ctrl is not None:
+            ctrl.mark_ready_if_loaded()
 
-    def _on_splash_faded(self, *_args) -> None:
-        """淡出完成：移除 splash 层，恢复主界面交互。"""
-        # 清理兜底计时器
-        try:
-            if getattr(self, "_splash_timeout_id", 0):
-                GLib.source_remove(self._splash_timeout_id)
-                self._splash_timeout_id = 0
-        except Exception:
-            pass
-        splash = getattr(self, "_splash", None)
-        if splash is not None:
-            try:
-                self._root_overlay.remove_overlay(splash)
-            except Exception:
-                log.debug("移除启动闪屏失败", exc_info=True)
-        self._splash = None
+    def _request_splash_fade(self) -> None:
+        """请求淡出 splash（如扫描完成时调用）。"""
+        ctrl = getattr(self, "_splash_ctrl", None)
+        if ctrl is not None:
+            ctrl.request_fade()
 
     # ============================================================
     # HeaderBar
@@ -2651,11 +2491,20 @@ class MainWindow(Adw.ApplicationWindow):
     def _cancel_all_timers(self) -> None:
         """统一移除本窗口注册的所有 GLib 定时器。
 
-        为什么集中管理：定时器散落各处（splash 淡出/兜底、DSP 防抖、seek 恢复），
+        为什么集中管理：定时器散落各处（DSP 防抖、seek 恢复等），
         窗口销毁后若仍有定时器待触发，会在控件已析构后回调，属隐患。
         这里统一 source_remove，幂等、可重复调用。
+        闪屏定时器由 SplashController 自行管理，这里调用其 cancel()。
         """
-        for attr in ("_splash_fade_id", "_splash_timeout_id", "_dsp_yaml_timer"):
+        # 闪屏定时器
+        try:
+            ctrl = getattr(self, "_splash_ctrl", None)
+            if ctrl is not None:
+                ctrl.cancel()
+        except Exception:
+            pass
+        # 窗口自身定时器
+        for attr in ("_dsp_yaml_timer",):
             tid = getattr(self, attr, 0)
             if tid:
                 try:
