@@ -43,7 +43,9 @@ class PlayerPanel(Gtk.Box):
         on_effect_settings: Callable[[], None] | None = None,
         on_queue_activate: Callable[[object], None] | None = None,
         on_queue_action: Callable[[str, object], None] | None = None,
+        on_add_queue: Callable[[], None] | None = None,
     ) -> None:
+        self._on_add_queue = on_add_queue
         self._on_queue_activate = on_queue_activate
         self._on_queue_action = on_queue_action
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -268,7 +270,7 @@ class PlayerPanel(Gtk.Box):
         # 音效：点击弹出模态对话框（预设列表 + DSP 设置入口）
         self._effect_btn = Gtk.Button()
         self._effect_btn.set_child(Gtk.Image.new_from_icon_name(
-            "applications-multimedia-symbolic"))
+            "multimedia-volume-control-symbolic"))
         self._effect_btn.add_css_class("flat")
         self._effect_btn.add_css_class("np-skip-btn")
         self._effect_btn.set_tooltip_text(_("音效"))
@@ -278,9 +280,16 @@ class PlayerPanel(Gtk.Box):
         self._effect_current = ""
         self._effect_dialog = None
 
+        # 添加到播放队列：把当前播放曲目加入队列末尾
+        self._add_queue_btn = Gtk.Button(icon_name="list-add-symbolic")
+        self._add_queue_btn.add_css_class("flat")
+        self._add_queue_btn.add_css_class("np-skip-btn")
+        self._add_queue_btn.set_tooltip_text(_("添加到播放队列"))
+        self._add_queue_btn.connect("clicked", lambda *_: self._on_add_queue and self._on_add_queue())
+        func_box.append(self._add_queue_btn)
+
         # 其余功能图标（Tonearm 风格；暂为装饰，点击提示）
         for icon, tip in (
-            ("list-add-symbolic", "添加到播放列表"),
             ("folder-download-symbolic", "下载"),
             ("emblem-shared-symbolic", "分享"),
         ):
