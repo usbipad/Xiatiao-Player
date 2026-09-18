@@ -1081,100 +1081,29 @@ class MainWindow(Adw.ApplicationWindow):
         _t0 = _t.monotonic()
         cover_raw = extract_cover(filepath) if is_local else None
         _t1 = _t.monotonic()
-        cover_panel_tex = None   # panel 用 Gdk.Texture（后台线程直接建好）
-        cover_np_tex = None      # 沉浸页用 Gdk.Texture
-        bg_tex = None            # 沉浸页背景模糊图（Gdk.Texture）
-        bg_dark = None           # 背景是否偏暗（决定前景切亮色）
-        bg_rgb = None            # 沉浸页背景色（后台算好，主线程只接收）
-        seekbar_rgb = None       # 进度条色
-        if cover_raw:
-            try:
-                from models.coverart import make_cover_textures
-                sz_panel = getattr(getattr(self, "player_panel", None), "cover", None)
-                p_size = getattr(sz_panel, "cover_size", 320)
-                n_size = getattr(getattr(self, "now_playing", None), "_COVER_PX", 320)
-                # 一次解码 → 两个尺寸的 GdkTexture（跳过 PNG，圆角交给 CSS）。
-                # 主色始终提取：主界面进度条也要跟随封面色（在后台线程算，不卡 UI）。
-                texs, dom_raw = make_cover_textures(
-                    cover_raw, [p_size, n_size], want_color=True,
-                )
-                cover_panel_tex = texs.get(p_size)
-                cover_np_tex = texs.get(n_size)
-                # 算好背景/进度条色（主线程只接收，不再取色）
-                if dom_raw:
-                    try:
-                        r, g, b = dom_raw
-                        # 背景：取封面主色的「亮色系」（HSL 提亮，保留色相/饱和），
-                        # 而非 RGB 向白混——后者容易发灰发闷。
-                        bg_rgb = lighten_for_background((r, g, b))
-                        _f = 0.72
-                        seekbar_rgb = (r / 255.0 * _f, g / 255.0 * _f, b / 255.0 * _f)
-                    except Exception:
-                        bg_rgb = None
-                        seekbar_rgb = None
-                # 背景模糊图：仅当用户开启「沉浸页背景模糊」时生成。
-                # 640x480 足够铺满（Picture COVER 会再拉伸），后台线程生成不卡 UI。
-                try:
-                    from models.coverart import make_blurred_bg
-                    from config.settings import get_config as _get_cfg
-                    _cfg = _get_cfg()
-                    _blur_on = _cfg.get_bool("nowplaying_blur_bg", True)
-                    _blur_px = _cfg.get_int("nowplaying_blur_px", 6)
-                    png = None
-                    if _blur_on:
-                        # blur_px 调小 → 更糊；lighten 叠白色提亮遮罩。
-                        png = make_blurred_bg(cover_raw, 640, 480,
-                                              darken=0.0, blur_px=_blur_px,
-                                              lighten=0.25)
-                    else:
-                        # 关闭背景功能：背景回退主题色；进度条仍跟随封面主色。
-                        bg_rgb = None
-                    if png:
-                        from gi.repository import Gdk as _Gdk, GLib as _GLib
-                        bg_tex = _Gdk.Texture.new_from_bytes(
-                            _GLib.Bytes.new(png)
-                        )
-                        # 算模糊背景的平均亮度，偏暗则前景切亮色
-                        try:
-                            import gi as _gi
-                            _gi.require_version("GdkPixbuf", "2.0")
-                            from gi.repository import GdkPixbuf as _GP, Gio as _Gio
-                            _st = _Gio.MemoryInputStream.new_from_bytes(_GLib.Bytes.new(png))
-                            _pb = _GP.Pixbuf.new_from_stream(_st, None)
-                            _w, _h = _pb.get_width(), _pb.get_height()
-                            _data = bytes(_pb.get_pixels())
-                            _stride = _pb.get_rowstride()
-                            _nch = _pb.get_n_channels()
-                            _sr = _sg = _sb = _n = 0
-                            _step = max(1, min(_w, _h) // 16)
-                            for _y in range(0, _h, _step):
-                                _base = _y * _stride
-                                for _x in range(0, _w, _step):
-                                    _o = _base + _x * _nch
-                                    _sr += _data[_o]
-                                    _sg += _data[_o + 1]
-                                    _sb += _data[_o + 2]
-                                    _n += 1
-                            if _n:
-                                _lum = (_sr * 299 + _sg * 587 + _sb * 114) / (_n * 255000.0)
-                                # 阈值可配置（默认 0.65）：中灰及更暗背景切亮色前景。
-                                _thr = _cfg.get("nowplaying_dark_threshold", 0.65)
-                                try:
-                                    _thr = float(_thr)
-                                except Exception:
-                                    _thr = 0.65
-                                bg_dark = _lum < _thr
-                        except Exception:
-                            bg_dark = None
-                except Exception:
-                    bg_tex = None
-                try:
-                    self._pending_cover_raw = cover_raw
-                except Exception:
-                    pass
-            except Exception:
-                cover_panel_tex = None
-                cover_np_tex = None
+        # 封面处理（缩放/主色/背景模糊/亮度）委托给 services/track_assets.py
+        from services.track_assets import load_cover_assets
+        from config.settings import get_config as _get_cfg
+        _cfg = _get_cfg()
+        sz_panel = getattr(getattr(self, "player_panel", None), "cover", None)
+        p_size = getattr(sz_panel, "cover_size", 320)
+        n_size = getattr(getattr(self, "now_playing", None), "_COVER_PX", 320)
+        assets = load_cover_assets(
+            cover_raw, p_size, n_size,
+            blur_on=_cfg.get_bool("nowplaying_blur_bg", True),
+            blur_px=_cfg.get_int("nowplaying_blur_px", 6),
+            dark_threshold=_cfg.get("nowplaying_dark_threshold", 0.65),
+        )
+        cover_panel_tex = assets["panel_tex"]
+        cover_np_tex = assets["np_tex"]
+        bg_tex = assets["bg_tex"]
+        bg_dark = assets["bg_dark"]
+        bg_rgb = assets["bg_rgb"]
+        seekbar_rgb = assets["seekbar_rgb"]
+        try:
+            self._pending_cover_raw = assets["pending_cover_raw"]
+        except Exception:
+            pass
         _t2 = _t.monotonic()
         lyrics = load_lyrics(filepath) if is_local else []
         _t3 = _t.monotonic()
