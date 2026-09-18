@@ -1066,7 +1066,7 @@ class MainWindow(Adw.ApplicationWindow):
             target=self._load_track_assets_bg,
             args=(token, filepath, is_local, track, restoring, want_color),
             daemon=True,
-            name="qqm-track-assets",
+            name="xiatiao-track-assets",
         ).start()
 
     def _apply_instant_cover_placeholder(self, filepath: str) -> None:

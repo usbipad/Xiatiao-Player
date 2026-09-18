@@ -1,8 +1,6 @@
 """歌曲列表：ColumnView 构建、单元格工厂、封面懒加载、右键菜单。
 
-从原 ui/pages.py 抽出。列表只消费 TrackItem，不接触 Provider 内部。
-注：原代码中的在线音源封面分支（cover_url / cover_bytes / qq_api）
-    已随在线音源功能移除而清理。
+列表只消费 TrackItem，不接触 Provider 内部。
 """
 from __future__ import annotations
 

@@ -133,15 +133,14 @@ class RustBackend(AudioBackend):
                 raw = f.read()
         except OSError:
             return False
-        prefixes = (b"XIATIAO_BACKEND_SOCKET=", b"QQMUSIC_BACKEND_SOCKET=")
+        prefix = b"XIATIAO_BACKEND_SOCKET="
         for item in raw.split(b"\x00"):
-            for prefix in prefixes:
-                if item.startswith(prefix):
-                    try:
-                        val = item[len(prefix):].decode("utf-8", "ignore")
-                    except Exception:
-                        return False
-                    return os.path.abspath(val) == want_sock
+            if item.startswith(prefix):
+                try:
+                    val = item[len(prefix):].decode("utf-8", "ignore")
+                except Exception:
+                    return False
+                return os.path.abspath(val) == want_sock
         return False
 
     def _cleanup_stale(self, binary: str) -> None:

@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 def _unescape(text: str) -> str:
     """解码歌词里的 HTML 实体（&apos; &amp; &quot; 等）。
 
-    在线歌词（QQ 音乐 API）常带 HTML 转义，内嵌/本地歌词也可能有，
+    歌词文本常带 HTML 转义（在线/内嵌/本地都可能），
     统一解码成正常字符，避免显示成 &apos; 这种。
     """
     if not text:

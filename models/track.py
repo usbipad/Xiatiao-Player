@@ -8,7 +8,6 @@ from gi.repository import GObject
 
 
 SOURCE_LOCAL = "local"
-SOURCE_QQMUSIC = "qqmusic"
 
 
 class TrackItem(GObject.Object):

@@ -1,10 +1,9 @@
 """本地「我喜欢」存储（SQLite）。
 
-说明：上游 qq-music-api 没有写接口（微信登录也算不出 g_tk），
-无法同步到 QQ 音乐账号，因此本地点喜欢存到本地库。
+收藏记录保存在本地库（不依赖任何在线账号）。
 
 位置：$XDG_DATA_HOME/xiatiao/liked.db（默认 ~/.local/share/xiatiao/）。
-表 liked_tracks：以 source_id（song_mid / filepath）为主键，存曲目快照 + 喜欢时间。
+表 liked_tracks：以 source_id（filepath 等）为主键，存曲目快照 + 喜欢时间。
 """
 from __future__ import annotations
 

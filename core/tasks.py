@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 #: 全局有界线程池：封面读取/元数据解析/网络等低频后台任务共用。
 #  用固定容量避免快速连切歌时无限起线程（线程创建/销毁本身也是开销）。
 #  max_workers 取较小值：这些任务多为 IO 密集，且并发过高会争抢 GIL。
-_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="qqm-async")
+_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="xiatiao-async")
 
 
 class TaskToken:
