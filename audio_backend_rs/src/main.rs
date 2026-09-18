@@ -33,6 +33,15 @@ mod viz;
 type SharedWriter = Arc<Mutex<UnixStream>>;
 
 fn main() {
+    // 父进程（GUI 应用）退出时，让本进程自动收到 SIGTERM —— 避免应用
+    // 非正常退出（崩溃 / 被 kill）时后端残留成孤儿进程。
+    #[cfg(target_os = "linux")]
+    {
+        use nix::sys::prctl;
+        use nix::sys::signal::Signal;
+        let _ = prctl::set_pdeathsig(Signal::SIGTERM);
+    }
+
     // 启动时探测外部依赖（便于打包后诊断）
     deps::probe_all();
 

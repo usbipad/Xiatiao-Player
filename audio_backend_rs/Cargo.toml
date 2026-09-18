@@ -26,7 +26,7 @@ parking_lot = "0.12"
 # camillalib 用它从字符串加载配置（避免写临时文件）
 yaml_serde = "0.10"
 # 可视化旁路：以标准方式打开非阻塞 FIFO（O_NONBLOCK）
-nix = { version = "0.30", features = ["fs"] }
+nix = { version = "0.30", features = ["fs", "process"] }
 
 # 原生 PipeWire 输出后端（XIATIAO_AUDIO_BACKEND=pipewire 启用）
 # 相比 pw-cat 子进程：可自定义 client.name，少一层进程。
