@@ -35,13 +35,19 @@ const CLIENT_NAME: &str = "Xiatiao Player";
 /// 固定为时间常量，按流采样率换算成帧数，保证任何采样率下回调间隔一致。
 const STREAM_LATENCY_MS: f64 = 20.0;
 
-/// 应用侧环形缓冲目标「时间」（秒）。缓冲上限越大，越能吸收解码抖动。
-/// 取 2 秒：足够覆盖解码/DSP/调度的瞬时抖动，内存开销可接受。
-const RING_SECONDS: f64 = 2.0;
+/// 应用侧环形缓冲目标「时间」（秒）。
+///
+/// 注意：缓冲**同时**决定了「参数变化到听见」的最大延迟——缓冲里积压的
+/// 数据必须先播完，新的 DSP/音效才生效。因此**不能取太大**。
+/// 取 0.1 秒：足够吸收解码/调度的瞬时抖动（防 xrun），延迟又可忽略。
+/// （此前取 2.0 秒，配合按 768kHz 预分配，导致 48kHz 下实际积压 ~32 秒，
+///  表现为「切音效/调 DSP 要等十几秒才生效」。）
+const RING_SECONDS: f64 = 0.2;
 
-/// 预分配环形缓冲时假定的最高采样率。与 engine 的采样率上限一致（768kHz），
-/// 保证任何被允许送入输出的采样率下缓冲都够大。
-const RING_MAX_RATE: u32 = 768_000;
+/// 首次构造时（尚不知实际采样率）的假定采样率。
+/// 真正的缓冲会在 rebuild(rate) 时**按实际采样率**重建，
+/// 保证任何采样率下缓冲时长都等于 RING_SECONDS。
+const RING_DEFAULT_RATE: u32 = 48_000;
 
 /// 最大声道数（通道位置数组用）。
 const MAX_CHANNELS: usize = 2;
@@ -165,7 +171,11 @@ impl Ring {
 // ============================================================
 
 struct Shared {
-    ring: Ring,
+    /// 环形缓冲。用 Mutex 包裹：仅在 rebuild 时替换（非 RT 路径），
+    /// RT 回调/push 短暂 lock 取用（无竞争时开销极小）。
+    /// 这样可**按实际采样率**重建容量，避免「按最高采样率预分配」
+    /// 导致低采样率下缓冲时长远超预期（曾因此引入 ~32 秒延迟）。
+    ring: Mutex<Ring>,
     channels: AtomicUsize,
     paused: AtomicBool,
     /// 是否已播放过至少一帧（用于区分「播放中欠载」与「刚启动」）。
@@ -196,10 +206,10 @@ pub struct PipewireOutput {
 impl PipewireOutput {
     pub fn new() -> Self {
         let ch = 2usize;
-        let frames_cap = ring_frames(RING_MAX_RATE, ch);
+        let frames_cap = ring_frames(RING_DEFAULT_RATE, ch);
         Self {
             shared: Arc::new(Shared {
-                ring: Ring::new(frames_cap, ch),
+                ring: Mutex::new(Ring::new(frames_cap, ch)),
                 channels: AtomicUsize::new(ch),
                 paused: AtomicBool::new(true),
                 started: AtomicBool::new(false),
@@ -238,7 +248,7 @@ impl PipewireOutput {
                 cur_fmt, rate, channels
             );
             self.shared.channels.store(channels as usize, Ordering::Relaxed);
-            self.shared.ring.clear();
+            self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).clear();
             self.rebuild(rate, channels);
         } else {
             // 仅在 rate 首次出现时打印，避免刷屏
@@ -252,7 +262,7 @@ impl PipewireOutput {
         let ch = channels as usize;
         let mut off = 0;
         while off < pcm.len() {
-            let wrote_frames = self.shared.ring.push(&pcm[off..]);
+            let wrote_frames = self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).push(&pcm[off..]);
             off += wrote_frames * ch;
             if off < pcm.len() {
                 if self.stop.load(Ordering::Relaxed) {
@@ -265,7 +275,7 @@ impl PipewireOutput {
 
     /// 清空缓冲（切歌 / seek）。
     pub fn flush(&self) {
-        self.shared.ring.clear();
+        self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     pub fn pause(&self) {
@@ -308,6 +318,16 @@ impl PipewireOutput {
         eprintln!("[output][rate] REBUILD 开始：rate={rate} ch={channels} device='{device}'");
         self.stop();
         eprintln!("[output][rate] 旧 stream 已停止（线程已 join）");
+        // 按实际采样率重建环形缓冲：保证缓冲时长 == RING_SECONDS，
+        // 不随采样率变化（这是消除「参数变化延迟」的关键）。
+        {
+            let ch = channels.max(1) as usize;
+            let frames_cap = ring_frames(rate, ch);
+            let mut g = self.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+            *g = Ring::new(frames_cap, ch);
+            eprintln!("[output][rate] 环形缓冲按 rate={rate} 重建：{} 帧（约 {:.0} ms）",
+                frames_cap, 1000.0 * frames_cap as f64 / rate.max(1) as f64);
+        }
         let shared = Arc::clone(&self.shared);
         let stop = Arc::clone(&self.stop);
         let handle = std::thread::Builder::new()
@@ -429,7 +449,8 @@ fn run_pipewire(
                     dst.fill(0.0);
                 } else {
                     // 无锁读取；不足部分平滑补零。
-                    let got_frames = sh.ring.pop(dst);
+                    // 短暂 lock 取用环形缓冲（无竞争时开销极小）。
+                    let got_frames = sh.ring.lock().unwrap_or_else(|e| e.into_inner()).pop(dst);
                     if got_frames > 0 {
                         sh.started.store(true, Ordering::Relaxed);
                         // 累加实际播放帧数（进度基准）。

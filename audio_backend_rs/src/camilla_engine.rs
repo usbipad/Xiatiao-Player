@@ -187,10 +187,6 @@ impl CamillaEngine {
         config::validate_config(&mut conf, None)
             .map_err(|e| format!("camilla 配置无效: {e}"))?;
 
-        // 诊断：记录本次是「平滑更新」还是「重建」
-        let has_prev = self.last_conf.is_some() && self.pipeline.is_some();
-        let same = self.last_conf.as_ref().map(|p| same_structure(p, &conf)).unwrap_or(false);
-        eprintln!("[camilla] set_yaml: 有旧管线={} 结构相同={}", has_prev, same);
         // 已有管线，且结构未变 → 平滑原地更新参数（不中断音频）
         if let Some(prev) = self.last_conf.as_ref() {
             if self.pipeline.is_some() && same_structure(prev, &conf) {
@@ -237,82 +233,60 @@ impl CamillaEngine {
     ///
     /// camillalib 要求每块恰好 chunksize 帧；而解码流是任意块大小。
     /// 故用 in_buf 缓冲攒够 chunksize 再处理，避免每块补零稀释音量。
+    /// 处理一块交错 PCM（原地）。channels 目前支持 2。
+    ///
+    /// **设计：输入输出严格 1:1，不攒块、不积压、零额外延迟。**
+    /// 直接对传入的 pcm 构造 AudioChunk 交给 camillalib 处理，
+    /// 因此切音效等参数变化会**立即**反映到下一次输出，无滞后。
+    ///
+    /// 注：当前使用的 Biquad（PEQ/EQ/增益等）支持任意长度块。
+    /// 若将来使用需要固定块大小的滤波器（如 FftConv 卷积），
+    /// 需在此处按 chunksize 对齐后再处理。
     pub fn process_interleaved(&mut self, pcm: &mut [f32], channels: usize) {
         if channels != 2 {
             return;
         }
-        let total_frames = pcm.len() / 2;
-        if total_frames == 0 {
+        let frames = pcm.len() / 2;
+        if frames == 0 {
+            return;
+        }
+        // 无管线：直通
+        if self.pipeline.is_none() {
+            if self.tube.is_some() || self.bbe.is_some() {
+                self.apply_coloring(pcm, channels);
+            }
             return;
         }
 
-        // 1) 追加本次 PCM 到输入缓冲
-        self.in_buf.extend_from_slice(pcm);
-
-        let cs = self.chunksize.max(1);
-        let cs_samples = cs * 2; // 交错：每帧 2 个样本
-
-        // 2) 每次攒够 cs 帧就处理一块，结果追加到 out_buf
-        while self.in_buf.len() >= cs_samples {
-            let block: Vec<f32> = self.in_buf.drain(0..cs_samples).collect();
-            // 分离声道 + 转 PrcFmt
-            let mut ch0: Vec<PrcFmt> = Vec::with_capacity(cs);
-            let mut ch1: Vec<PrcFmt> = Vec::with_capacity(cs);
-            let mut maxval: PrcFmt = 0.0;
-            for i in 0..cs {
-                let l = block[i * 2] as PrcFmt;
-                let r = block[i * 2 + 1] as PrcFmt;
-                ch0.push(l);
-                ch1.push(r);
-                let m = l.abs().max(r.abs());
-                if m > maxval { maxval = m; }
-            }
-            let chunk = AudioChunk::new(vec![ch0, ch1], maxval, -maxval, cs, cs);
-            if let Some(pipeline) = self.pipeline.as_mut() {
-                let out = pipeline.process_chunk(chunk);
-                // 安全取波形：waveforms 数量/长度不保证恰好 2×cs，
-                // 直接索引会越界 panic（高采样率/特殊配置下尤其危险）。
-                let w0 = out.waveforms.get(0);
-                let w1 = out.waveforms.get(1);
-                match (w0, w1) {
-                    (Some(a), Some(b)) => {
-                        let n = cs.min(a.len()).min(b.len());
-                        for i in 0..n {
-                            self.out_buf.push(a[i] as f32);
-                            self.out_buf.push(b[i] as f32);
-                        }
-                        // 若输出比输入短，用 0 补齐到 cs 帧，保持长度一致
-                        for _ in n..cs {
-                            self.out_buf.push(0.0);
-                            self.out_buf.push(0.0);
-                        }
-                    }
-                    _ => {
-                        // 波形数异常：退化为直通该块
-                        self.out_buf.extend_from_slice(&block);
-                    }
-                }
-            } else {
-                // 无管线：直通
-                self.out_buf.extend_from_slice(&block);
+        // 分离声道 + 转 PrcFmt，构造与输入等长的 AudioChunk
+        let mut ch0: Vec<PrcFmt> = Vec::with_capacity(frames);
+        let mut ch1: Vec<PrcFmt> = Vec::with_capacity(frames);
+        let mut maxval: PrcFmt = 0.0;
+        for i in 0..frames {
+            let l = pcm[i * 2] as PrcFmt;
+            let r = pcm[i * 2 + 1] as PrcFmt;
+            ch0.push(l);
+            ch1.push(r);
+            let m = l.abs().max(r.abs());
+            if m > maxval {
+                maxval = m;
             }
         }
+        let chunk = AudioChunk::new(vec![ch0, ch1], maxval, -maxval, frames, frames);
 
-        // 3) 从 out_buf 取回本次需要的样本数（不足则输出 0，保持长度一致）
-        let need = pcm.len();
-        if self.out_buf.len() >= need {
-            let out: Vec<f32> = self.out_buf.drain(0..need).collect();
-            pcm.copy_from_slice(&out);
-        } else {
-            // 输出滞后（首次攒块）：先把已有的写入，其余置 0
-            let have = self.out_buf.len();
-            for i in 0..have {
-                pcm[i] = self.out_buf[i];
+        let out = match self.pipeline.as_mut() {
+            Some(p) => p.process_chunk(chunk),
+            None => return,
+        };
+        // 写回（长度对齐；波形数/长度异常时保留原数据，不 panic）
+        let w0 = out.waveforms.get(0);
+        let w1 = out.waveforms.get(1);
+        if let (Some(a), Some(b)) = (w0, w1) {
+            let n = frames.min(a.len()).min(b.len());
+            for i in 0..n {
+                pcm[i * 2] = a[i] as f32;
+                pcm[i * 2 + 1] = b[i] as f32;
             }
-            for i in have..need {
-                pcm[i] = 0.0;
-            }
-            self.out_buf.clear();
         }
 
         // ---- 音色染色（过采样 → 电子管 → BBE → 降采样）----
@@ -353,5 +327,68 @@ impl CamillaEngine {
         // 写回（长度对齐）
         let n = down.len().min(pcm.len());
         pcm[..n].copy_from_slice(&down[..n]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rms(s: &[f32]) -> f32 {
+        if s.is_empty() { return 0.0; }
+        (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt()
+    }
+
+    fn sine(frames: usize, freq: f32, rate: f32) -> Vec<f32> {
+        let mut v = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let s = (2.0 * std::f32::consts::PI * freq * (i as f32 / rate)).sin() * 0.5;
+            v.push(s); v.push(s);
+        }
+        v
+    }
+
+    fn run(yaml: &str, pcm: &[f32]) -> f32 {
+        let mut eng = CamillaEngine::new(48000);
+        eng.set_yaml(yaml).expect("set_yaml");
+        let mut buf = pcm.to_vec();
+        for c in buf.chunks_mut(4096) {
+            eng.process_interleaved(c, 2);
+        }
+        let half = buf.len() / 2;
+        rms(&buf[half..])
+    }
+
+    const PASS: &str = "devices:\n  samplerate: 48000\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters:\n  pass:\n    type: Gain\n    parameters:\n      gain: 0.0\n      scale: dB\nprocessors: {}\nmixers: {}\npipeline:\n- type: Filter\n  channels:\n  - 0\n  - 1\n  names:\n  - pass\n";
+
+    const LOWKILL: &str = "devices:\n  samplerate: 48000\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters:\n  peq_0:\n    type: Biquad\n    parameters:\n      type: Lowshelf\n      freq: 2000.0\n      gain: -40.0\n      q: 0.7\nprocessors: {}\nmixers: {}\npipeline:\n- type: Filter\n  channels:\n  - 0\n  - 1\n  names:\n  - peq_0\n";
+
+    /// 直通 vs 低架-40dB：1kHz 正弦应被大幅衰减。
+    #[test]
+    fn engine_actually_processes() {
+        let pcm = sine(48000, 1000.0, 48000.0);
+        let a = run(PASS, &pcm);
+        let b = run(LOWKILL, &pcm);
+        println!("直通 RMS={a:.6} 低架-40dB RMS={b:.6}");
+        assert!(a > 0.01, "直通应有信号，实际 {a}");
+        assert!(b < a * 0.5, "低架应大幅衰减，实际 a={a} b={b}");
+    }
+
+    /// 同一引擎：先直通，再平滑更新为低架，输出应变化。
+    #[test]
+    fn smooth_update_changes_output() {
+        let pcm = sine(48000, 1000.0, 48000.0);
+        let mut eng = CamillaEngine::new(48000);
+        eng.set_yaml(PASS).unwrap();
+        let mut b1 = pcm.clone();
+        for c in b1.chunks_mut(4096) { eng.process_interleaved(c, 2); }
+        let r1 = rms(&b1[b1.len()/2..]);
+        // 结构变（pass → peq_0）：重建
+        eng.set_yaml(LOWKILL).unwrap();
+        let mut b2 = pcm.clone();
+        for c in b2.chunks_mut(4096) { eng.process_interleaved(c, 2); }
+        let r2 = rms(&b2[b2.len()/2..]);
+        println!("直通 RMS={r1:.6} → 低架 RMS={r2:.6}");
+        assert!(r2 < r1 * 0.5, "更新后应衰减，实际 r1={r1} r2={r2}");
     }
 }

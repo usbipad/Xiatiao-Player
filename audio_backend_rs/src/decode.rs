@@ -164,15 +164,6 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
                     dsp.set_engine(true);
                     // Camilla 是否参与：由参数自动推导
                     let cam_on = dsp.camilla_active();
-                    // 临时诊断：camilla 参与状态 + dsp 参数
-                    {
-                        let cnt = shared._dsp_logged.fetch_add(1, Ordering::SeqCst);
-                        if cnt % 300 == 0 {
-                            let p = dsp.params();
-                            eprintln!("[diag] cam_on={} enabled={} peq={} eq={} bass={} loud={}",
-                                cam_on, p.enabled, p.peq_enabled, p.eq_enabled, p.bass_enabled, p.loudness_enabled);
-                        }
-                    }
                     if let Ok((td, ba)) = shared.coloring.lock().map(|g| *g) {
                         dsp.set_coloring(td, ba);
                     }
