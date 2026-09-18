@@ -79,13 +79,8 @@ class PlayerPanel(Gtk.Box):
         self._title_lbl.set_ellipsize(3)
         title_box.append(self._title_lbl)
         topbar.set_center_widget(title_box)
-        # 仅保留通知按钮（菜单已移到右侧 HeaderBar，避免设置入口重复）
-        end_box = Gtk.Box(spacing=8)
-        bell_btn = Gtk.Button(icon_name="preferences-system-notifications-symbolic")
-        bell_btn.add_css_class("flat")
-        bell_btn.set_tooltip_text(_("通知"))
-        end_box.append(bell_btn)
-        topbar.set_end_widget(end_box)
+        # 顶部工具栏右侧留空（菜单已移到右侧 HeaderBar，避免设置入口重复）
+        topbar.set_end_widget(Gtk.Box(spacing=8))
         # 套 WindowHandle：拖动顶部工具栏（标题/空白）可移动窗口。
         # 按钮仍可点击（WindowHandle 只在拖动时接管）。
         topbar_handle = Gtk.WindowHandle()
