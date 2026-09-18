@@ -167,8 +167,9 @@ BUILTIN_PRESETS: List[Dict[str, Any]] = [
        limiter_enabled=True, limiter_threshold_db=-1.0),
 
     # ============ 场景向 ============
-    # 深夜聆听：等响度补偿（用 Camilla Loudness 模块，随音量动态补偿）。
-    # 配极轻静态 EQ 兜底。
+    # 深夜聆听：动态等响度补偿（Rust 实现，随播放器音量动态补偿两端）。
+    # 注：loudness_enabled 由 Rust 侧处理（见 dsp/loudness.rs），
+    # 不依赖 Camilla（Camilla 拿不到播放器音量）。配极轻静态 EQ 兜底。
     _preset("深夜聆听", [
         _ls(80, 1.0, 0.7), _hs(10000, 0.8, 0.7),
     ], loudness_enabled=True, loudness_amount=0.5,
