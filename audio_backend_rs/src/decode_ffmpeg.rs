@@ -16,10 +16,10 @@ use crate::shared::{viz_fifo_path, Shared};
 ///
 /// 用 PIPEWIRE_PROPS 覆盖 PipeWire 客户端属性，使媒体控件显示为播放器名。
 pub(crate) fn spawn_pwcat(rate: u32, channels: u32) -> Result<std::process::Child, String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let props = "{ application.name = \"Xiatiao Player\" application.process.binary = \"xiatiao-player\" media.role = \"Music\" node.name = \"Xiatiao Player\" }";
     let pw_env_props = "{ application.name = \"Xiatiao Player\" application.process.binary = \"xiatiao-player\" node.name = \"Xiatiao Player\" }";
-    let child = Command::new("pw-cat")
+    let child = crate::deps::command("pw-cat")
         .env("PIPEWIRE_PROPS", pw_env_props)
         .args([
             "--playback",
@@ -50,8 +50,7 @@ pub(crate) fn prefer_ffmpeg(path: &str) -> bool {
 
 /// 用 ffprobe 读取 (采样率, 声道, 时长秒)。
 fn ffprobe_info(path: &str) -> (u32, u32, f64) {
-    use std::process::Command;
-    let out = Command::new("ffprobe")
+    let out = crate::deps::command("ffprobe")
         .args([
             "-v", "error",
             "-select_streams", "a:0",
@@ -81,7 +80,7 @@ fn ffprobe_info(path: &str) -> (u32, u32, f64) {
 /// 用 ffmpeg 解码到原始采样率 PCM，再转交输出层。
 pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
                         output: Arc<crate::output::PipewireOutput>) -> Result<(), String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     let (src_rate, in_channels, dur) = ffprobe_info(path);
 
@@ -112,7 +111,7 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
         None
     };
     // 启动 ffmpeg：不加 -ar / -af，用 ffmpeg 默认采样率输出（保持原样）。
-    let mut ff = Command::new("ffmpeg")
+    let mut ff = crate::deps::command("ffmpeg")
         .args(["-v", "error", "-nostdin"])
         .args(["-i", path])
         .args(["-f", "f32le", "-ac", &ch.to_string(), "-"])
@@ -147,7 +146,7 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             output.flush();
 
             let ss = seek_ms as f64 / 1000.0;
-            ff = Command::new("ffmpeg")
+            ff = crate::deps::command("ffmpeg")
                 .args(["-v", "error", "-nostdin", "-ss", &format!("{ss}")])
                 .args(["-i", path])
                 .args(["-f", "f32le", "-ac", &ch.to_string(), "-"])

@@ -17,7 +17,7 @@
 //!   new() / write(pcm, rate, channels) / flush() / pause() / resume()
 //!   / stop() / latency()
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;

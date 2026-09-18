@@ -15,7 +15,7 @@ mod biquad;
 mod params;
 
 pub use biquad::Biquad;
-pub use params::{camilla_should_engage, DspParams, DspStage, PeqBand, EQ_BANDS, EQ_FREQS};
+pub use params::{camilla_should_engage, DspParams, DspStage, EQ_BANDS, EQ_FREQS};
 
 // ============================================================
 // DSP 管线

@@ -22,6 +22,7 @@ mod engine;
 mod shared;
 mod decode;
 mod decode_ffmpeg;
+mod deps;
 mod output;
 mod reverb;
 mod ipc;
