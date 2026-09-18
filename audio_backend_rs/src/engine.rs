@@ -11,6 +11,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::output::AudioOut;
 use crate::protocol::{Event, Request};
 use crate::shared::{State, Shared};
 
@@ -22,8 +23,11 @@ pub struct Engine {
     state: State,
     effect: String,
     decode_thread: Option<std::thread::JoinHandle<()>>,
-    /// 应用级音频输出（常驻）：切歌复用，仅格式变化时内部重建 stream。
-    output: Arc<crate::output::PipewireOutput>,
+    /// 应用级音频输出（常驻）：切歌复用。
+    /// 默认 PipeWire；指定 ALSA 设备后切换为 ALSA 独占。
+    output: Arc<AudioOut>,
+    /// 当前播放曲目路径（用于切换输出设备后自动续播）。
+    current_path: Option<String>,
 }
 
 impl Engine {
@@ -51,7 +55,41 @@ impl Engine {
             state: State::Stopped,
             effect: "off".to_string(),
             decode_thread: None,
-            output: Arc::new(crate::output::PipewireOutput::new()),
+            output: Arc::new(AudioOut::Pipewire(crate::output::PipewireOutput::new())),
+            current_path: None,
+        }
+    }
+
+    /// 应用输出设备选择：
+    ///   - name 为空 → 默认走 PipeWire（系统默认音频接口）；
+    ///   - name 非空 → 切换到 ALSA 独占直连该 hw 设备。
+    fn apply_output_backend(&mut self, name: &str) {
+        // 记录切换前的播放状态，用于切换后自动续播。
+        let was_playing = self.state == State::Playing;
+        let resume_pos = self.position();
+        let resume_path = self.current_path.clone();
+
+        // 切换前先停掉当前解码/输出，避免残留线程持有旧后端。
+        self.stop_internal();
+        self.output.stop();
+        if name.trim().is_empty() {
+            self.output = Arc::new(AudioOut::Pipewire(crate::output::PipewireOutput::new()));
+            eprintln!("[engine] 输出后端切换为 PipeWire（系统默认）");
+        } else {
+            self.output = Arc::new(AudioOut::Alsa(crate::output_alsa::AlsaOutput::new(name)));
+            eprintln!("[engine] 输出后端切换为 ALSA 独占：{name}");
+        }
+
+        // 若切换前正在播放，则从原位置自动续播（避免切设备后静默停止）。
+        if was_playing {
+            if let Some(path) = resume_path {
+                eprintln!("[engine] 切换设备后续播：{path} @ {resume_pos:.3}s");
+                self.start_play(&path);
+                if resume_pos > 0.5 {
+                    let ms = (resume_pos * 1000.0) as u64;
+                    self.shared.seek_target_ms.store(ms, Ordering::SeqCst);
+                }
+            }
         }
     }
 
@@ -76,8 +114,14 @@ impl Engine {
     }
 
     /// 取出并清空待发送给客户端的错误（推送线程调用）。
+    ///
+    /// 合并两个来源：解码/引擎错误（shared）与输出后端运行时错误
+    /// （如 ALSA 独占打开/配置失败）。
     pub fn take_error(&self) -> Option<String> {
-        self.shared.take_error()
+        if let Some(e) = self.shared.take_error() {
+            return Some(e);
+        }
+        self.output.take_error()
     }
 
     pub fn handle(&mut self, req: Request) -> Event {
@@ -105,9 +149,14 @@ impl Engine {
             }
             Request::Stop => {
                 self.shared.playing.store(false, Ordering::SeqCst);
-                self.output.flush();
-                self.output.pause();
+                self.shared.stop.store(true, Ordering::SeqCst);
+                // 顺序关键：先停输出后端（写线程退出、stop 标志置位），
+                // 使解码线程卡在 write 时能立即感知并返回；
+                // 再 join 解码线程。否则 join 会因解码线程卡在 write 而死锁。
+                self.output.stop();
                 self.stop_internal();
+                // 用户主动停止：清空当前曲目，切设备时不再续播。
+                self.current_path = None;
                 Event::Ack { cmd: "stop".into() }
             }
             Request::Seek { seconds } => {
@@ -162,20 +211,50 @@ impl Engine {
                     *m = mode.clone();
                 }
                 eprintln!("[engine] DSD 模式设为 {mode}");
+
+                // 若当前正在播放 DSD 文件，切模式后重新加载，使新模式真正生效
+                // （否则模式切换对已在播放的流无效，用户会以为"没生效"）。
+                let is_dsd = self
+                    .current_path
+                    .as_deref()
+                    .map(crate::dsd::is_dsd_file)
+                    .unwrap_or(false);
+                if is_dsd && self.state == State::Playing {
+                    if let Some(path) = self.current_path.clone() {
+                        let pos = self.position();
+                        eprintln!("[engine] 切换 DSD 模式，重载当前文件：{path} @ {pos:.3}s");
+                        self.start_play(&path);
+                        if pos > 0.5 {
+                            let ms = (pos * 1000.0) as u64;
+                            self.shared.seek_target_ms.store(ms, Ordering::SeqCst);
+                        }
+                    }
+                }
                 Event::Ack { cmd: "set_dsd_mode".into() }
             }
             Request::SetOutputDevice { name } => {
                 if let Ok(mut d) = self.shared.output_device.lock() {
                     *d = name.clone();
                 }
-                // 真正应用：重建 stream 并路由到指定 sink。
-                self.output.set_output_device(&name);
+                // 真正应用：空=默认走 PipeWire；非空=切换到 ALSA 独占设备。
+                self.apply_output_backend(&name);
                 eprintln!("[engine] 输出设备设为 '{name}'");
                 Event::Ack { cmd: "set_output_device".into() }
+            }
+            Request::ListOutputDevices => {
+                let devices = crate::output_alsa::list_devices()
+                    .into_iter()
+                    .map(|d| crate::protocol::DeviceInfo {
+                        id: d.id,
+                        description: d.description,
+                    })
+                    .collect();
+                Event::OutputDevices { devices }
             }
             Request::QueryState => Event::State { state: self.state.as_str().to_string() },
             Request::Shutdown => {
                 self.stop_internal();
+                self.output.stop();
                 Event::Ack { cmd: "shutdown".into() }
             }
         }
@@ -184,16 +263,25 @@ impl Engine {
     fn stop_internal(&mut self) {
         self.shared.stop.store(true, Ordering::SeqCst);
         self.shared.playing.store(false, Ordering::SeqCst);
+        // 中断输出 write：让卡在 output.write 的解码线程立即退出，
+        // 否则 join 会死锁（输出缓冲满、无人消费）。
+        self.output.abort_write();
         if let Some(t) = self.decode_thread.take() {
             let _ = t.join();
         }
         self.shared.stop.store(false, Ordering::SeqCst);
+        // 解码线程已退出，清除中断标志，供下次播放使用。
+        self.output.clear_abort();
         self.state = State::Stopped;
     }
 
     fn start_play(&mut self, path: &str) {
         eprintln!("[engine] START_PLAY: {path}");
+        // 记录当前曲目，供切换输出设备后续播。
+        self.current_path = Some(path.to_string());
         self.stop_internal();
+        // 确保中断标志已清除（stop_internal 已清，这里双保险）。
+        self.output.clear_abort();
         let shared = Arc::clone(&self.shared);
         shared.stop.store(false, Ordering::SeqCst);
         shared.eof.store(false, Ordering::SeqCst);

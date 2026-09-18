@@ -84,7 +84,7 @@ fn ffprobe_info(path: &str) -> (u32, u32, f64) {
 
 /// 用 ffmpeg 解码到原始采样率 PCM，再转交输出层。
 pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
-                        output: Arc<crate::output::PipewireOutput>) -> Result<(), String> {
+                        output: Arc<crate::output::AudioOut>) -> Result<(), String> {
     use std::process::Stdio;
 
     // 优雅降级：需要 ffmpeg/ffprobe 时先探测，缺失则明确报错（而非静默失败）。
@@ -174,6 +174,9 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             ff_out = ff.stdout.take().ok_or("no ffmpeg stdout")?;
             frames_written = (ss * in_rate as f64) as u64;
             shared.frames_out.store(frames_written, Ordering::SeqCst);
+            // 关键：重置输出层的进度基准（engine.position 用 played_frames），
+            // 否则 seek 后进度条会回弹到 0。
+            output.reset_played_frames(frames_written);
             shared.eof.store(false, Ordering::SeqCst);
         }
 

@@ -35,8 +35,56 @@ fn do_seek(
 
 /// 解码线程：用 symphonia 解码并写入输出层。
 pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
-                output: Arc<crate::output::PipewireOutput>) -> Result<(), String> {
-    // symphonia 不支持的高压缩/DSD 格式交给 FFmpeg
+                output: Arc<crate::output::AudioOut>) -> Result<(), String> {
+    // ---- DSD 分流 ----
+    // dsf/dff 在 native / dop 模式下，绕过 ffmpeg，直接读取原始 DSD 位流
+    // 交给 ALSA 独占后端（DoP 封装或 Native 直通）。
+    // pcm 模式（软解）与 auto 回退，保持现有 ffmpeg 路径。
+    if crate::dsd::is_dsd_file(path) {
+        let mode = shared
+            .dsd_mode
+            .lock()
+            .map(|m| m.clone())
+            .unwrap_or_else(|_| "auto".to_string());
+        match mode.as_str() {
+            "pcm" => {
+                // 明确软解。
+                eprintln!("[engine] DSD 软解路径（mode=pcm）：{path}");
+                return run_playback_ffmpeg(path, shared, output);
+            }
+            "native" | "dop" | "auto" => {
+                // native/dop：尝试直通（内部会做能力检查，不支持则报错）。
+                // auto：优先尝试直通；若后端不是 ALSA（PipeWire）则无法直通，回退软解。
+                let is_alsa = matches!(output.as_ref(), crate::output::AudioOut::Alsa(_));
+                if is_alsa {
+                    eprintln!("[engine] DSD 直通路径（mode={mode}）：{path}");
+                    let r = run_playback_dsd(path, shared.clone(), Arc::clone(&output));
+                    // auto 模式下直通失败（不支持/规格超限）→ 自动降级软解。
+                    if r.is_err() && mode == "auto" {
+                        eprintln!("[engine] DSD 直通不可用，自动降级为 PCM 软解");
+                        return run_playback_ffmpeg(path, shared, output);
+                    }
+                    return r;
+                } else {
+                    // PipeWire 后端：无法直通。native/dop 显式选择时提示，auto 静默软解。
+                    if mode != "auto" {
+                        let msg = "DSD 直通需要 ALSA 独占输出：请在设置中选择具体输出设备（非“自动”）。".to_string();
+                        eprintln!("[engine/dsd] {msg}");
+                        shared.report_error(msg.clone());
+                        return Err(msg);
+                    }
+                    eprintln!("[engine] DSD 软解路径（mode=auto，PipeWire 无法直通）：{path}");
+                    return run_playback_ffmpeg(path, shared, output);
+                }
+            }
+            _ => {
+                eprintln!("[engine] DSD 未知模式 {mode}，按软解处理：{path}");
+                return run_playback_ffmpeg(path, shared, output);
+            }
+        }
+    }
+
+    // symphonia 不支持的高压缩格式交给 FFmpeg
     if prefer_ffmpeg(path) {
         eprintln!("[engine] using ffmpeg decoder for {path}");
         return run_playback_ffmpeg(path, shared, output);
@@ -211,5 +259,194 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
         }
     }
 
+    Ok(())
+}
+
+/// DSD 直通播放：流式读取原始 DSD 位流，按 DoP 经 ALSA 独占后端输出。
+///
+/// 前提：输出后端必须是 ALSA 独占（指定了输出设备）。若仍是 PipeWire，
+/// 无法原生直通，返回明确错误（由上层提示用户选择 ALSA 设备）。
+fn run_playback_dsd(path: &str, shared: Arc<Shared>,
+                    output: Arc<crate::output::AudioOut>) -> Result<(), String> {
+    // DSD 直通只支持 ALSA 独占后端。
+    let alsa = match output.as_ref() {
+        crate::output::AudioOut::Alsa(a) => a,
+        crate::output::AudioOut::Pipewire(_) => {
+            let msg = "DSD 直通需要 ALSA 独占输出：请在设置中选择具体输出设备（非“自动”）。".to_string();
+            eprintln!("[engine/dsd] {msg}");
+            shared.report_error(msg.clone());
+            return Err(msg);
+        }
+    };
+
+    // 当前 DSD 模式（native / dop / auto）。
+    let dsd_mode = shared
+        .dsd_mode
+        .lock()
+        .map(|m| m.clone())
+        .unwrap_or_else(|_| "auto".to_string());
+
+    // 流式打开（只读头部 + 定位 data 区）。
+    let mut reader = crate::dsd::DsdReader::open(path)?;
+    let channels = reader.channels.max(1);
+    let dsd_rate = reader.dsd_rate;
+    // DoP 的 PCM 采样率 = DSD 率 / 16。
+    let pcm_rate = (dsd_rate / 16).max(44_100);
+
+    eprintln!(
+        "[engine/dsd] 流式解析：mode={} DSD rate={} ch={} DoP PCM rate={} frames={}",
+        dsd_mode, dsd_rate, channels, pcm_rate, reader.frames
+    );
+
+    // ---- 模式决策：native 还是 dop ----
+    // native：需要设备原生支持 DSD 格式（DSD_U32_LE 等），不支持则明确报错。
+    // dop：把 DSD 打包成 PCM 传输，兼容性最好。
+    // auto：优先 native，不支持则 dop。
+    let use_native = match dsd_mode.as_str() {
+        "native" => true,
+        "dop" => false,
+        // auto：探测设备是否支持原生 DSD。
+        _ => crate::output_alsa::device_supports_dsd(alsa.device(), dsd_rate, channels),
+    };
+
+    if use_native {
+        // Native 能力检查：设备必须支持 DSD 格式。
+        if !crate::output_alsa::device_supports_dsd(alsa.device(), dsd_rate, channels) {
+            let msg = format!(
+                "所选设备不支持原生 DSD 直通（Native）。\n\
+                 请改用“DoP”或“转 PCM（软解）”模式播放。\n\
+                 （文件：DSD{}，设备：{}）",
+                (dsd_rate as f64 / 44100.0).round() as u32,
+                alsa.device()
+            );
+            eprintln!("[engine/dsd] {msg}");
+            shared.report_error(msg.clone());
+            return Err(msg);
+        }
+    } else {
+        // DoP 规格预检：所需 PCM 采样率不得超过设备上限。
+        if let Some(max_rate) = crate::output_alsa::device_max_rate(alsa.device()) {
+            if pcm_rate > max_rate {
+                let dsd_factor = (dsd_rate as f64 / 44100.0).round() as u32;
+                let msg = format!(
+                    "当前 DSD 文件的 DoP 采样率（{} Hz）超出所选设备上限（{} Hz）。\n\
+                     该文件规格为 DSD{}，无法通过 DoP 直通；请改用“转 PCM（软解）”模式播放。",
+                    pcm_rate, max_rate, dsd_factor
+                );
+                eprintln!("[engine/dsd] {msg}");
+                shared.report_error(msg.clone());
+                return Err(msg);
+            }
+        }
+    }
+
+    // 更新共享元信息（进度 / 时长基准）。
+    // 关键：in_rate 存**输出层实际帧率**，供 engine.position 计算
+    // （played_frames / in_rate = 秒）。
+    //   - DoP：输出是 PCM，帧率 = pcm_rate（DSD/16）；
+    //   - Native：输出是 DSD 帧，帧率 = dsd_rate。
+    // 时长单独按 dsd_rate 算（见下），不受影响。
+    let out_rate = if use_native { dsd_rate } else { pcm_rate };
+    shared.in_rate.store(out_rate as u64, Ordering::SeqCst);
+    shared.in_channels.store(channels as u64, Ordering::SeqCst);
+    let dur_ms = if dsd_rate > 0 {
+        (reader.frames as f64 / dsd_rate as f64 * 1000.0) as u64
+    } else {
+        0
+    };
+    shared.duration_ms.store(dur_ms, Ordering::SeqCst);
+
+    // 块大小：native 用 4 字节对齐（DSD_U32），dop 用 2*channels 对齐。
+    let unit = if use_native {
+        4
+    } else {
+        channels as usize * 2
+    };
+    let mut chunk_size = 1 << 20;
+    chunk_size -= chunk_size % unit;
+    let mut buf = vec![0u8; chunk_size];
+    let mut marker_phase: usize = 0;
+
+    let mut frames_out: u64 = 0;
+    loop {
+        if shared.stop.load(Ordering::SeqCst) {
+            break;
+        }
+        while !shared.playing.load(Ordering::SeqCst) && !shared.stop.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if shared.stop.load(Ordering::SeqCst) {
+            break;
+        }
+
+        // ---- seek 处理 ----
+        // DSD 是顺序字节流，按固定字节率定位到目标帧。
+        let seek_ms = shared.seek_target_ms.swap(u64::MAX, Ordering::SeqCst);
+        if seek_ms != u64::MAX {
+            let target_sec = seek_ms as f64 / 1000.0;
+            let target_frame = (target_sec * dsd_rate as f64) as u64;
+            // 关键：先立即把进度基准设到目标（基于请求的 target_frame），
+            // 让 UI 立刻反映目标位置，避免 seek 文件 IO 期间显示旧位置
+            // （表现为“先跳回旧位置再跳回目标”）。
+            let out_rate = if use_native { dsd_rate } else { pcm_rate };
+            let out_frames_req = if dsd_rate > 0 {
+                (target_frame as f64 / dsd_rate as f64 * out_rate as f64) as u64
+            } else {
+                0
+            };
+            alsa.reset_played_frames(out_frames_req);
+
+            match reader.seek_to_frame(target_frame) {
+                Ok(actual_frame) => {
+                    // 清空输出缓冲，丢弃 seek 前残留。
+                    alsa.flush();
+                    // seek 完成后再校正一次（实际帧可能因字节对齐略有出入）。
+                    let out_frames = if dsd_rate > 0 {
+                        (actual_frame as f64 / dsd_rate as f64 * out_rate as f64) as u64
+                    } else {
+                        0
+                    };
+                    alsa.reset_played_frames(out_frames);
+                    frames_out = actual_frame;
+                    shared.frames_out.store(frames_out, Ordering::SeqCst);
+                    marker_phase = 0;
+                    eprintln!(
+                        "[engine/dsd] SEEK → {:.3}s (frame={actual_frame}, out_frames={out_frames})",
+                        target_sec
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[engine/dsd] seek 失败: {e}");
+                }
+            }
+        }
+
+        let n = reader.read_chunk(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let usable = n - (n % unit);
+        if usable == 0 {
+            break;
+        }
+        if use_native {
+            alsa.write_native_chunk(&buf[..usable], channels, dsd_rate);
+        } else {
+            alsa.write_dop_chunk(&buf[..usable], channels, pcm_rate, &mut marker_phase);
+        }
+        frames_out += (usable as u64 * 8) / channels as u64;
+        shared.frames_out.store(frames_out, Ordering::SeqCst);
+
+        // 检测写线程是否已失败退出（如设备占用、格式不支持）。
+        // 失败则中止并返回错误，供上层（auto 模式）降级到软解。
+        if alsa.is_failed() {
+            let msg = alsa
+                .take_error()
+                .unwrap_or_else(|| "DSD 直通输出失败".to_string());
+            return Err(msg);
+        }
+    }
+
+    shared.eof.store(true, Ordering::SeqCst);
     Ok(())
 }
