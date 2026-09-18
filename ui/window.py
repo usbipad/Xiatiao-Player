@@ -1742,7 +1742,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _track_ctx_copy_path(self, track) -> None:
         """复制文件路径到剪贴板。"""
-        # （_track_ctx_info 已拆为 _build_track_info_rows + _show_info_dialog）
         if not isinstance(track, TrackItem):
             return
         path = getattr(track, "filepath", "") or ""

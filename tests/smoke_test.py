@@ -200,12 +200,34 @@ def test_cache_roundtrip() -> None:
     check("列表往返长度", len(back) == 2)
 
 
+def test_track_info_rows() -> None:
+    section("歌曲信息行构建")
+    try:
+        from ui.window import MainWindow
+    except Exception as exc:
+        check("导入 MainWindow", False, repr(exc))
+        return
+    from models import TrackItem
+    t = TrackItem(title="A", artist="B", album="C",
+                  filepath="/x/a.flac", sample_rate=96000,
+                  bit_depth=24, channels=2, bitrate=2304000)
+    rows = MainWindow._build_track_info_rows(t)
+    d = dict(rows)
+    check("信息行非空", len(rows) >= 9, f"len={len(rows)}")
+    check("歌名", d.get("歌名") == "A")
+    check("采样率格式", d.get("采样率") == "96 kHz", f"got={d.get('采样率')!r}")
+    check("位深格式", d.get("位深") == "24 bit")
+    check("声道格式", d.get("声道") == "立体声 (2)")
+    check("码率格式", d.get("码率") == "2304 kbps", f"got={d.get('码率')!r}")
+    check("编码格式", d.get("编码格式") == "FLAC")
+
+
 def main() -> int:
     print("=" * 56)
     print("夏条播放器 重构冒烟测试")
     print("=" * 56)
     tests = [test_imports, test_track_model, test_playlist,
-             test_config, test_cache_roundtrip]
+             test_config, test_cache_roundtrip, test_track_info_rows]
     for fn in tests:
         try:
             fn()
