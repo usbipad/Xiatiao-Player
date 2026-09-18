@@ -33,6 +33,9 @@ mod viz;
 type SharedWriter = Arc<Mutex<UnixStream>>;
 
 fn main() {
+    // 启动时探测外部依赖（便于打包后诊断）
+    deps::probe_all();
+
     let sock_path = std::env::var("XIATIAO_BACKEND_SOCKET")
         .unwrap_or_else(|_| "/tmp/xiatiao-audio-backend.sock".to_string());
 

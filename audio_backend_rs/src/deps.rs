@@ -127,3 +127,75 @@ pub(crate) fn command(name: &str) -> std::process::Command {
         None => std::process::Command::new(name),
     }
 }
+
+/// 后端依赖的外部程序清单。
+pub(crate) const REQUIRED_DEPS: &[&str] = &["ffmpeg", "ffprobe", "pw-cat"];
+
+/// 探测所有外部依赖，打印状态（启动时调用，便于打包后诊断）。
+///
+/// 输出形如：
+///   [deps] ffmpeg      : /usr/bin/ffmpeg
+///   [deps] ffprobe     : /usr/bin/ffprobe
+///   [deps] pw-cat      : (未找到，将走原生 PipeWire 输出)
+///
+/// 说明：ffmpeg/ffprobe 仅冷门格式（APE/DSF 等）需要；pw-cat 仅是
+/// PipeWire 输出的一种方式（可用原生 PipeWire 代替）。缺失不致命。
+pub(crate) fn probe_all() {
+    for name in REQUIRED_DEPS {
+        match find_executable(name) {
+            Some(path) => eprintln!("[deps] {name:<10}: {}", path.display()),
+            None => {
+                let hint = match *name {
+                    "ffmpeg" | "ffprobe" => "（冷门格式解码将不可用）",
+                    "pw-cat" => "（将回退原生 PipeWire 输出）",
+                    _ => "",
+                };
+                eprintln!("[deps] {name:<10}: 未找到 {hint}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// 在临时目录造一个可执行文件，验证 find_in_dir 能识别。
+    #[test]
+    fn find_in_dir_detects_executable() {
+        let dir = std::env::temp_dir().join("xiatiao_deps_test");
+        let _ = fs::create_dir_all(&dir);
+        let bin = dir.join("fake_tool_xyz");
+        fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = fs::metadata(&bin).unwrap().permissions();
+            perm.set_mode(0o755);
+            fs::set_permissions(&bin, perm).unwrap();
+        }
+        assert!(find_in_dir(&dir, "fake_tool_xyz").is_some());
+        let _ = fs::remove_file(&bin);
+    }
+
+    /// PATH 查找：系统必有 sh。
+    #[test]
+    fn find_in_path_finds_sh() {
+        assert!(find_in_path("sh").is_some());
+    }
+
+    /// 不存在的程序返回 None。
+    #[test]
+    fn find_missing_returns_none() {
+        assert!(find_executable("definitely_not_a_real_program_zzz").is_none());
+    }
+
+    /// 缓存一致性：同一程序两次查找结果相同。
+    #[test]
+    fn cache_consistent() {
+        let a = find_executable("sh");
+        let b = find_executable("sh");
+        assert_eq!(a.is_some(), b.is_some());
+    }
+}
