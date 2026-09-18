@@ -17,8 +17,13 @@ use crate::shared::{viz_fifo_path, Shared};
 /// 用 PIPEWIRE_PROPS 覆盖 PipeWire 客户端属性，使媒体控件显示为播放器名。
 pub(crate) fn spawn_pwcat(rate: u32, channels: u32) -> Result<std::process::Child, String> {
     use std::process::Stdio;
-    let props = "{ application.name = \"Xiatiao Player\" application.process.binary = \"xiatiao-player\" media.role = \"Music\" node.name = \"Xiatiao Player\" }";
+    // node.force-rate：让 PipeWire 把 graph 采样率切到本流采样率，
+    // 使 DAC 跟随源采样率（而非固定 48k 重采样）。这是「采样率跟随」的关键。
+    let props = format!(
+        "{{ application.name = \"Xiatiao Player\" application.process.binary = \"xiatiao-player\" media.role = \"Music\" node.name = \"Xiatiao Player\" node.force-rate = {rate} }}"
+    );
     let pw_env_props = "{ application.name = \"Xiatiao Player\" application.process.binary = \"xiatiao-player\" node.name = \"Xiatiao Player\" }";
+    eprintln!("[output][rate] spawn pw-cat: --rate {rate} --channels {channels} (node.force-rate={rate})");
     let child = crate::deps::command("pw-cat")
         .env("PIPEWIRE_PROPS", pw_env_props)
         .args([
@@ -27,7 +32,7 @@ pub(crate) fn spawn_pwcat(rate: u32, channels: u32) -> Result<std::process::Chil
             "--format", "f32",
             "--rate", &rate.to_string(),
             "--channels", &channels.to_string(),
-            "--properties", props,
+            "--properties", &props,
             "-",
         ])
         .stdin(Stdio::piped())
@@ -109,16 +114,17 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
     let mut viz = crate::viz::VizTap::open(&viz_fifo_path(), in_rate);
     let mut dsp = crate::dsp::DspChain::new(in_rate);
     let mut camilla_engine = crate::camilla_engine::CamillaEngine::new(in_rate);
-    // 输出方式：默认 pw-cat 子进程；XIATIAO_AUDIO_BACKEND=pipewire 才走原生。
+    // 输出方式：默认**原生 PipeWire**；仅显式 XIATIAO_AUDIO_BACKEND=pwcat 时回退子进程。
     let use_pwcat = std::env::var("XIATIAO_AUDIO_BACKEND")
-        .map(|v| v.to_ascii_lowercase() != "pipewire")
-        .unwrap_or(true);
+        .map(|v| v.to_ascii_lowercase() == "pwcat")
+        .unwrap_or(false);
     let mut pwcat: Option<std::process::Child> = if use_pwcat {
         match spawn_pwcat(in_rate, ch) {
             Ok(c) => { eprintln!("[engine/ffmpeg] 使用 pw-cat 子进程输出"); Some(c) }
             Err(e) => { eprintln!("[engine/ffmpeg] pw-cat 启动失败: {e}"); None }
         }
     } else {
+        eprintln!("[engine/ffmpeg] 使用原生 PipeWire 输出");
         None
     };
     // 启动 ffmpeg：不加 -ar / -af，用 ffmpeg 默认采样率输出（保持原样）。

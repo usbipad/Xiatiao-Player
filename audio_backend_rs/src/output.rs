@@ -228,14 +228,23 @@ impl PipewireOutput {
         let channels = channels.max(1);
 
         // 格式变化 → 重建 stream（罕见）。
-        let need_rebuild = {
+        let (need_rebuild, cur_fmt) = {
             let g = self.fmt.lock().unwrap_or_else(|e| e.into_inner());
-            *g != Some((rate, channels))
+            (*g != Some((rate, channels)), *g)
         };
         if need_rebuild {
+            eprintln!(
+                "[output][rate] 格式变化：当前={:?} → 新=({},{})，触发 rebuild",
+                cur_fmt, rate, channels
+            );
             self.shared.channels.store(channels as usize, Ordering::Relaxed);
             self.shared.ring.clear();
             self.rebuild(rate, channels);
+        } else {
+            // 仅在 rate 首次出现时打印，避免刷屏
+            if cur_fmt.is_none() {
+                eprintln!("[output][rate] 初始格式：rate={rate} ch={channels}");
+            }
         }
 
         // 阻塞式写入：缓冲满时小睡等待，让解码跟随播放速度。
@@ -296,8 +305,9 @@ impl PipewireOutput {
     /// 重建 stream（新格式）。
     fn rebuild(&self, rate: u32, channels: u32) {
         let device = self.device.lock().map(|d| d.clone()).unwrap_or_default();
-        eprintln!("[output] REBUILD stream: rate={rate} ch={channels} device='{device}'");
+        eprintln!("[output][rate] REBUILD 开始：rate={rate} ch={channels} device='{device}'");
         self.stop();
+        eprintln!("[output][rate] 旧 stream 已停止（线程已 join）");
         let shared = Arc::clone(&self.shared);
         let stop = Arc::clone(&self.stop);
         let handle = std::thread::Builder::new()
@@ -353,6 +363,9 @@ fn run_pipewire(
     // 设备非空时，额外加 target.object 属性。
     let use_device = !device.is_empty();
 
+    // node.force-rate：请求 PipeWire 把 graph 采样率切到本流采样率，
+    // 使 DAC 跟随源采样率（而非固定 48k 重采样）。这是「采样率跟随」的关键。
+    let force_rate_str = rate.to_string();
     // 统一构造属性（有设备时加 target.object）。
     let props = if use_device {
         pw::properties::properties! {
@@ -363,6 +376,7 @@ fn run_pipewire(
             *pw::keys::NODE_NAME => CLIENT_NAME,
             *pw::keys::APP_NAME => CLIENT_NAME,
             *pw::keys::NODE_LATENCY => latency_str.as_str(),
+            "node.force-rate" => force_rate_str.as_str(),
             "target.object" => device_val.as_str(),
         }
     } else {
@@ -374,6 +388,7 @@ fn run_pipewire(
             *pw::keys::NODE_NAME => CLIENT_NAME,
             *pw::keys::APP_NAME => CLIENT_NAME,
             *pw::keys::NODE_LATENCY => latency_str.as_str(),
+            "node.force-rate" => force_rate_str.as_str(),
         }
     };
 
@@ -446,6 +461,7 @@ fn run_pipewire(
         .map_err(|e| e.to_string())?;
 
     // 格式：F32LE（与 PipeWire 内部处理格式一致）。
+    eprintln!("[output][rate] run_pipewire 建流：请求 rate={rate} ch={channels} latency='{latency_str}'");
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
     audio_info.set_rate(rate);
@@ -479,6 +495,7 @@ fn run_pipewire(
             &mut params,
         )
         .map_err(|e| e.to_string())?;
+    eprintln!("[output][rate] stream connect 完成：rate={rate} ch={channels}（PipeWire 应据此重协商）");
 
     // 低频定时器：周期检查 stop，为 true 则退出主循环（同线程 quit）。
     // 不使用 add_idle（会忙循环占满 CPU）。

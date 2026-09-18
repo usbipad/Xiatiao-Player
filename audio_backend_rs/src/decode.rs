@@ -83,12 +83,13 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
     shared.duration_ms.store(dur_ms, Ordering::SeqCst);
     eprintln!("[engine] symphonia: {in_rate}Hz {in_channels}ch");
 
-    // 输出层：默认原生 PipeWire；XIATIAO_AUDIO_BACKEND=pwcat 回退子进程。
+    // 输出层：默认**原生 PipeWire**（应用名正确、可控采样率跟随）；
+    // 仅当显式设 XIATIAO_AUDIO_BACKEND=pwcat 时回退 pw-cat 子进程。
     let ch_out = in_channels.max(1) as u32;
     let rate_out = in_rate;
     let use_pwcat = std::env::var("XIATIAO_AUDIO_BACKEND")
-        .map(|v| v.to_ascii_lowercase() != "pipewire")
-        .unwrap_or(true);
+        .map(|v| v.to_ascii_lowercase() == "pwcat")
+        .unwrap_or(false);
     let mut pwcat: Option<std::process::Child> = if use_pwcat {
         match spawn_pwcat(rate_out, ch_out) {
             Ok(c) => { eprintln!("[engine] 使用 pw-cat 子进程输出"); Some(c) }
