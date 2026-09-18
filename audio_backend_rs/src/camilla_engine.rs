@@ -22,7 +22,9 @@ use camillalib::{PrcFmt, ProcessingParameters};
 /// 结构一致时，参数变化可用 update_parameters 平滑更新；
 /// 结构变化（增删/重排步骤）时必须重建。
 fn same_structure(a: &config::Configuration, b: &config::Configuration) -> bool {
-    step_signature(a) == step_signature(b)
+    // chunksize 变化会导致内部攒块缓冲不匹配，必须重建（不算「同结构」）。
+    a.devices.chunksize == b.devices.chunksize
+        && step_signature(a) == step_signature(b)
 }
 
 /// 提取 pipeline 步骤签名（类型 + 名称），用于结构比对。
