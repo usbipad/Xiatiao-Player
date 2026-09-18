@@ -1260,6 +1260,13 @@ class MainWindow(Adw.ApplicationWindow):
             from core.eq_presets import get_preset
             params = get_preset(key)
             if params is None:
+                # 不是内置预设 → 试「我的预设」（DSP 设置页保存的自定义预设）
+                try:
+                    from core.dsp_store import get_dsp_preset_store
+                    params = get_dsp_preset_store().get(key)
+                except Exception:
+                    params = None
+            if params is None:
                 # 未知键（如旧的 off/pop 等）回退到设置页
                 self._on_open_effect_settings()
                 return

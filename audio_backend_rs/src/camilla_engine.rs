@@ -237,17 +237,18 @@ impl CamillaEngine {
     ///
     /// **设计：输入输出严格 1:1，不攒块、不积压、零额外延迟。**
     /// 直接对传入的 pcm 构造 AudioChunk 交给 camillalib 处理，
-    /// 因此切音效等参数变化会**立即**反映到下一次输出，无滞后。
+    /// **必须按 chunksize 分块处理**：CamillaDSP 的卷积（FftConv）等滤波器
+    /// 要求每块恰为 chunksize 帧（否则 `copy_from_slice` 长度不匹配 → panic）。
+    /// 故用 in_buf 攒够 chunksize 再处理。
     ///
-    /// 注：当前使用的 Biquad（PEQ/EQ/增益等）支持任意长度块。
-    /// 若将来使用需要固定块大小的滤波器（如 FftConv 卷积），
-    /// 需在此处按 chunksize 对齐后再处理。
+    /// 输出经 out_buf 取回，长度与输入严格一致（不足补 0），**不无限积压**
+    /// （每次取走 need 个即删除），因此除 1 个 chunk 的固有延迟外无额外延迟。
     pub fn process_interleaved(&mut self, pcm: &mut [f32], channels: usize) {
         if channels != 2 {
             return;
         }
-        let frames = pcm.len() / 2;
-        if frames == 0 {
+        let need = pcm.len();
+        if need == 0 {
             return;
         }
         // 无管线：直通
@@ -258,35 +259,67 @@ impl CamillaEngine {
             return;
         }
 
-        // 分离声道 + 转 PrcFmt，构造与输入等长的 AudioChunk
-        let mut ch0: Vec<PrcFmt> = Vec::with_capacity(frames);
-        let mut ch1: Vec<PrcFmt> = Vec::with_capacity(frames);
-        let mut maxval: PrcFmt = 0.0;
-        for i in 0..frames {
-            let l = pcm[i * 2] as PrcFmt;
-            let r = pcm[i * 2 + 1] as PrcFmt;
-            ch0.push(l);
-            ch1.push(r);
-            let m = l.abs().max(r.abs());
-            if m > maxval {
-                maxval = m;
+        // 1) 追加输入
+        self.in_buf.extend_from_slice(pcm);
+
+        let cs = self.chunksize.max(1);
+        let cs_samples = cs * 2; // 交错样本数
+
+        // 2) 攒够 chunksize 帧就处理一块（满足卷积的固定块要求）
+        while self.in_buf.len() >= cs_samples {
+            let block: Vec<f32> = self.in_buf.drain(0..cs_samples).collect();
+            let mut ch0: Vec<PrcFmt> = Vec::with_capacity(cs);
+            let mut ch1: Vec<PrcFmt> = Vec::with_capacity(cs);
+            let mut maxval: PrcFmt = 0.0;
+            for i in 0..cs {
+                let l = block[i * 2] as PrcFmt;
+                let r = block[i * 2 + 1] as PrcFmt;
+                ch0.push(l);
+                ch1.push(r);
+                let m = l.abs().max(r.abs());
+                if m > maxval {
+                    maxval = m;
+                }
+            }
+            let chunk = AudioChunk::new(vec![ch0, ch1], maxval, -maxval, cs, cs);
+            match self.pipeline.as_mut() {
+                Some(p) => {
+                    let out = p.process_chunk(chunk);
+                    let w0 = out.waveforms.get(0);
+                    let w1 = out.waveforms.get(1);
+                    match (w0, w1) {
+                        (Some(a), Some(b)) => {
+                            let n = cs.min(a.len()).min(b.len());
+                            for i in 0..n {
+                                self.out_buf.push(a[i] as f32);
+                                self.out_buf.push(b[i] as f32);
+                            }
+                            // 输出不足 cs 帧 → 补 0，保持等长
+                            for _ in n..cs {
+                                self.out_buf.push(0.0);
+                                self.out_buf.push(0.0);
+                            }
+                        }
+                        _ => self.out_buf.extend_from_slice(&block),
+                    }
+                }
+                None => self.out_buf.extend_from_slice(&block),
             }
         }
-        let chunk = AudioChunk::new(vec![ch0, ch1], maxval, -maxval, frames, frames);
 
-        let out = match self.pipeline.as_mut() {
-            Some(p) => p.process_chunk(chunk),
-            None => return,
-        };
-        // 写回（长度对齐；波形数/长度异常时保留原数据，不 panic）
-        let w0 = out.waveforms.get(0);
-        let w1 = out.waveforms.get(1);
-        if let (Some(a), Some(b)) = (w0, w1) {
-            let n = frames.min(a.len()).min(b.len());
-            for i in 0..n {
-                pcm[i * 2] = a[i] as f32;
-                pcm[i * 2 + 1] = b[i] as f32;
+        // 3) 取回与输入等长的样本
+        if self.out_buf.len() >= need {
+            let out: Vec<f32> = self.out_buf.drain(0..need).collect();
+            pcm.copy_from_slice(&out);
+        } else {
+            let have = self.out_buf.len();
+            for i in 0..have {
+                pcm[i] = self.out_buf[i];
             }
+            for i in have..need {
+                pcm[i] = 0.0;
+            }
+            self.out_buf.clear();
         }
 
         // ---- 音色染色（过采样 → 电子管 → BBE → 降采样）----

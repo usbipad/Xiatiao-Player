@@ -644,6 +644,7 @@ class PlayerPanel(Gtk.Box):
         body.set_margin_end(12)
 
         group = Adw.PreferencesGroup()
+        group.set_title(_("内置音效"))
 
         cur = getattr(self, "_effect_current", "")
         self._effect_dialog_buttons = {}
@@ -660,9 +661,46 @@ class PlayerPanel(Gtk.Box):
             row.connect("activated", lambda _r, _n=name: self._select_effect(_n))
             group.add(row)
             self._effect_dialog_buttons[name] = (row, check)
-        # 选中后保持对话框打开：只更新参数/高亮，不自动关闭
-        # （关闭由用户点标题栏关闭按钮完成）
         body.append(group)
+
+        # ---- 「我的预设」：DSP 设置页保存的自定义预设（可删除）----
+        try:
+            from core.dsp_store import get_dsp_preset_store
+            store = get_dsp_preset_store()
+            custom_names = store.names()
+            cur_custom = store.current() or ""
+        except Exception:
+            custom_names = []
+            cur_custom = ""
+        custom_group = Adw.PreferencesGroup()
+        custom_group.set_title(_("我的预设"))
+        if custom_names:
+            for name in custom_names:
+                row = Adw.ActionRow()
+                row.set_title(name)
+                check = Gtk.CheckButton()
+                check.set_active(name == cur_custom)
+                check.set_valign(Gtk.Align.CENTER)
+                check.connect("toggled", self._on_effect_dialog_choice, name, row)
+                row.add_suffix(check)
+                # 删除按钮（仅自定义预设可删）
+                del_btn = Gtk.Button(icon_name="user-trash-symbolic")
+                del_btn.set_valign(Gtk.Align.CENTER)
+                del_btn.add_css_class("flat")
+                del_btn.set_tooltip_text(_("删除该预设"))
+                del_btn.connect("clicked", self._on_effect_dialog_delete, name)
+                row.add_suffix(del_btn)
+                row.set_activatable(True)
+                row.connect("activated", lambda _r, _n=name: self._select_effect(_n))
+                custom_group.add(row)
+                self._effect_dialog_buttons[name] = (row, check)
+        else:
+            hint = Adw.ActionRow()
+            hint.set_title(_("还没有自定义预设"))
+            hint.set_subtitle(_("在「DSP 音效设置」中调好参数后保存"))
+            hint.set_activatable(False)
+            custom_group.add(hint)
+        body.append(custom_group)
 
         # DSP 详细设置入口
         cfg_group = Adw.PreferencesGroup()
@@ -699,6 +737,25 @@ class PlayerPanel(Gtk.Box):
             if c is not check and c.get_active():
                 c.set_active(False)
         self._select_effect(name)
+
+    def _on_effect_dialog_delete(self, _btn, name: str) -> None:
+        """删除自定义预设（仅「我的预设」有删除按钮；内置预设无）。"""
+        try:
+            from core.dsp_store import get_dsp_preset_store
+            if get_dsp_preset_store().remove(name):
+                if self._on_func_toast is not None:
+                    self._on_func_toast(_("已删除预设：{name}").format(name=name))
+        except Exception:
+            pass
+        # 刷新对话框（关闭重开，简单可靠）
+        dlg = getattr(self, "_effect_dialog", None)
+        if dlg is not None:
+            try:
+                dlg.close()
+            except Exception:
+                pass
+            self._effect_dialog = None
+        self._open_effect_dialog()
 
     def _select_effect(self, name: str) -> None:
         """选中预设：记录 + 回调 window。

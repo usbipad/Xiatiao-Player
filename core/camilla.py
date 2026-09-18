@@ -179,7 +179,6 @@ def build_config(params: Dict[str, Any], samplerate: int,
                 "reference_level": 0.0,
                 "high_boost": 10.0 * amt,
                 "low_boost": 10.0 * amt,
-                "ramp_time": 400,
             },
         }
         filter_names.append("loudness")
