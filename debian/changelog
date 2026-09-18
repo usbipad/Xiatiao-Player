@@ -1,0 +1,9 @@
+xiatiao-player (1.0.0) unstable; urgency=medium
+
+  * Initial release.
+  * GTK4 UI + Rust audio backend (IPC over Unix socket).
+  * ALSA exclusive output + PipeWire default output.
+  * DSD support (native/DoP/PCM soft-decode).
+  * Embedded CamillaDSP DSP chain.
+
+ -- usbipad <1495941192+usbipad@users.noreply.github.com>  Sat, 19 Sep 2026 02:30:00 +0800

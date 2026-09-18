@@ -1,0 +1,40 @@
+Source: xiatiao-player
+Section: sound
+Priority: optional
+Maintainer: usbipad <1495941192+usbipad@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), cargo, rustc, pkg-config, libasound2-dev, libpipewire-0.3-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/usbipad/xiatiao-player
+Rules-Requires-Root: no
+
+Package: xiatiao-player
+Architecture: amd64
+Depends: ${misc:Depends},
+         python3 (>= 3.10),
+         python3-gi,
+         python3-gi-cairo,
+         python3-numpy,
+         python3-yaml,
+         python3-mutagen,
+         gir1.2-gtk-4.0,
+         gir1.2-adw-1,
+         gir1.2-gdkpixbuf-2.0,
+         gir1.2-gstreamer-1.0,
+         gir1.2-gst-plugins-base-1.0,
+         ffmpeg,
+         pipewire,
+         pipewire-bin,
+         libasound2t64 | libasound2,
+         libpipewire-0.3-0t64 | libpipewire-0.3-0
+Description: Xiatiao Player - GTK4 local music player with Rust audio backend
+ Xiatiao Player (虾条播放器) is a local music player with a GTK4 interface
+ and a Rust audio backend. It supports a wide range of formats, keeps the
+ source sample rate without resampling, and provides a rich DSP chain
+ (EQ/PEQ/loudness/limiter/etc.) via an embedded CamillaDSP.
+ .
+ Features:
+  - Local library scan (mp3/flac/ape/wv/m4a/ogg/wav/dsf/dff)
+  - Bit-perfect passthrough, sample-rate following (native PipeWire)
+  - Embedded CamillaDSP with smooth parameter updates
+  - Immersive full-screen page, lyrics, visualization
+  - MPRIS2 and system tray support

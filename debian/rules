@@ -1,0 +1,45 @@
+#!/usr/bin/make -f
+# Debian 打包构建规则。
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# 编译 Rust 后端（release）。
+	cd audio_backend_rs && cargo build --release --offline || cargo build --release
+
+override_dh_auto_clean:
+	-cd audio_backend_rs && cargo clean
+
+override_dh_auto_install:
+	# Python 源码 + 数据 → /usr/lib/xiatiao-player
+	install -d debian/xiatiao-player/usr/lib/xiatiao-player
+	cp -r main.py config core models providers services ui \
+		debian/xiatiao-player/usr/lib/xiatiao-player/
+	cp -r data/hrtf debian/xiatiao-player/usr/lib/xiatiao-player/data/ 2>/dev/null || \
+		(install -d debian/xiatiao-player/usr/lib/xiatiao-player/data && \
+		 cp -r data/hrtf debian/xiatiao-player/usr/lib/xiatiao-player/data/)
+	# Rust 后端二进制
+	install -m 755 audio_backend_rs/target/release/xiatiao-audio-backend \
+		debian/xiatiao-player/usr/lib/xiatiao-player/
+	# 应用图标（各尺寸）→ hicolor
+	for size in 16 24 32 48 64 128 256; do \
+		install -d debian/xiatiao-player/usr/share/icons/hicolor/$${size}x$${size}/apps; \
+		cp data/icons/xiatiao-$${size}.png \
+			debian/xiatiao-player/usr/share/icons/hicolor/$${size}x$${size}/apps/xiatiao.png; \
+	done
+	# 动作图标（SVG）
+	install -d debian/xiatiao-player/usr/share/icons/hicolor/scalable/actions
+	cp data/icons/hicolor/scalable/actions/*.svg \
+		debian/xiatiao-player/usr/share/icons/hicolor/scalable/actions/ 2>/dev/null || true
+	# desktop 文件（修正 Exec 路径为系统安装位置）
+	install -d debian/xiatiao-player/usr/share/applications
+	sed 's|Exec=python3 .*main.py|Exec=python3 /usr/lib/xiatiao-player/main.py|' \
+		data/com.xiatiao.player.desktop > \
+		debian/xiatiao-player/usr/share/applications/com.xiatiao.player.desktop
+
+override_dh_python3:
+	# 不需要 dh_python3（纯脚本，非 setuptools）
+	@echo "skip dh_python3"

@@ -1,0 +1,6 @@
+# Rust 后端二进制为静态链接 libyaml（camillalib 依赖），属正常情况。
+xiatiao-player: embedded-library libyaml [usr/lib/xiatiao-player/xiatiao-audio-backend]
+# Rust 二进制自带 libc 静态部分，lintian 误报缺 libc 依赖。
+xiatiao-player: missing-dependency-on-libc needed by usr/lib/xiatiao-player/xiatiao-audio-backend
+# desktop 的 python3 已列入 Depends，lintian 未关联。
+xiatiao-player: desktop-command-not-in-package python3 [usr/share/applications/com.xiatiao.player.desktop]
