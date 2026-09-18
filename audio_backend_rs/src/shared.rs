@@ -83,6 +83,8 @@ pub(crate) struct Shared {
     pub(crate) dsd_mode: Mutex<String>,
     /// 输出设备（PipeWire sink 名；空=默认）。
     pub(crate) output_device: Mutex<String>,
+    /// 待发送给客户端的错误（解码线程写入，推送线程读取后经 IPC 发出）。
+    pub(crate) pending_error: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -90,5 +92,17 @@ impl Shared {
         let f = self.frames_out.load(Ordering::SeqCst) as f64;
         let r = self.in_rate.load(Ordering::SeqCst).max(1) as f64;
         (f / r - OUTPUT_LATENCY_SECS).max(0.0)
+    }
+
+    /// 记录一条待发送给客户端的错误（解码线程调用）。
+    pub(crate) fn report_error(&self, msg: impl Into<String>) {
+        if let Ok(mut slot) = self.pending_error.lock() {
+            *slot = Some(msg.into());
+        }
+    }
+
+    /// 取出并清空待发送错误（推送线程调用）。
+    pub(crate) fn take_error(&self) -> Option<String> {
+        self.pending_error.lock().ok().and_then(|mut s| s.take())
     }
 }

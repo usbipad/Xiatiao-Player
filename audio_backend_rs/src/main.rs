@@ -103,6 +103,12 @@ fn handle_client(stream: UnixStream, engine: Arc<Mutex<engine::Engine>>) {
                         break;
                     }
                 }
+                // 解码线程报告的错误 → 发给客户端（UI 提示）
+                if let Some(err) = eng.lock().ok().and_then(|e| e.take_error()) {
+                    if send_event(&w, &protocol::Event::Error { message: err }).is_err() {
+                        break;
+                    }
+                }
                 if is_eof && !eof_sent {
                     eof_sent = true;
                     if send_event(&w, &protocol::Event::EndOfStream).is_err() {

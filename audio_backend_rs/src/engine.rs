@@ -46,6 +46,7 @@ impl Engine {
                 _dsp_logged: AtomicU64::new(0),
                 dsd_mode: Mutex::new("auto".to_string()),
                 output_device: Mutex::new(String::new()),
+                pending_error: Mutex::new(None),
             }),
             state: State::Stopped,
             effect: "off".to_string(),
@@ -72,6 +73,11 @@ impl Engine {
 
     pub fn duration_secs(&self) -> f64 {
         self.shared.duration_ms.load(Ordering::SeqCst) as f64 / 1000.0
+    }
+
+    /// 取出并清空待发送给客户端的错误（推送线程调用）。
+    pub fn take_error(&self) -> Option<String> {
+        self.shared.take_error()
     }
 
     pub fn handle(&mut self, req: Request) -> Event {

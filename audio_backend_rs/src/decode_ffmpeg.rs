@@ -82,6 +82,17 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
                         output: Arc<crate::output::PipewireOutput>) -> Result<(), String> {
     use std::process::Stdio;
 
+    // 优雅降级：需要 ffmpeg/ffprobe 时先探测，缺失则明确报错（而非静默失败）。
+    if !crate::deps::has_executable("ffmpeg") || !crate::deps::has_executable("ffprobe") {
+        let msg = format!(
+            "该格式需要 ffmpeg 解码，但未找到 ffmpeg/ffprobe。请安装 ffmpeg（如 apt install ffmpeg）。文件：{}",
+            path.rsplit('/').next().unwrap_or(path)
+        );
+        eprintln!("[engine/ffmpeg] {msg}");
+        shared.report_error(msg.clone());
+        return Err(msg);
+    }
+
     let (src_rate, in_channels, dur) = ffprobe_info(path);
 
     // 原则：ffmpeg 解码出什么采样率，就全程保持那个采样率，
