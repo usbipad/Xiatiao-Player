@@ -965,52 +965,68 @@ class MainWindow(Adw.ApplicationWindow):
             self._refresh_liked_page()
 
     def _on_playlist_current_changed(self, _playlist, index: int) -> None:
+        """当前曲目变化：协调 UI 更新、历史记录、播放启动、资产加载。"""
         track = self.playlist.current_track()
         if track is None:
             return
         restoring = getattr(self, "_restoring", False)
 
-        # ---- 轻量 UI（同步，立即响应）----
+        self._update_now_playing_ui(track)
+        self._record_play_history(track)
+        self._start_playback_if_needed(track, restoring)
+        self._dispatch_track_assets(track, restoring)
+
+    def _update_now_playing_ui(self, track) -> None:
+        """同步两侧 UI 的曲目信息（轻量、立即响应）。"""
         try:
             self.player_panel.set_liked(get_liked_store().is_liked(track))
         except Exception:
             pass
-        self.player_panel.reset_position()
-        self.now_playing.reset_position()
-        self.player_panel.set_track_info(track.title, track.artist)
-        self.player_panel.set_format_info(track.format_label)
-        self.now_playing.set_track(track.title, track.artist)
+        try:
+            self.player_panel.reset_position()
+            self.now_playing.reset_position()
+            self.player_panel.set_track_info(track.title, track.artist)
+            self.player_panel.set_format_info(track.format_label)
+            self.now_playing.set_track(track.title, track.artist)
+        except Exception:
+            pass
         # 通知本地曲库页记录当前播放曲目（供「定位当前播放」按钮使用）
         try:
             self.local_page.set_now_playing(track)
         except Exception:
             pass
-        # 记录播放历史（同一曲目更新时间戳，不重复堆积）
+
+    def _record_play_history(self, track) -> None:
+        """记录播放历史；若主页正显示则刷新其历史块。"""
         try:
             from core.history_store import get_history_store
             get_history_store().record(track)
         except Exception:
             pass
-        # 若主页正显示，刷新其历史块（否则切到主页时会自动刷新）
         try:
             if getattr(self, "_active_source", None) == "home":
                 self._refresh_home_history()
         except Exception:
             pass
 
-        # ---- 播放（立即开始，不等封面）----
-        if not restoring and track.is_local:
-            if self.playlist.is_playable(track):
-                self.player.play_file(track.play_url)
-                # 立即同步播放按钮为"播放中"：play_file 已本地进入 PLAYING 态，
-                # 但后端 state 事件是异步的，不主动更新会等后端解码启动才变图标。
+    def _start_playback_if_needed(self, track, restoring: bool) -> None:
+        """非恢复态且为本地曲目时，立即开始播放（不等封面加载）。"""
+        if restoring or not track.is_local:
+            return
+        if self.playlist.is_playable(track):
+            self.player.play_file(track.play_url)
+            # 立即同步播放按钮为"播放中"：后端 state 事件是异步的，
+            # 不主动更新会等解码启动才变图标。
+            try:
                 self.player_panel.set_playing(True)
                 self.now_playing.set_playing(True)
-            else:
-                self._toast("该曲目暂不支持播放")
+            except Exception:
+                pass
+        else:
+            self._toast("该曲目暂不支持播放")
 
-        # ---- 重活（封面提取+缩放+主色、歌词、ReplayGain）丢后台线程 ----
-        # 直接在主线程做这些（磁盘 IO + 图片编解码 + 主色提取）会导致切歌「慢半拍」。
+    def _dispatch_track_assets(self, track, restoring: bool) -> None:
+        """在专用后台线程加载封面/歌词/ReplayGain（重活，避免切歌卡顿）。"""
         is_local = bool(track.is_local)
         filepath = track.filepath
         token = id(track)          # 用于丢弃过期结果（快速连切时）
@@ -1021,15 +1037,14 @@ class MainWindow(Adw.ApplicationWindow):
         self._current_is_local = is_local
         import time as _tt
         self._track_click_t0 = _tt.monotonic()
-        # 主线程判断当前是否在沉浸页（GTK 调用必须在主线程；
-        # 后台线程读 _main_stack 会不可靠，导致背景色不更新）。
+        # 主线程判断当前是否在沉浸页（GTK 调用必须在主线程）
         want_color = False
         try:
             want_color = (self._main_stack.get_visible_child_name() == "nowplaying")
         except Exception:
             want_color = False
-        # 切歌封面/歌词加载用「独立专用线程」：不与其他批量任务（扫描、列表封面）
-        # 争抢公共线程池，避免点击后封面迟迟不出现的等待感。
+        # 用独立专用线程：不与其他批量任务争抢公共线程池，
+        # 避免点击后封面迟迟不出现的等待感。
         import threading
         threading.Thread(
             target=self._load_track_assets_bg,
