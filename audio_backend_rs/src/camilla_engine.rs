@@ -13,12 +13,95 @@ use camillalib::config;
 use camillalib::pipeline::Pipeline;
 use camillalib::{PrcFmt, ProcessingParameters};
 
+// ============================================================
+// 结构比对与变更检测（决定「平滑更新」还是「重建」）
+// ============================================================
+
+/// 管线结构是否一致：pipeline 步骤的「类型 + 名称」序列相同即视为一致。
+///
+/// 结构一致时，参数变化可用 update_parameters 平滑更新；
+/// 结构变化（增删/重排步骤）时必须重建。
+fn same_structure(a: &config::Configuration, b: &config::Configuration) -> bool {
+    step_signature(a) == step_signature(b)
+}
+
+/// 提取 pipeline 步骤签名（类型 + 名称），用于结构比对。
+fn step_signature(conf: &config::Configuration) -> Vec<(u8, String)> {
+    let mut sig = Vec::new();
+    if let Some(steps) = conf.pipeline.as_ref() {
+        for step in steps {
+            match step {
+                // Filter 步骤含多个滤波器名 → 拼成签名
+                config::PipelineStep::Filter(s) => sig.push((0u8, s.names.join(","))),
+                config::PipelineStep::Mixer(s) => sig.push((1u8, s.name.clone())),
+                config::PipelineStep::Processor(s) => sig.push((2u8, s.name.clone())),
+            }
+        }
+    }
+    sig
+}
+
+/// 找出「参数发生变化」的滤波器名。
+///
+/// 用序列化后的字符串比对；名称新增/删除不算变更（那属于结构变化）。
+fn changed_filter_names(prev: &config::Configuration, cur: &config::Configuration) -> Vec<String> {
+    changed_names(
+        prev.filters.as_ref(),
+        cur.filters.as_ref(),
+        |f| serde_json::to_string(f).unwrap_or_default(),
+    )
+}
+
+fn changed_mixer_names(prev: &config::Configuration, cur: &config::Configuration) -> Vec<String> {
+    changed_names(
+        prev.mixers.as_ref(),
+        cur.mixers.as_ref(),
+        |m| serde_json::to_string(m).unwrap_or_default(),
+    )
+}
+
+fn changed_processor_names(prev: &config::Configuration, cur: &config::Configuration) -> Vec<String> {
+    changed_names(
+        prev.processors.as_ref(),
+        cur.processors.as_ref(),
+        |p| serde_json::to_string(p).unwrap_or_default(),
+    )
+}
+
+/// 通用：找出两个 HashMap<String, T> 中「值变化了」的键。
+fn changed_names<T>(
+    prev: Option<&std::collections::HashMap<String, T>>,
+    cur: Option<&std::collections::HashMap<String, T>>,
+    to_str: impl Fn(&T) -> String,
+) -> Vec<String> {
+    let empty = std::collections::HashMap::new();
+    let prev = prev.unwrap_or(&empty);
+    let cur = cur.unwrap_or(&empty);
+    let mut out = Vec::new();
+    for (name, cur_val) in cur.iter() {
+        match prev.get(name) {
+            Some(prev_val) => {
+                if to_str(prev_val) != to_str(cur_val) {
+                    out.push(name.clone());
+                }
+            }
+            None => {
+                // 新增项：也纳入变更（虽然结构比对通常会先拦下）
+                out.push(name.clone());
+            }
+        }
+    }
+    out
+}
+
 pub struct CamillaEngine {
     pipeline: Option<Pipeline>,
     rate: u32,
     channels: usize,
     chunksize: usize,
     last_yaml: String,
+    /// 上次的配置（用于比对结构是否变化，决定「平滑更新」还是「重建」）。
+    last_conf: Option<config::Configuration>,
     /// 输入缓冲（交错 f32）：攒够 chunksize 帧才处理，避免每块补零稀释音量。
     in_buf: Vec<f32>,
     /// 输出缓冲（交错 f32）：处理后的样本，供逐块取回。
@@ -41,6 +124,7 @@ impl CamillaEngine {
             channels: 2,
             chunksize: 1024,
             last_yaml: String::new(),
+            last_conf: None,
             in_buf: Vec::new(),
             out_buf: Vec::new(),
             tube: None,
@@ -78,7 +162,13 @@ impl CamillaEngine {
         self.pipeline.is_some()
     }
 
-    /// 用 camillalib YAML 字符串重建管线。
+    /// 应用 camillalib YAML 配置。
+    ///
+    /// **平滑优先**：若管线结构（滤波器/混音器/处理器名单）未变，
+    /// 仅用 `Pipeline::update_parameters` 原地更新变化的参数——
+    /// 音频流不中断（拖动 EQ 滑块等实时调参不再「一顿一顿」）。
+    /// 仅当结构变化（增删步骤）时才重建 Pipeline。
+    ///
     /// 返回 Err 时保留旧管线不变。
     pub fn set_yaml(&mut self, yaml: &str) -> Result<(), String> {
         if yaml == self.last_yaml && self.pipeline.is_some() {
@@ -94,11 +184,35 @@ impl CamillaEngine {
         // 校验配置（不改设备，只检查管线合法性）
         config::validate_config(&mut conf, None)
             .map_err(|e| format!("camilla 配置无效: {e}"))?;
+
+        // 已有管线，且结构未变 → 平滑原地更新参数（不中断音频）
+        if let Some(prev) = self.last_conf.as_ref() {
+            if self.pipeline.is_some() && same_structure(prev, &conf) {
+                let changed_filters = changed_filter_names(prev, &conf);
+                let changed_mixers = changed_mixer_names(prev, &conf);
+                let changed_processors = changed_processor_names(prev, &conf);
+                if let Some(pipeline) = self.pipeline.as_mut() {
+                    pipeline.update_parameters(
+                        conf.clone(),
+                        &changed_filters,
+                        &changed_mixers,
+                        &changed_processors,
+                    );
+                }
+                self.last_conf = Some(conf);
+                self.last_yaml = yaml.to_string();
+                // 平滑更新：**不清空缓冲**，音频连续
+                return Ok(());
+            }
+        }
+
+        // 结构变化（或首次）：重建 Pipeline
         let params = Arc::new(ProcessingParameters::default());
-        let pipeline = Pipeline::from_config(conf, params);
+        let pipeline = Pipeline::from_config(conf.clone(), params);
         self.pipeline = Some(pipeline);
+        self.last_conf = Some(conf);
         self.last_yaml = yaml.to_string();
-        // 配置变化：清空缓冲，避免旧数据/长度不匹配
+        // 重建：清空缓冲，避免旧数据/长度不匹配
         self.in_buf.clear();
         self.out_buf.clear();
         Ok(())
@@ -108,6 +222,7 @@ impl CamillaEngine {
     pub fn clear(&mut self) {
         self.pipeline = None;
         self.last_yaml.clear();
+        self.last_conf = None;
         self.in_buf.clear();
         self.out_buf.clear();
     }
