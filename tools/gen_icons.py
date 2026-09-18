@@ -1,6 +1,7 @@
 """从根目录 image.png 生成 data/icons/ 下各尺寸应用图标。
 
-先裁剪到非透明主体边界框（去掉多余透明边距），居中为正方形后再缩放。
+若源图已是正方形：直接缩放到各尺寸（保留原有透明边角，适合已做好的圆角图标）。
+若源图非正方形：裁剪到非透明主体、居中为正方形后再缩放。
 
 用法：python3 tools/gen_icons.py
 依赖：GdkPixbuf（PyGObject 自带）。
@@ -89,26 +90,30 @@ def main() -> int:
     os.makedirs(OUT_DIR, exist_ok=True)
     src = GdkPixbuf.Pixbuf.new_from_file(SRC)
     print(f"源图：{src.get_width()}x{src.get_height()}")
-    cropped = _crop_to_subject(src)
-    print(f"裁剪后：{cropped.get_width()}x{cropped.get_height()}")
-    cw, ch = cropped.get_width(), cropped.get_height()
+
+    # 关键：若源图已是正方形，直接缩放（不做裁剪/合成）。
+    # 裁剪+合成会破坏圆角图标的透明边角（产生凸块）。
+    # 仅当源图非正方形时，才走裁剪居中逻辑。
+    if src.get_width() == src.get_height():
+        print("源图为正方形：直接缩放（不裁剪）")
+        base = src
+    else:
+        base = _crop_to_subject(src)
+        print(f"非正方形源图，裁剪后：{base.get_width()}x{base.get_height()}")
+
     for size in SIZES:
-        scale = max(size / cw, size / ch)
-        nw, nh = max(1, int(round(cw * scale))), max(1, int(round(ch * scale)))
-        scaled = cropped.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)
-        square = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, size, size)
-        square.fill(0x00000000)
-        scaled.composite(
-            square, 0, 0, size, size,
-            -(nw - size) // 2, -(nh - size) // 2,
-            1.0, 1.0, GdkPixbuf.InterpType.BILINEAR, 255,
-        )
+        scaled = base.scale_simple(size, size, GdkPixbuf.InterpType.BILINEAR)
+        if not scaled.get_has_alpha():
+            scaled = scaled.add_alpha(False, 0, 0, 0)
         path = os.path.join(OUT_DIR, f"xiatiao-{size}.png")
-        square.savev(path, "png", [], [])
-        print(f"  -> data/icons/xiatiao-{size}.png")
-    cropped_256 = GdkPixbuf.Pixbuf.new_from_file(os.path.join(OUT_DIR, "xiatiao-256.png"))
-    cropped_256.savev(os.path.join(OUT_DIR, "xiatiao.png"), "png", [], [])
-    print("  -> data/icons/xiatiao.png")
+        scaled.savev(path, "png", [], [])
+        print(f"  -> data/icons/xiatiao-{size}.png ({scaled.get_width()}x{scaled.get_height()})")
+
+    # 主图 xiatiao.png = 256 尺寸。
+    import shutil
+    shutil.copy(os.path.join(OUT_DIR, "xiatiao-256.png"),
+                os.path.join(OUT_DIR, "xiatiao.png"))
+    print("  -> data/icons/xiatiao.png (256)")
     return 0
 
 
