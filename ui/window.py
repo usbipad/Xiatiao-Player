@@ -218,7 +218,7 @@ class MainWindow(Adw.ApplicationWindow):
         # ---- 系统托盘（GNOME 需 AppIndicator 扩展；失败则静默跳过）----
         self._tray = None
         try:
-            from .tray import Tray
+            from services.tray import Tray
             self._tray = Tray(
                 on_play_pause=self._on_play_pause,
                 on_prev=self._on_prev,
@@ -281,7 +281,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         # ---- MPRIS2：桌面媒体控件 / 媒体键 / 锁屏控制 ----
         try:
-            from core.mpris import MprisService
+            from services.mpris import MprisService
             self._mpris = MprisService(self.player, self.playlist)
             self._mpris.set_raise_callback(self._mpris_raise)
             self._mpris.set_quit_callback(self._mpris_quit)
