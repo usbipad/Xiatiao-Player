@@ -4,6 +4,9 @@
 
 本文档面向接手项目的开发者，覆盖架构、模块、构建、运行、测试、打包与已知问题。
 
+> 说明：本文档已按**当前代码实际状态**校对（不再依赖早期设计描述）。
+> 若与代码有出入，以代码为准。
+
 ---
 
 ## 1. 项目简介
@@ -27,7 +30,7 @@
 数据流：
 
     Python UI  --(IPC: Unix socket + JSON)-->  Rust 后端
-    Rust 后端：解码(symphonia/ffmpeg) -> DSP(EQ/PEQ/Loudness/Camilla) -> 输出(PipeWire/ALSA)
+    Rust 后端：解码(symphonia/ffmpeg) -> DSP(Rust 内置链 + 内嵌 CamillaDSP) -> 输出(PipeWire 或 ALSA 独占)
 
 双进程理由：音频实时性与 DSP 性能用 Rust；UI 迭代用 Python。
 
@@ -39,11 +42,11 @@
 
 - main.py：应用入口（GTK4 Application）
 - config/settings.py：配置读写（~/.config/xiatiao/config.json）
-- core/：核心逻辑（rust_backend / player_core / playlist / camilla / dsp_presets / 各 store / viz / i18n）
+- core/：核心逻辑（rust_backend / player_core / playlist / camilla / dsp_store / eq_presets / 各 store / viz / i18n）
 - models/：数据模型（track / coverart / lyrics / replaygain）
 - providers/：音乐来源（base / local 本地曲库）
 - services/：系统集成（mpris / tray / shortcuts / track_assets）
-- ui/：GTK4 界面（window / player_panel / settings_dialog / 各页面 / widgets）
+- ui/：GTK4 界面（window / player_panel / settings_dialog / advanced_dsp_window / effect_page / 各页面 / widgets）
 - data/：hrtf（空间音频 IR）/ icons（应用图标）/ desktop 文件
 - audio_backend_rs/：Rust 音频后端（见第 5 节）
 - debian/：Debian 打包配置
@@ -62,19 +65,36 @@
 - 日志：后端输出写 /tmp/xiatiao-backend.log；应用日志 /tmp/xiatiao-app.log。
 - 方法：play_file / pause / resume / stop / seek_seconds / set_volume / set_effect / set_dsp / set_camilla_yaml / set_engine / set_coloring / set_dsd_mode / set_output_device / list_output_devices。
 
-注意：list_output_devices 用独立短连接直读，避免与主线程事件队列死锁。
+注意：list_output_devices 用**独立一次性短连接**直读响应，绕开主线程事件队列。
+若复用主连接 + 等 event，在 UI 主线程调用会与 GLib.idle_add 派发互相阻塞，导致下拉永远为空。
 
 ### 4.2 播放门面 core/player_core.py
 
 对 UI 暴露统一接口，并转发后端 GTK 信号（position-update / duration-changed / state / error-occur / audio-info 等）。
 
+**注意**：文件头注释仍写着「当前为 GstBackend，后续可换成独立 Rust 进程」，但
+`_create_default_backend()` 实际返回的是 `RustBackend`（core/rust_backend.py）。注释为早期过渡期遗留，以后端实现为准。
+
 ### 4.3 配置与数据位置
 
 - 配置：~/.config/xiatiao/config.json
+- DSP 自定义预设：~/.config/xiatiao/dsp_presets.json
 - 历史：~/.local/share/xiatiao/history.db
 - 收藏：~/.local/share/xiatiao/liked.db
 - 歌单：~/.local/share/xiatiao/playlists.db
 - 缓存：~/.cache/xiatiao/cache.json
+
+config.json 中与音频相关的关键项：
+
+- `dsp_params`：完整 DSP 参数 dict（持久化副本）
+- `dsp_enabled`：全局 DSP 开关（Rust 内置链）
+- `camilla_enabled`：Camilla 引擎开关（注意：Rust 侧实际参与与否由归属表推导，见 5.3）
+- `audio_effect`：当前音效键
+- `effect_preset`：当前选中音效预设名（仅用于对话框高亮）
+- `dsd_output_enabled`：DSD 输出总开关（关=走老逻辑，DSD 经 ffmpeg 软解为 PCM + PipeWire）
+- `dsd_output_mode`：DSD 输出模式（auto/native/dop/pcm）
+- `output_device`：输出设备名（**ALSA hw 设备名**；空=系统默认走 PipeWire）
+- `convolution_ir`：已加载的卷积 IR 路径（UI 侧记录）
 
 ---
 
@@ -84,12 +104,12 @@
 - engine.rs：播放引擎，请求分发、后端切换、解码线程管理、死锁防护。
 - protocol.rs：IPC 协议（Request / Event / DeviceInfo）。
 - shared.rs：解码线程与输出层共享状态。
-- decode.rs：symphonia 解码路径 + DSD 分流。
+- decode.rs：symphonia 解码路径 + DSD 分流（读取 dsd_mode 决定 native/dop/pcm）。
 - decode_ffmpeg.rs：ffmpeg 子进程解码（APE/WavPack/DSD 软解等）。
 - dsd.rs：DSD 原生解析（DSF/DFF 流式）+ DoP 封装 + Native 打包。
 - output.rs：PipeWire 输出 + AudioOut 统一后端枚举。
-- output_alsa.rs：ALSA 独占输出 + 硬件设备枚举 + 格式协商。
-- dsp/：DSP 链（biquad / loudness / params / mod）。
+- output_alsa.rs：ALSA 独占输出 + 硬件设备枚举 + 格式协商 + DSD(DoP/Native) 模式。
+- dsp/：Rust 内置 DSP 链（biquad / loudness / params / mod）。
 - camilla_engine.rs：内嵌 CamillaDSP 引擎。
 - viz.rs：可视化旁路（FIFO 喂数据给 UI）。
 - bbe.rs / tube.rs / reverb.rs / oversample.rs：音色/混响/超采样。
@@ -98,15 +118,40 @@
 
 ### 5.1 输出后端选择
 
-- 输出设备为空（自动）：走 PipeWire（系统默认）。
-- 指定 hw:CARD=...,DEV=...：走 ALSA 独占（绕过音频服务）。
+- `output_device` 为空（自动）：走 **PipeWire**（系统默认）。
+- `output_device` 非空：切到 **ALSA 独占**（绕过音频服务）。
+  - 设备名格式为 ALSA hw 名，如 `hw:CARD=Amplif,DEV=0`（见 engine.rs 单元测试）。
+  - 注意：`shared.rs` 中该字段注释写的是「PipeWire sink 名」，属**注释过时**；以 engine.rs 的
+    `apply_output_backend` 实际行为为准（ALSA hw 名）。
+- 设备枚举：后端 `ListOutputDevices` 返回的是 **ALSA 硬件设备**（`output_alsa::list_devices()`），
+  而非 PipeWire sink。UI 侧若用 `pactl list sinks` 枚举会与后端期望不一致。
 
 ### 5.2 DSD 输出模式
+
+`shared.dsd_mode` 会被 **decode.rs 与 output_alsa.rs 实际消费**（不是只存不用）：
 
 - auto：优先直通（设备支持则 native/dop），失败降级 PCM 软解。
 - native：原生 DSD 直通（需 DAC 支持 DSD_U32/U16/U8）。
 - dop：DoP 封装（需 DAC 支持 DoP）。
 - pcm：ffmpeg 软解为 PCM（兼容性最好）。
+
+**切换行为**：切模式时若当前正在播放 DSD 文件，会**重载当前文件并从原位置续播**，
+使新模式对已播放的流真正生效（否则用户会以为「没生效」）。见 engine.rs 的 SetDsdMode 分支。
+
+### 5.3 DSP 功能归属（Camilla vs Rust）—— 重要机制
+
+Rust 与内嵌 CamillaDSP 是**两条并行 DSP 路径**。某功能由谁处理，由归属表决定：
+
+- 定义位置：`dsp/params.rs` 的 `camilla_should_engage()` / `camilla_features()`。
+- 规则：**功能重叠时优先 Camilla**；Rust 只做 Camilla 没有的。
+- 归 Camilla 的功能：pre_gain、eq、peq、convolution、bass、treble、compressor、channel_matrix、phase_invert。
+- 归 Rust 独有的功能：混响(reverb)、tube、BBE、宽度(width)、平衡(balance)、crossfeed、
+  ReplayGain、**Loudness（动态等响度，依赖播放器音量，Camilla 拿不到音量）**。
+
+**Camilla 是否参与 = `camilla_should_engage(params)`**（「启用 DSP」总开关关闭时一律不参与），
+**不是**靠 params 里的 `camilla_enabled` 字段。
+
+`Request::SetEngine` 命令在 engine.rs 中**仅占位（Ack 后不做实际切换）**；Camilla 参与由上述归属表自动推导。
 
 ---
 
@@ -128,6 +173,16 @@
     position{sec} / duration{sec} / state{state} / end_of_stream
     audio_info{info} / effect{preset} / dsp{params}
     output_devices{devices:[{id,description}]}
+
+**命令语义要点（对齐代码）：**
+
+- `set_output_device{name}`：name 为 ALSA hw 设备名；空=默认走 PipeWire。
+- `set_engine{camilla}`：仅占位，实际参与由后端按归属表推导（见 5.3）。
+- `set_dsd_mode{mode}`：会重载当前 DSD 文件以生效。
+- **卷积 IR 没有独立 IPC 命令**：卷积通过 `set_dsp` 里的 `convolution_*` 参数生效；
+  参数由 `core/camilla.py` 的 `build_config()` 生成 Camilla YAML。
+  （protocol.rs 中残留的「加载/清除卷积 IR」空注释无对应 variant，属历史遗留。）
+- `reset_dsp`：后端重置为默认参数并回发 `dsp{params}`。
 
 ---
 
@@ -167,10 +222,8 @@
 
 - Python 冒烟：python3 tests/smoke_test.py（模块导入、TrackItem、Playlist、配置、缓存，52 项）
 - Python minmax：python3 tests/minmax_test.py（窗口最大化/恢复性能）
-- Rust 单元：cd audio_backend_rs && cargo test（deps、DSP loudness、camilla_engine，14 项）
+- Rust 单元：cd audio_backend_rs && cargo test（deps、DSP loudness、camilla_engine、engine 的 output_device_changed 等）
 - Rust 构建：cargo build --release
-
-当前状态：全部通过（Rust 14/14、Python 52/52）。
 
 ---
 
@@ -208,41 +261,94 @@
 
 ---
 
-## 11. 已知问题与注意事项
+## 11. DSP 参数流转与预设（当前实现现状）
 
-### 11.1 硬件限制
+> 本节记录当前实现，供理解与后续优化参考。
+
+### 11.1 参数的多个副本
+
+DSP 参数（扁平 dict）在内存/磁盘中存在**多个副本**，改动时需手动同步：
+
+- `MainWindow.dsp_page._params`：主窗口内一个「隐形」EffectPage（不当页面显示，仅作参数宿主）。
+- `SettingsWindow._effect_page._params`：设置窗口的音效页。
+- `AdvancedDspWindow._params`：高级窗口的总参数。
+- `AdvancedDspWindow._feature_pages[*]._params`：高级窗口内每个功能页各持一份快照。
+- `config.json` 的 `dsp_params`：持久化副本。
+
+各视图通过散落的 `_sync_*` 方法刷新（`_sync_all_switches` / `_sync_extra_switches` /
+`_sync_sliders` / `_sync_convolution_ui` / `_update_camilla_sensitivity` /
+`_update_coloring_sensitivity`）。**漏调其中任何一个就会导致 UI 与参数不一致**，
+这是多起「加载预设后 UI 不同步」问题的共同根因。
+
+### 11.2 三套「预设」概念
+
+1. **内置音效预设**：`core/eq_presets.py` 的 `BUILTIN_PRESETS`（硬编码声学调音）。
+2. **自定义预设**：`core/dsp_store.py` 的 `DspPresetStore`（存 dsp_presets.json）。
+3. **`effect_preset` 标记**：config 中一个字符串，仅用于音效对话框高亮。
+
+主界面音效对话框选择 → `MainWindow._on_effect()`：先查内置预设，再查自定义预设。
+高级窗口「预设管理」→ 加载/保存自定义预设（`AdvancedDspWindow._on_preset_load/save`）。
+
+### 11.3 下发链路
+
+    UI 改动 → EffectPage._emit()
+      → MainWindow._on_dsp_changed(params)
+          ├─ player.set_dsp(params)                # Rust 内置链参数
+          ├─ cfg.set("dsp_params", params)         # 持久化
+          ├─ cfg.set("effect_preset", ...)         # 高亮标记
+          ├─ 防抖 80ms → camilla.build_config() → player.set_camilla_yaml()  # Camilla
+          └─ 手动同步 dsp_page 的 UI
+
+### 11.4 加载预设的语义（现状）
+
+`AdvancedDspWindow._on_preset_load` 采用「**默认基底 + 预设覆盖**」：
+预设里没有的功能回到默认（关闭），避免预设未启用却显示为开启。
+随后手动刷新各功能页 UI（含卷积、染色）。
+
+---
+
+## 12. 已知问题与注意事项
+
+### 12.1 硬件限制
 
 - DoP / Native DSD 需要 DAC 支持。若 DAC 不支持（USB 描述符无 DSD 声明），DoP/Native 会输出白噪音或无声。
   - 验证方法：用成熟播放器（如 mpd 配 dop yes）对比。
   - 不支持时请用 pcm 模式（软解）。
-- 固定采样率设备（如部分内置声卡固定 48kHz）无法独占播放其它采样率素材，会报错——改用“自动（系统默认）”走 PipeWire 重采样。
+- 固定采样率设备（如部分内置声卡固定 48kHz）无法独占播放其它采样率素材，会报错——改用「自动（系统默认）」走 PipeWire 重采样。
 
-### 11.2 输出后端
+### 12.2 输出后端
 
 - ALSA 独占：同一 hw 设备同一时刻只能被一个进程打开。若被 PipeWire 占用，会尝试自动释放；仍失败则报错。
 - 停止释放：stop 会停止输出后端、释放设备（避免残留占用）。
 - 切设备/切模式/切歌：通过 abort_write 中断卡在 write 的解码线程，避免 join 死锁。
 
-### 11.3 图标缓存（GNOME Wayland）
+### 12.3 文档/注释过时点（已按代码校对）
+
+- `shared.rs` 中 `output_device` 注释写「PipeWire sink 名」，实际为 ALSA hw 名。
+- `player_core.py` 头注释写「当前为 GstBackend」，实际用 RustBackend。
+- `protocol.rs` 中卷积 IR 相关空注释无对应 variant。
+
+### 12.4 图标缓存（GNOME Wayland）
 
 更换图标后 GNOME Shell 可能缓存旧图标。注销重登是 Wayland 下刷新图标缓存的可靠方法。
 
-### 11.4 Rust 编译警告
+### 12.5 Rust 编译警告
 
-后端编译有约 25 个 dead-code 警告（多为 dsd.rs 的非流式辅助函数、native 路径、旧 API 保留），不影响功能。
+后端编译有若干 dead-code 警告（多为 dsd.rs 的非流式辅助函数、native 路径、旧 API 保留），不影响功能。
 
 ---
 
-## 12. 开发约定
+## 13. 开发约定
 
 - 改动聚焦：保持改动范围最小，遵循现有结构/命名/风格。
 - IPC 兼容：新增命令/事件时，protocol.rs 与 rust_backend.py 需同步。
 - 实时安全：输出 RT 回调中不加锁、不分配、不做 IO。
 - 资源释放：切换/停止时确保线程 join、设备释放、子进程清理。
+- 文档同步：本文件如与代码不符，以代码为准，并顺手更新本文件。
 
 ---
 
-## 13. 快速上手清单
+## 14. 快速上手清单
 
     # 1. 装依赖（见 7.1）
     # 2. 编译后端
@@ -258,6 +364,3 @@
 ---
 
 文档结束。如有疑问，请参考代码注释（各模块头部有详细说明）。
-
-
-

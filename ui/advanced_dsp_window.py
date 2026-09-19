@@ -87,6 +87,23 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
                 import traceback as _tb
                 print(f"[adv-dsp] 构建功能页 {title} 失败: {exc}\n{_tb.format_exc()}", flush=True)
                 log.debug("构建功能页 %s 失败: %s", title, exc)
+        # 总开关在第一个功能页里；它只刷新本页各组，不会通知染色页。
+        # 这里额外挂一个回调，让染色组随总开关一起置灰 / 取消灰。
+        try:
+            if self._feature_pages:
+                master = getattr(self._feature_pages[0], "_master_switch", None)
+                if master is not None:
+                    master.connect("notify::active", self._on_master_active_changed)
+        except Exception:
+            log.debug("挂载染色组联动失败", exc_info=True)
+
+    def _on_master_active_changed(self, switch, _pspec) -> None:
+        """总开关切换：同步 advanced 窗口侧的染色组置灰。"""
+        try:
+            self._params["enabled"] = bool(switch.get_active())
+        except Exception:
+            pass
+        self._update_coloring_sensitivity()
 
     def _make_page_handler(self, groups: list):
         """给某功能页生成回调：只合并该页负责字段，避免其它页字段被空值覆盖。
@@ -167,6 +184,19 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         page.add(g3)
 
         self.add(page)
+        # 染色归 Rust DSP 链（受「启用 DSP」总开关控制）：
+        # 总开关关闭时置灰。存下组引用，供加载预设后刷新置灰状态。
+        self._coloring_groups = [g2, g3]
+        self._update_coloring_sensitivity()
+
+    def _update_coloring_sensitivity(self) -> None:
+        """按「启用 DSP」总开关刷新染色组置灰状态。"""
+        enabled = bool(self._params.get("enabled", False))
+        for g in getattr(self, "_coloring_groups", []) or []:
+            try:
+                g.set_sensitive(enabled)
+            except Exception:
+                pass
 
     def _make_scale(self, lo: float, hi: float, step: float, key: str):
         sc = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL)
@@ -292,8 +322,38 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         name = self._preset_names[idx]
         params = get_dsp_preset_store().get(name)
         if params:
-            self._params.update(params)
+            # 加载预设采用「默认基底 + 预设覆盖」语义：
+            # 预设里没有的功能回到默认（关闭），而不是保留当前旧值，
+            # 避免预设未启用却显示为开启。
+            from .effect_page import _default_params as _ep_defaults
+            defaults = _ep_defaults()
+            base = dict(self._params)   # 保留窗口其它字段
+            base.update(defaults)       # 功能字段先归默认
+            # 染色字段不在一级默认里，单独归默认（关闭），
+            # 保证预设未含染色时也回到关闭，而非沿用旧状态。
+            base["tube_enabled"] = False
+            base["bbe_enabled"] = False
+            base.update(params)         # 再套预设
+            self._params = base
             self._emit()
+            # 同步到各功能页并刷新 UI：开关勾选、置灰状态、滑块值。
+            for page in getattr(self, "_feature_pages", []) or []:
+                try:
+                    p = dict(defaults)      # 默认基底：未启用功能归关闭
+                    p.update(params)        # 套预设
+                    page._params = p
+                    page.refresh_from_params()
+                except Exception:
+                    log.debug("同步功能页失败", exc_info=True)
+            # 染色页（电子管 / BBE）开关 + 置灰同步。
+            try:
+                if getattr(self, "_tube_switch", None) is not None:
+                    self._tube_switch.set_active(bool(self._params.get("tube_enabled", False)))
+                if getattr(self, "_bbe_switch", None) is not None:
+                    self._bbe_switch.set_active(bool(self._params.get("bbe_enabled", False)))
+                self._update_coloring_sensitivity()
+            except Exception:
+                log.debug("同步染色页失败", exc_info=True)
 
     def _on_preset_delete(self, _btn) -> None:
         from core.dsp_store import get_dsp_preset_store

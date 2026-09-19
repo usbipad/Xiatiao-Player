@@ -179,6 +179,7 @@ class EffectPage(Adw.PreferencesPage):
     def _build_advanced_entry(self) -> None:
         """基础模式底部：打开高级 DSP 设置的入口。"""
         group = Adw.PreferencesGroup()
+        self._advanced_group = group  # 白名单：高级入口不锁（内部功能单独置灰）
         row = Adw.ActionRow()
         row.set_title(_("高级设置"))
         row.set_subtitle(_("EQ / 限幅 / 压缩 / 响度 / 卷积 等"))
@@ -194,6 +195,7 @@ class EffectPage(Adw.PreferencesPage):
     def _build_preset_group(self) -> None:
         group = Adw.PreferencesGroup()
         group.set_title(_("预设"))
+        self._preset_group = group  # 白名单：预设切换不锁
         self.add(group)
         self._preset_store = get_dsp_preset_store()
 
@@ -415,6 +417,18 @@ class EffectPage(Adw.PreferencesPage):
             except Exception:
                 pass
 
+    def refresh_from_params(self) -> None:
+        """按当前 _params 统一刷新本页所有 UI。
+
+        外部（加载预设 / 主界面选音效 / 高级窗口改动）同步参数后，
+        调此方法即可，避免逐个记 _sync_* 而漏刷某类控件。
+        """
+        self._sync_all_switches()
+        self._sync_extra_switches()
+        self._sync_convolution_ui()
+        self._sync_sliders()
+        self._update_camilla_sensitivity()
+
     def _sync_convolution_label(self) -> None:
         """刷新卷积 IR 文件名标签（无 IR 时显示「未加载」）。"""
         lbl = getattr(self, "_conv_ir_label", None)
@@ -425,6 +439,54 @@ class EffectPage(Adw.PreferencesPage):
             lbl.set_text(os.path.basename(path) if path else _("未加载"))
         except Exception:
             pass
+
+    def _sync_convolution_ui(self) -> None:
+        """按 _params 刷新卷积全部控件：开关、IR 标签、IR 模式、IR 声道。
+
+        加载预设时调用，保证 UI 与预设一致（此前只刷开关，模式/声道不刷新）。
+        """
+        # 开关
+        sw = getattr(self, "_convolution_switch", None)
+        if sw is not None:
+            try:
+                cb = getattr(self, "_on_convolution_toggled", None)
+                if cb is not None:
+                    sw.handler_block_by_func(cb)
+                sw.set_active(bool(self._params.get("convolution_enabled", False)))
+                if cb is not None:
+                    sw.handler_unblock_by_func(cb)
+            except Exception:
+                pass
+        # IR 文件名
+        self._sync_convolution_label()
+        # IR 模式（单路 / 立体声）
+        mode_row = getattr(self, "_conv_mode_row", None)
+        if mode_row is not None:
+            try:
+                cb = getattr(self, "_on_convolution_mode", None)
+                if cb is not None:
+                    mode_row.handler_block_by_func(cb)
+                stereo = bool(self._params.get("convolution_stereo_ir", False))
+                mode_row.set_selected(1 if stereo else 0)
+                if cb is not None:
+                    mode_row.handler_unblock_by_func(cb)
+            except Exception:
+                pass
+        # IR 声道 + 立体声模式下的置灰
+        ch_row = getattr(self, "_conv_channel_row", None)
+        if ch_row is not None:
+            try:
+                cb = getattr(self, "_on_convolution_channel", None)
+                if cb is not None:
+                    ch_row.handler_block_by_func(cb)
+                ch = int(self._params.get("convolution_channel", 0) or 0)
+                ch_row.set_selected(1 if ch == 1 else 0)
+                if cb is not None:
+                    ch_row.handler_unblock_by_func(cb)
+                ch_row.set_sensitive(
+                    not bool(self._params.get("convolution_stereo_ir", False)))
+            except Exception:
+                pass
 
     def _reset_all(self) -> None:
         """重置所有 DSP 功能为默认值（总开关状态保持不变）。"""
@@ -461,6 +523,7 @@ class EffectPage(Adw.PreferencesPage):
     # ------------------------------------------------------------
     def _build_master_group(self) -> None:
         group = Adw.PreferencesGroup()
+        self._master_group = group  # 白名单：总开关所在组，总开关关闭时不置灰
         self.add(group)
 
         row = Adw.ActionRow()
@@ -995,7 +1058,7 @@ class EffectPage(Adw.PreferencesPage):
 
         # 低音开关
         sw = Adw.SwitchRow()
-        sw.set_title(_("启用低音增强"))
+        sw.set_title(_("启用音频增强"))
         sw.set_active(bool(self._params.get("bass_enabled", False)))
         sw.connect("notify::active", self._on_bass_enabled_toggled)
         group.add(sw)
@@ -1055,9 +1118,9 @@ class EffectPage(Adw.PreferencesPage):
         group.set_title(_("立体声"))
         self.add(group)
 
-        # 立体声宽度（独立开关）
+        # 立体声处理总开关（同时控制「宽度」与「平衡」；关闭则二者复位）
         sw = Adw.SwitchRow()
-        sw.set_title(_("启用立体声宽度"))
+        sw.set_title(_("启用立体声处理"))
         sw.set_active(bool(self._params.get("width_enabled", False)))
         sw.connect("notify::active", lambda r, _p: self._on_simple_toggle(r, "width_enabled"))
         group.add(sw)
@@ -1069,7 +1132,7 @@ class EffectPage(Adw.PreferencesPage):
         row.add_suffix(scale)
         group.add(row)
 
-        # 左右平衡：无独立开关，滑块直接生效
+        # 左右平衡：由上方「启用立体声处理」开关统一控制
         row = Adw.ActionRow()
         row.set_title(_("平衡"))
         row.set_subtitle(_("-1=全左, 0=居中, 1=全右"))
@@ -1382,9 +1445,38 @@ class EffectPage(Adw.PreferencesPage):
         self._emit()
 
     def _update_camilla_sensitivity(self) -> None:
-        """刷新置灰状态：DSP 总开关关闭时，所有功能组置灰。"""
+        """刷新置灰状态：DSP 总开关关闭时，所有功能组置灰。
+
+        白名单（不置灰）：
+          - 总开关所在组（否则锁死无法再开）；
+          - 高级设置入口组（入口不锁，内部功能单独置灰）；
+          - 预设组（切换预设不锁）。
+        """
         enabled = bool(self._params.get("enabled", False))
-        for g in getattr(self, "_camilla_groups", []) or []:
+        whitelist = {
+            id(getattr(self, "_master_group", None)),
+            id(getattr(self, "_advanced_group", None)),
+            id(getattr(self, "_preset_group", None)),
+        }
+
+        # 递归收集页面内所有 PreferencesGroup（组嵌在
+        # ScrolledWindow → Viewport 之下，需递归查找）。
+        def _collect(widget, out):
+            try:
+                if isinstance(widget, Adw.PreferencesGroup):
+                    out.append(widget)
+                child = widget.get_first_child()
+                while child is not None:
+                    _collect(child, out)
+                    child = child.get_next_sibling()
+            except Exception:
+                pass
+
+        groups = []
+        _collect(self, groups)
+        for g in groups:
+            if id(g) in whitelist:
+                continue
             try:
                 g.set_sensitive(enabled)
             except Exception:

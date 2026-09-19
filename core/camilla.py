@@ -159,7 +159,7 @@ def build_config(params: Dict[str, Any], samplerate: int,
         }
         filter_names.append("bass")
 
-    if abs(float(p.get("treble_gain_db", 0.0) or 0.0)) > 1e-6:
+    if p.get("bass_enabled") and abs(float(p.get("treble_gain_db", 0.0) or 0.0)) > 1e-6:
         filters["treble"] = {
             "type": "Biquad",
             "parameters": {"type": "Highshelf",

@@ -329,9 +329,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         # ---- 鸣谢 ----
         thanks = Adw.PreferencesGroup()
         thanks.set_title(_("鸣谢"))
-        thanks.add(self._make_info_row(
-            _("AI 协作"),
-            _("DeepSeek（代码）、Kimi / Gemini（应用图标）")))
+        thanks.add(self._make_info_row(_("协助"), "DeepSeek、Kimi、Gemini"))
         page.add(thanks)
 
         # ---- 开源组件（本项目的基石）----
@@ -375,14 +373,13 @@ class SettingsWindow(Adw.PreferencesWindow):
                 dlg.set_application_name(_(self._ABOUT["name"]))
                 dlg.set_application_icon("xiatiao")
                 dlg.set_version(self._ABOUT["version"])
-                dlg.set_developer_name(self._ABOUT["developer"])
-                dlg.set_developers([self._ABOUT["developer"]])
+                dlg.set_comments(_("GTK4 本地音乐播放器，Rust 音频后端，支持 DSD 直通与 DSP"))
                 dlg.set_copyright(self._ABOUT["copyright"])
-                dlg.set_comments(_("本地音乐播放器（GTK4 / libadwaita）"))
                 dlg.set_license_type(Gtk.License.GPL_3_0)
                 try:
                     dlg.set_website(self._ABOUT["website"])
                     dlg.set_issue_url(self._ABOUT["issue"])
+                    dlg.set_support_url(self._ABOUT["issue"])
                 except Exception:
                     pass
                 self._about_dlg = dlg
@@ -539,27 +536,6 @@ class SettingsWindow(Adw.PreferencesWindow):
         row.set_active(cfg.get_bool("remember_volume", True))
         row.connect("notify::active", lambda r, _p: cfg.set_bool("remember_volume", r.get_active()))
         group.add(row)
-
-        # 切歌淡入淡出
-        row = Adw.SwitchRow()
-        row.set_title(_("切歌淡入淡出"))
-        row.set_subtitle(_("切换歌曲时平滑过渡，避免突兀"))
-        row.set_active(cfg.get_bool("fade_on_switch", False))
-        row.connect("notify::active", lambda r, _p: cfg.set_bool("fade_on_switch", r.get_active()))
-        group.add(row)
-
-        # 默认播放模式
-        mode_row = Adw.ComboRow()
-        mode_row.set_title(_("默认播放模式"))
-        mode_row.set_subtitle(_("新队列开始时采用的循环方式"))
-        model = Gtk.StringList()
-        for label in (_("顺序播放"), _("随机播放"), _("单曲循环")):
-            model.append(label)
-        mode_row.set_model(model)
-        mode_row.set_selected(cfg.get_int("default_play_mode", 0) % 3)
-        mode_row.connect("notify::selected",
-                         lambda r, _p: cfg.set_int("default_play_mode", r.get_selected()))
-        group.add(mode_row)
 
         # ---- 输出 / DSD ----
         out_group = Adw.PreferencesGroup()

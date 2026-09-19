@@ -660,3 +660,21 @@ button.np-skip-btn.liked-active:disabled {
     background: none;
     outline: none;
 }
+
+/* 音效对话框：选中行样式
+ * 思路：不用整行大色块，改用「左侧强调色竖条 + 轻背景 + 文字加粗」，
+ * 与 GNOME/libadwaita 的选中指示语言一致，克制而清晰。
+ */
+row.effect-selected {
+    background-color: alpha(@accent_bg_color, 0.14);
+    box-shadow: inset 3px 0 0 0 @accent_bg_color;
+}
+
+row.effect-selected:hover {
+    background-color: alpha(@accent_bg_color, 0.20);
+}
+
+row.effect-selected label {
+    color: @accent_color;
+    font-weight: 600;
+}

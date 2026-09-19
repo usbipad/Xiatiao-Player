@@ -313,8 +313,10 @@ impl DspChain {
         let cam = self.camilla_enabled;
         let pre_gain_lin = if cam { 1.0 } else { 10f32.powf(p.pre_gain_db / 20.0) };
         let pre = pre_gain_lin * headroom;
+        // 「启用立体声宽度」开关同时控制宽度与平衡（二者在 UI 同属一组）。
+        // 关闭时：宽度复位 1.0、平衡复位 0.0。
         let target_width = if p.width_enabled { p.stereo_width.clamp(0.0, 2.0) } else { 1.0 };
-        let target_balance = p.balance.clamp(-1.0, 1.0);
+        let target_balance = if p.width_enabled { p.balance.clamp(-1.0, 1.0) } else { 0.0 };
         let target_bal_l = if target_balance > 0.0 { 1.0 - target_balance } else { 1.0 };
         let target_bal_r = if target_balance < 0.0 { 1.0 + target_balance } else { 1.0 };
         if !self.smooth_init {
@@ -334,8 +336,9 @@ impl DspChain {
         let comp_release = 0.0005;
         let eq_on = p.eq_enabled && !cam;
         let peq_on = p.peq_enabled && !cam;
+        // 低音/高音同组：开关（bass_enabled）统一控制二者。
         let bass_on = p.bass_enabled && !cam;
-        let treble_on = !cam;
+        let treble_on = p.bass_enabled && !cam;
         let cf_on = p.crossfeed_enabled;
         let cf_amt = p.crossfeed_amount.clamp(0.0, 1.0);
         let cf_delay = ((p.crossfeed_delay_ms.max(0.0) / 1000.0) * self.in_rate) as usize;

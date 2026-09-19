@@ -1043,8 +1043,6 @@ class MainWindow(Adw.ApplicationWindow):
                 self.now_playing.set_playing(True)
             except Exception:
                 pass
-        else:
-            self._toast("该曲目暂不支持播放")
 
     def _dispatch_track_assets(self, track, restoring: bool) -> None:
         """在专用后台线程加载封面/歌词/ReplayGain（重活，避免切歌卡顿）。"""
@@ -1286,15 +1284,20 @@ class MainWindow(Adw.ApplicationWindow):
                 self.player.set_camilla_yaml(camilla.to_yaml(cfg2))
             except Exception as exc:
                 log.debug("下发 camilla YAML（预设）失败: %s", exc)
-            # 同步到设置页（若打开着）
+            # 同步到设置页（若打开着）：统一刷新，避免漏刷卷积/额外开关。
             try:
                 win = getattr(self, "_settings_win", None)
                 page = getattr(win, "_effect_page", None) if win is not None else None
                 if page is not None:
                     page._params.update(params)  # noqa: SLF001
-                    page._sync_all_switches()    # noqa: SLF001
-                    page._sync_sliders()         # noqa: SLF001
-                    page._update_camilla_sensitivity()  # noqa: SLF001
+                    page.refresh_from_params()
+            except Exception:
+                pass
+            # 同步参数宿主 dsp_page（高级窗口打开时会读它，避免拿到旧参数）。
+            try:
+                if getattr(self, "dsp_page", None) is not None:
+                    self.dsp_page._params.update(params)  # noqa: SLF001
+                    self.dsp_page.refresh_from_params()
             except Exception:
                 pass
         except Exception as exc:
@@ -2177,9 +2180,7 @@ class MainWindow(Adw.ApplicationWindow):
             if getattr(self, "dsp_page", None) is not None:
                 self.dsp_page._params.update(params)  # noqa: SLF001
                 try:
-                    self.dsp_page._sync_all_switches()  # noqa: SLF001
-                    self.dsp_page._sync_sliders()       # noqa: SLF001
-                    self.dsp_page._update_camilla_sensitivity()  # noqa: SLF001
+                    self.dsp_page.refresh_from_params()
                 except Exception:
                     pass
         except Exception:
@@ -2473,7 +2474,26 @@ class MainWindow(Adw.ApplicationWindow):
                     pass
 
     def _on_close_request(self, *_args) -> bool:
-        """窗口关闭：取消定时器 → 保存状态 → 停止各服务。"""
+        """窗口关闭请求。
+
+        - 开启「关闭时最小化到后台」(close_to_tray)：隐藏窗口到托盘，
+          不退出（返回 True 阻止默认关闭）。
+        - 否则：取消定时器 → 保存状态 → 停止服务 → 退出。
+        """
+        # 主动退出（Ctrl+Q / 菜单 / 托盘退出）：设了标志则直接走退出流程，
+        # 不被「关闭时最小化到后台」拦截。
+        if getattr(self, "_force_quit", False):
+            pass
+        else:
+            # 最小化到后台（托盘）模式。
+            try:
+                if get_config().get_bool("close_to_tray", False):
+                    self.set_visible(False)
+                    log.info("已最小化到后台（关闭窗口不退出）")
+                    return True  # 阻止默认关闭 → 不退出
+            except Exception:
+                log.debug("close_to_tray 判断失败", exc_info=True)
+        # 正常退出流程。
         try:
             self._cancel_all_timers()
         except Exception:
@@ -2575,16 +2595,24 @@ class MainWindow(Adw.ApplicationWindow):
                 dlg.set_application_name(_("虾条播放器"))
                 dlg.set_application_icon("xiatiao")
                 dlg.set_version("1.0.0")
-                dlg.set_developer_name("usbipad")
-                dlg.set_developers(["usbipad <1495941192+usbipad@users.noreply.github.com>"])
-                dlg.set_comments(_("本地音乐播放器（GTK4 / libadwaita）"))
+                dlg.set_comments(_("GTK4 本地音乐播放器，Rust 音频后端，支持 DSD 直通与 DSP"))
+                dlg.set_copyright("© 2026 usbipad")
+                # 法律信息：GTK 会据此提供 GPL-3.0 全文入口。
                 dlg.set_license_type(Gtk.License.GPL_3_0)
+                dlg.set_website("https://github.com/usbipad/Xiatiao-Player")
+                dlg.set_issue_url("https://github.com/usbipad/Xiatiao-Player/issues")
+                dlg.set_support_url("https://github.com/usbipad/Xiatiao-Player/issues")
                 self._about_dlg = dlg
             dlg.present(self)
         except Exception:
             log.debug("显示关于对话框失败", exc_info=True)
 
     def _quit_app(self) -> None:
+        """主动退出应用（Ctrl+Q / 菜单 / 托盘）。
+
+        设 _force_quit 标志，确保即使开启「关闭时最小化到后台」也能真正退出。
+        """
+        self._force_quit = True
         app = self.get_application()
         if app is not None:
             app.quit()

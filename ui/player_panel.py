@@ -651,21 +651,20 @@ class PlayerPanel(Gtk.Box):
                 cur = _cfg_cur
         except Exception:
             pass
-        self._effect_dialog_buttons = {}
+        # 选中态用「行高亮」表达（不再用勾选框）：
+        # 勾选框可被手动取消，造成「勾没了但音效还开着」的矛盾。
+        self._effect_dialog_rows = {}
         for preset in BUILTIN_PRESETS:
             name = preset["name"]
             row = Adw.ActionRow()
             row.set_title(name)
-            check = Gtk.CheckButton()
-            check.set_active(name == cur)
-            check.set_valign(Gtk.Align.CENTER)
-            check.connect("toggled", self._on_effect_dialog_choice, name, row)
-            row.add_suffix(check)
             row.set_activatable(True)
-            # 点整行 = 勾选该行（触发 toggled → 统一走单选逻辑）
-            row.connect("activated", lambda _r, _c=check: _c.set_active(True))
+            if name == cur:
+                row.add_css_class("effect-selected")
+            # 点整行 = 选中该音效（高亮 + 下发）
+            row.connect("activated", self._on_effect_dialog_choice, name)
             group.add(row)
-            self._effect_dialog_buttons[name] = (row, check)
+            self._effect_dialog_rows[name] = row
         body.append(group)
 
         # ---- 「我的预设」：DSP 设置页保存的自定义预设（可删除）----
@@ -684,11 +683,6 @@ class PlayerPanel(Gtk.Box):
             for name in custom_names:
                 row = Adw.ActionRow()
                 row.set_title(name)
-                check = Gtk.CheckButton()
-                check.set_active(name == cur)
-                check.set_valign(Gtk.Align.CENTER)
-                check.connect("toggled", self._on_effect_dialog_choice, name, row)
-                row.add_suffix(check)
                 # 删除按钮（仅自定义预设可删）
                 del_btn = Gtk.Button(icon_name="user-trash-symbolic")
                 del_btn.set_valign(Gtk.Align.CENTER)
@@ -697,10 +691,12 @@ class PlayerPanel(Gtk.Box):
                 del_btn.connect("clicked", self._on_effect_dialog_delete, name)
                 row.add_suffix(del_btn)
                 row.set_activatable(True)
-                # 点整行 = 勾选该行（触发 toggled → 统一走单选逻辑）
-                row.connect("activated", lambda _r, _c=check: _c.set_active(True))
+                if name == cur:
+                    row.add_css_class("effect-selected")
+                # 点整行 = 选中该音效（高亮 + 下发）
+                row.connect("activated", self._on_effect_dialog_choice, name)
                 custom_group.add(row)
-                self._effect_dialog_buttons[name] = (row, check)
+                self._effect_dialog_rows[name] = row
         else:
             hint = Adw.ActionRow()
             hint.set_title(_("还没有自定义预设"))
@@ -735,14 +731,20 @@ class PlayerPanel(Gtk.Box):
         """对话框关闭：清引用。"""
         self._effect_dialog = None
 
-    def _on_effect_dialog_choice(self, check, name: str, row) -> None:
-        """单选按钮切换。"""
-        if not check.get_active():
-            return
-        # 单选：取消其它
-        for _n, (_r, c) in getattr(self, "_effect_dialog_buttons", {}).items():
-            if c is not check and c.get_active():
-                c.set_active(False)
+    def _on_effect_dialog_choice(self, _row, name: str) -> None:
+        """点某行：高亮该行、取消其它行高亮，并下发。
+
+        用行高亮代替勾选框：不存在「手动取消勾选但音效没关」的矛盾。
+        """
+        # 单选：只保留当前行高亮
+        for _n, r in getattr(self, "_effect_dialog_rows", {}).items():
+            try:
+                if _n == name:
+                    r.add_css_class("effect-selected")
+                else:
+                    r.remove_css_class("effect-selected")
+            except Exception:
+                pass
         self._select_effect(name)
 
     def _on_effect_dialog_delete(self, _btn, name: str) -> None:

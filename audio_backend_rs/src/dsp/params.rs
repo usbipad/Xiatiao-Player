@@ -202,6 +202,10 @@ pub enum Owner {
 
 /// 返回 Camilla 是否应参与（任一 Camilla 归属的功能开启即参与）。
 pub fn camilla_should_engage(p: &DspParams) -> bool {
+    // 「启用 DSP」总开关关闭时，Camilla 同样不参与（与 Rust 旁通保持一致）。
+    if !p.enabled {
+        return false;
+    }
     camilla_features(p).iter().any(|(_, on)| *on)
 }
 
