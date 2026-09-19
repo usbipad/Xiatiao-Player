@@ -27,66 +27,13 @@ EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 
 
 def _default_params() -> dict:
-    return {
-        "enabled": False,
-        "camilla_enabled": False,
-        "pre_gain_db": 0.0,
-        "gain_enabled": False,
-        "headroom_enabled": False,
-        "headroom_db": 0.0,
-        "replaygain_enabled": False,
-        "replaygain_mode": "track",
-        "replaygain_db": 0.0,
-        "replaygain_preamp_db": 0.0,
-        "convolution_enabled": False,
-        "convolution_ir": "",
-        "convolution_channel": 0,
-        "convolution_stereo_ir": False,
-        "convolution_dry": 1.0,
-        "convolution_wet": 1.0,
-        "peq_enabled": False,
-        "peq_bands": [],
-        "eq_enabled": False,
-        "eq_gains": [0.0] * 10,
-        "eq_q": 1.0,
-        "bass_enabled": False,
-        "bass_gain_db": 0.0,
-        "bass_freq": 100.0,
-        "loudness_enabled": False,
-        "loudness_amount": 0.0,
-        "treble_gain_db": 0.0,
-        "treble_freq": 8000.0,
-        "crossfeed_enabled": False,
-        "crossfeed_amount": 0.3,
-        "crossfeed_delay_ms": 0.3,
-        "stereo_width": 1.0,
-        "width_enabled": False,
-        "balance": 0.0,
-        "compressor_enabled": False,
-        "compressor_threshold_db": -18.0,
-        "compressor_ratio": 2.0,
-        "compressor_makeup_db": 0.0,
-        "compressor_attack": 0.01,
-        "compressor_release": 0.2,
-        "limiter_threshold_db": 0.0,
-        "limiter_enabled": False,
-        "limiter_soft_clip": False,
-        "phase_invert": False,
-        "channel_matrix": "off",
-        "reverb_enabled": False,
-        "reverb_mix": 0.25,
-        "reverb_pre_delay_ms": 20.0,
-        "reverb_decay": 0.5,
-        "reverb_damping": 0.5,
-        "reverb_width": 1.0,
-        "reverb_low_cut_hz": 100.0,
-        "reverb_mod_depth": 0.5,
-        # 音色染色（电子管 / BBE）：归「启用音频处理」总开关管，纳入默认体系
-        "tube_enabled": False,
-        "tube_drive": 1.0,
-        "bbe_enabled": False,
-        "bbe_amount": 0.5,
-    }
+    """DSP 默认参数。
+
+    单一来源：core.dsp_state.default_params（与 DspState / Rust DspParams
+    保持一致）。此处仅委托，避免默认值在多处各写一份而漂移。
+    """
+    from core.dsp_state import default_params as _dp
+    return _dp()
 
 
 class EffectPage(Adw.PreferencesPage):
@@ -116,6 +63,17 @@ class EffectPage(Adw.PreferencesPage):
         self._params = _default_params()
         if initial:
             self._params.update(initial)
+        # ---- DSP 单一真相源（S3：EffectPage 只写 DspState，下发由 window 广播）----
+        self._dsp_state = None
+        try:
+            from core.dsp_state import get_dsp_state
+            self._dsp_state = get_dsp_state()
+            # 订阅广播：其它视图/预设/重置改动 DspState 后，本页自动刷新 UI。
+            # 这是替代「手工逐视图同步」的关键——任何来源的变更都会到达这里。
+            self._dsp_state.connect("changed", self._on_dsp_state_changed)
+            self._dsp_state.connect("replaced", self._on_dsp_state_changed)
+        except Exception:
+            self._dsp_state = None
         self._sliders: dict = {}
         # 归 Camilla 负责的控件组（Camilla 关闭时置灰）
         self._camilla_groups: list = []
@@ -130,16 +88,8 @@ class EffectPage(Adw.PreferencesPage):
         #: 本页包含的组（single 模式用；决定「重置本页」的范围）
         self._page_groups: list = []
 
-        # 订阅「DSP 参数已重置」广播：任何一处重置后，本实例从 config
-        # 重读 dsp_params 刷新 UI。解决「多个 EffectPage 实例各自缓存
-        # _params，重置只清当前实例，其它页面开关不回归」的问题。
-        self._effect_state = None
-        try:
-            from core.effect_state import get_effect_state
-            self._effect_state = get_effect_state()
-            self._effect_state.connect("reset", self._on_state_reset)
-        except Exception:
-            self._effect_state = None
+        # 注：不再订阅 EffectState.reset —— 重置也走 DspState（_emit → replace），
+        # DspState 广播已统一覆盖所有变更来源（预设 / 重置 / 其它视图）。
 
         # 单功能页（高级窗口用）：只建指定组（only 可为字符串或列表）
         if mode == "single" and only:
@@ -502,47 +452,18 @@ class EffectPage(Adw.PreferencesPage):
         """兼容旧调用：开关同步已并入 _sync_all_switches 的自动遍历。"""
         self._sync_all_switches()
 
-    def _broadcast_reset(self) -> None:
-        """广播「参数已重置」，让其它 EffectPage 实例同步 UI。
+    def _on_dsp_state_changed(self, _state, params) -> None:
+        """DspState 变更 → 从单一源刷新本页 UI（只读，不写回）。
 
-        发起者自己跳过响应：本实例的 _params 已是最新（刚刚重置过），
-        若也去 config 重读，反而可能读到尚未写入的最新值（_emit 写 config
-        依赖外部回调）而被旧数据覆盖。
+        覆盖所有变更来源：预设加载 / 其它视图改动 / 重置 / ReplayGain 等。
+        刷新期间 _syncing=True 抑制回调，避免「刷新」被当成「下发」。
         """
-        prev = getattr(self, "_suppress_self_reset", False)
-        self._suppress_self_reset = True
-        try:
-            if getattr(self, "_effect_state", None) is not None:
-                self._effect_state.notify_reset()
-        except Exception:
-            pass
-        finally:
-            self._suppress_self_reset = prev
-
-    def _on_state_reset(self, _state) -> None:
-        """收到「DSP 参数已重置」广播：从 config 重读并刷新本页 UI。
-
-        若本次重置由本实例发起（_suppress_self_reset），直接跳过：
-        发起者的 _params 已是权威值，重读 config 会用旧数据覆盖它。
-
-        重置由某个 EffectPage 实例发起，但它只清了自己的 _params；
-        其它实例（设置页 / 高级窗口各功能页）靠这个广播重读 config
-        里已被发起的重置写回的 dsp_params，把开关 / 滑块 / 曲线拉回
-        与后端一致的状态。
-        """
-        if getattr(self, "_suppress_self_reset", False):
+        if not isinstance(params, dict):
             return
-        try:
-            from config.settings import get_config
-            saved = get_config().get("dsp_params")
-            if isinstance(saved, dict):
-                # 用默认基底 + 已保存参数覆盖，避免旧副本残留字段
-                merged = _default_params()
-                merged.update(saved)
-                self._params = merged
-        except Exception:
-            pass
-        # 刷新期间抑制 _emit，避免把「刷新」变成「下发」
+        # 用单一源快照更新本地镜像（UI 构建/读取用），再刷新控件。
+        merged = _default_params()
+        merged.update(params)
+        self._params = merged
         try:
             self.refresh_from_params()
             if getattr(self, "_peq_curve", None) is not None:
@@ -642,8 +563,8 @@ class EffectPage(Adw.PreferencesPage):
                 self._on_coloring(0.0, 0.0)
         except Exception:
             pass
-        # 广播：让其它 EffectPage 实例（设置页 / 高级窗口）从 config 重读刷新
-        self._broadcast_reset()
+        # 注：不再 _broadcast_reset —— _reset_fields(emit=True) 已写 DspState，
+        # DspState 广播让所有视图（含高级窗口）自动刷新。
 
     def _build_page_reset_row(self) -> None:
         """页面顶部右侧：圆形图标「重置本页」。
@@ -1686,8 +1607,7 @@ class EffectPage(Adw.PreferencesPage):
                 get_config().set("effect_preset", "")
             except Exception:
                 pass
-        # 广播：让其它 EffectPage 实例（设置页 / 高级窗口）从 config 重读刷新
-        self._broadcast_reset()
+        # 注：不再 _broadcast_reset —— _emit() 已写 DspState，广播让所有视图自动刷新。
         # 提示已重置
         try:
             dlg = Adw.MessageDialog(
@@ -1719,7 +1639,9 @@ class EffectPage(Adw.PreferencesPage):
         debounce=False：立即下发（开关/按钮用）。
         clear_mark=True（默认，手动改参数）：清空音效标记；加载预设传 False。
         """
-        if self._on_dsp_changed is None:
+        # 重构后：优先走 DspState（唯一真相源）。
+        # 只有「既无 DspState 又无旧回调」时才无事可做。
+        if getattr(self, "_dsp_state", None) is None and self._on_dsp_changed is None:
             return
         # 正在 refresh_from_params 刷新 UI：忽略同步过程中被触发的下发，
         # 否则刷新会变成下发（清空音效标记、覆盖参数）。
@@ -1749,12 +1671,21 @@ class EffectPage(Adw.PreferencesPage):
 
     def _emit_now(self) -> bool:
         self._emit_timer = None
+        # 重构后：统一写 DspState（唯一真相源），由 window 订阅广播下发。
+        # 不再直接调 _on_dsp_changed（多入口是历史竞态的根源）。
+        if getattr(self, "_dsp_state", None) is not None:
+            try:
+                self._dsp_state.replace(dict(self._params), source=self)
+                return False
+            except Exception:
+                import logging as _lg
+                _lg.getLogger(__name__).debug("写 DspState 失败，回退旧路径", exc_info=True)
+        # 回退：无 DspState 时走旧的直调回调（兼容/降级）
         if self._on_dsp_changed is not None:
             clear = getattr(self, "_pending_clear_mark", True)
             try:
                 self._on_dsp_changed(dict(self._params), clear_mark=clear, immediate=True)
             except TypeError:
-                # 兼容不接受 clear_mark/immediate 的旧回调
                 try:
                     self._on_dsp_changed(dict(self._params), clear_mark=clear)
                 except TypeError:

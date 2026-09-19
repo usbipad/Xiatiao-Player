@@ -45,6 +45,20 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         self._on_convolution_ir = on_convolution_ir
         self._on_convolution_cleared = on_convolution_cleared
         self._emit_timer = None
+        # 刷新 UI（_on_dsp_state_changed）期间为 True：抑制控件回调触发下发。
+        self._syncing = False
+        # ---- DSP 单一真相源（S4）----
+        # 各功能页 / 染色页不再各持独立 _params 并手工同步；统一走 DspState：
+        # 改参数 → DspState.patch/replace → 广播 → 各页自动刷新 + window 统一下发。
+        self._dsp_state = None
+        try:
+            from core.dsp_state import get_dsp_state
+            self._dsp_state = get_dsp_state()
+            self._dsp_state.connect("changed", self._on_dsp_state_changed)
+            self._dsp_state.connect("replaced", self._on_dsp_state_changed)
+        except Exception:
+            log.debug("订阅 DspState 失败", exc_info=True)
+            self._dsp_state = None
 
         # 每个功能一个独立页，按音频链路顺序（标题单列在顶部）
         self._build_feature_pages()
@@ -53,60 +67,8 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         # 预设管理
         self._build_presets_page()
 
-        # 订阅「DSP 参数已重置」广播：重置后从 config 重读，刷新本窗口
-        # 各功能页与染色开关（各页持独立 _params 快照，需显式同步）。
-        self._effect_state = None
-        try:
-            from core.effect_state import get_effect_state
-            self._effect_state = get_effect_state()
-            self._effect_state.connect("reset", self._on_state_reset)
-        except Exception:
-            log.debug("订阅 EffectState 失败", exc_info=True)
-            self._effect_state = None
-
-    def _on_state_reset(self, _state) -> None:
-        """收到「DSP 参数已重置」广播：重读 config 并刷新本窗口 UI。"""
-        from config.settings import get_config
-        saved = None
-        try:
-            _s = get_config().get("dsp_params")
-            if isinstance(_s, dict):
-                saved = dict(_s)
-        except Exception:
-            saved = None
-        if saved is None:
-            return
-        # 用 _on_preset_load 相同的「默认基底 + 覆盖」语义重建
-        from .effect_page import _default_params as _ep_defaults
-        defaults = _ep_defaults()
-        base = dict(self._params)
-        base.update(defaults)
-        base["tube_enabled"] = False
-        base["bbe_enabled"] = False
-        base.update(saved)
-        self._params = base
-        for page in getattr(self, "_feature_pages", []) or []:
-            try:
-                p = dict(defaults)
-                p.update(saved)
-                page._params = p
-                page.refresh_from_params()
-            except Exception:
-                log.debug("重置后同步功能页失败", exc_info=True)
-        # 染色页开关 + 滑块 + 置灰
-        try:
-            if getattr(self, "_tube_switch", None) is not None:
-                self._tube_switch.set_active(bool(self._params.get("tube_enabled", False)))
-            if getattr(self, "_bbe_switch", None) is not None:
-                self._bbe_switch.set_active(bool(self._params.get("bbe_enabled", False)))
-            for key, sc in (getattr(self, "_coloring_scales", {}) or {}).items():
-                try:
-                    sc.set_value(float(self._params.get(key, 0.0)))
-                except Exception:
-                    pass
-            self._update_coloring_sensitivity()
-        except Exception:
-            log.debug("重置后同步染色页失败", exc_info=True)
+        # 注：不再订阅 EffectState.reset —— DspState 广播已覆盖所有变更来源
+        # （预设 / 重置 / 其它视图），_on_dsp_state_changed 统一刷新。
 
     # ------------------------------------------------------------
     # 每功能一页（按音频链路顺序）
@@ -204,6 +166,14 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
 
     def _emit_now(self) -> bool:
         self._emit_timer = None
+        # 重构后：统一写 DspState（唯一真相源）→ 广播 → window 统一下发。
+        if getattr(self, "_dsp_state", None) is not None:
+            try:
+                self._dsp_state.replace(dict(self._params), source=self)
+                return False
+            except Exception:
+                log.debug("写 DspState 失败，回退旧路径", exc_info=True)
+        # 回退：无 DspState 时走旧直调回调（兼容/降级）
         if self._on_dsp_changed is not None:
             clear = getattr(self, "_pending_clear_mark", True)
             try:
@@ -212,9 +182,59 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
                 try:
                     self._on_dsp_changed(dict(self._params), clear_mark=clear)
                 except TypeError:
-                    # 兼容不接受 clear_mark/immediate 的旧回调
                     self._on_dsp_changed(dict(self._params))
         return False
+
+    def _on_dsp_state_changed(self, _state, params) -> None:
+        """DspState 变更 → 从单一源刷新本窗口各功能页 + 染色页（只读）。
+
+        替代旧的 apply_external_params 手工同步：无论变更来自本窗口、
+        主界面选音效、设置页还是重置，都会到达这里统一刷新。
+        """
+        if not isinstance(params, dict):
+            return
+        from .effect_page import _default_params as _ep_defaults
+        defaults = _ep_defaults()
+        base = dict(defaults)
+        base.update(params)
+        self._params = base
+        self._syncing = True
+        try:
+            for page in getattr(self, "_feature_pages", []) or []:
+                try:
+                    p = dict(defaults)
+                    p.update(params)
+                    page._params = p
+                    page.refresh_from_params()
+                except Exception:
+                    log.debug("刷新功能页失败", exc_info=True)
+            try:
+                if getattr(self, "_tube_switch", None) is not None:
+                    self._tube_switch.set_active(bool(self._params.get("tube_enabled", False)))
+                if getattr(self, "_bbe_switch", None) is not None:
+                    self._bbe_switch.set_active(bool(self._params.get("bbe_enabled", False)))
+                for key, sc in (getattr(self, "_coloring_scales", {}) or {}).items():
+                    try:
+                        sc.set_value(float(self._params.get(key, 0.0)))
+                    except Exception:
+                        pass
+                self._update_coloring_sensitivity()
+            except Exception:
+                log.debug("刷新染色页失败", exc_info=True)
+        finally:
+            self._syncing = False
+
+    def _patch_state(self, changes: dict) -> None:
+        """写 DspState（唯一真相源）。染色参数也写进去，保持单一源完整。"""
+        if getattr(self, "_dsp_state", None) is not None:
+            try:
+                self._dsp_state.patch(changes, source=self)
+                return
+            except Exception:
+                log.debug("patch DspState 失败", exc_info=True)
+        # 回退：直接改本地 _params 并下发
+        self._params.update(changes)
+        self._emit()
 
     # ------------------------------------------------------------
     # 音色染色（电子管 / BBE）
@@ -288,19 +308,28 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         return sc
 
     def _on_scale_changed(self, scale, key: str) -> None:
+        if getattr(self, "_syncing", False):
+            return
         self._params[key] = float(scale.get_value())
-        # 染色参数走独立回调（不经 YAML）
+        # 染色参数：写单一源（保留在 dsp_params 内），并走独立命令下发。
         if key in ("tube_drive", "bbe_amount"):
+            self._patch_state({key: self._params[key]})
             self._emit_coloring()
         else:
             self._emit()
 
     def _on_tube_toggled(self, row, _pspec) -> None:
+        if getattr(self, "_syncing", False):
+            return
         self._params["tube_enabled"] = bool(row.get_active())
+        self._patch_state({"tube_enabled": self._params["tube_enabled"]})
         self._emit_coloring()
 
     def _on_bbe_toggled(self, row, _pspec) -> None:
+        if getattr(self, "_syncing", False):
+            return
         self._params["bbe_enabled"] = bool(row.get_active())
+        self._patch_state({"bbe_enabled": self._params["bbe_enabled"]})
         self._emit_coloring()
 
     def _emit_coloring(self) -> None:
@@ -390,39 +419,6 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
                 get_dsp_preset_store().put(name, dict(self._params))
                 self._reload_presets()
         dialog.destroy()
-
-    def apply_external_params(self, params: dict) -> None:
-        """外部（主界面选音效等）改动参数后，同步到本窗口 UI。
-
-        用「默认基底 + 传入覆盖」重建各功能页参数并刷新；染色页开关同步。
-        与 _on_preset_load 的刷新逻辑保持一致。
-        """
-        if not params:
-            return
-        from .effect_page import _default_params as _ep_defaults
-        defaults = _ep_defaults()
-        base = dict(self._params)
-        base.update(defaults)
-        base["tube_enabled"] = False
-        base["bbe_enabled"] = False
-        base.update(params)
-        self._params = base
-        for page in getattr(self, "_feature_pages", []) or []:
-            try:
-                p = dict(defaults)
-                p.update(params)
-                page._params = p
-                page.refresh_from_params()
-            except Exception:
-                log.debug("同步功能页失败", exc_info=True)
-        try:
-            if getattr(self, "_tube_switch", None) is not None:
-                self._tube_switch.set_active(bool(self._params.get("tube_enabled", False)))
-            if getattr(self, "_bbe_switch", None) is not None:
-                self._bbe_switch.set_active(bool(self._params.get("bbe_enabled", False)))
-            self._update_coloring_sensitivity()
-        except Exception:
-            log.debug("同步染色页失败", exc_info=True)
 
     def _on_preset_load(self, _btn) -> None:
         from core.dsp_store import get_dsp_preset_store

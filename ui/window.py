@@ -145,6 +145,27 @@ class MainWindow(Adw.ApplicationWindow):
         self._restoring = False
         self._dsp_yaml_timer = None
         self._pending_dsp_params = None
+        # ---- DSP 单一真相源（架构重构 S2：接线，过渡期双写）----
+        # DspState 成为 dsp_params 的唯一权威；旧路径（各视图 _params +
+        # _on_dsp_changed）在过渡期继续工作，DspState 并行维护。
+        # 订阅其广播：一旦有变更，统一出口下发（S2 阶段先记录，
+        # S3/S4 各视图改走 patch 后，旧路径删除，此出口接管）。
+        self._dsp_state = None
+        try:
+            from core.dsp_state import get_dsp_state
+            self._dsp_state = get_dsp_state()
+            # 订阅：DspState 一变，走统一出口下发（set_dsp + Camilla YAML）。
+            # 这是架构重构后的唯一「下发触发点」——各视图只 patch，不再各自
+            # 下发，从根上消除多入口竞态（如 ReplayGain 晚到覆盖总开关）。
+            self._dsp_state.connect("changed", self._on_dsp_state_changed)
+            self._dsp_state.connect("replaced", self._on_dsp_state_changed)
+            # 下发防抖合并（拖滑块）：DspState 广播可能很密集。
+            self._state_push_timer = None
+            self._state_push_pending = None
+            self._state_push_immediate = False
+        except Exception:
+            log.debug("订阅 DspState 失败", exc_info=True)
+            self._dsp_state = None
 
         # ---- 布局 ----
         # 布局：普通 Gtk.Box + 左栏固定宽度，
@@ -1241,14 +1262,18 @@ class MainWindow(Adw.ApplicationWindow):
             if not isinstance(params, dict):
                 return
             params["replaygain_db"] = float(gain) if gain is not None else 0.0
-            # 走统一下发：set_dsp + Camilla YAML（保持与其它路径一致）
-            self._push_dsp_to_engine(params, debounce=False)
-            # 同步权威参数宿主与 config，保持全局一致
-            if page is not None:
+            # 走单一真相源：写 DspState（广播 → 各视图刷新 + 统一下发）。
+            # 旧实现直接 set_dsp 且重读 config，会与总开关切换竞态（已修）。
+            wrote = False
+            if getattr(self, "_dsp_state", None) is not None:
                 try:
-                    page._params.update(params)  # noqa: SLF001
+                    # 只改 replaygain_db，不碰其它字段（避免覆盖 enabled 等）
+                    self._dsp_state.patch({"replaygain_db": params["replaygain_db"]}, source=self)
+                    wrote = True
                 except Exception:
-                    pass
+                    wrote = False
+            if not wrote:
+                self._push_dsp_to_engine(params, debounce=False)
             get_config().set("dsp_params", params)
         except Exception as exc:
             log.debug("应用 ReplayGain 失败: %s", exc)
@@ -1305,8 +1330,18 @@ class MainWindow(Adw.ApplicationWindow):
                 # 未知键（如旧的 off/pop 等）回退到设置页
                 self._on_open_effect_settings()
                 return
-            # 统一下发：Rust set_dsp + 内嵌 Camilla YAML（选预设为一次性操作，不防抖）。
-            self._push_dsp_to_engine(params, debounce=False)
+            # 重构后：统一写 DspState（唯一真相源）→ 广播 → 所有视图自动刷新，
+            # 由 _on_dsp_state_changed 统一出口下发。不再手工逐个视图同步。
+            _wrote = False
+            if getattr(self, "_dsp_state", None) is not None:
+                try:
+                    self._dsp_state.replace(params, source=self)
+                    _wrote = True
+                except Exception:
+                    log.debug("选预设写 DspState 失败", exc_info=True)
+            if not _wrote:
+                # 回退：无 DspState 时直接下发（兼容/降级）
+                self._push_dsp_to_engine(params, debounce=False)
             cfg = get_config()
             cfg.set("dsp_params", params)
             # 当前音效走单一状态源：会广播到所有订阅者（音效弹窗自动高亮）。
@@ -1315,34 +1350,7 @@ class MainWindow(Adw.ApplicationWindow):
                 get_effect_state().set_current(key)
             except Exception:
                 cfg.set("effect_preset", key)
-            # 同步到设置页（若打开着）：统一刷新，避免漏刷卷积/额外开关。
-            try:
-                win = getattr(self, "_settings_win", None)
-                page = getattr(win, "_effect_page", None) if win is not None else None
-                if page is not None:
-                    page._params.update(params)  # noqa: SLF001
-                    page.refresh_from_params()
-            except Exception:
-                pass
-            # 同步参数宿主 dsp_page（高级窗口打开时会读它，避免拿到旧参数）。
-            try:
-                if getattr(self, "dsp_page", None) is not None:
-                    self.dsp_page._params.update(params)  # noqa: SLF001
-                    self.dsp_page.refresh_from_params()
-            except Exception:
-                pass
-            # 同步已打开的高级窗口（各功能页 + 染色页），避免其 UI 与预设不一致。
-            # 注意：高级窗口有两个打开入口，引用可能挂在主窗口（_advanced_dsp_win）
-            # 或设置窗口（_settings_win._advanced_win）上，两处都要查。
-            try:
-                adv = getattr(self, "_advanced_dsp_win", None)
-                if adv is None:
-                    sw = getattr(self, "_settings_win", None)
-                    adv = getattr(sw, "_advanced_win", None) if sw is not None else None
-                if adv is not None:
-                    adv.apply_external_params(params)
-            except Exception:
-                log.debug("同步高级窗口失败", exc_info=True)
+            # 注：不再手工同步设置页 / 高级窗口 —— DspState 广播已覆盖。
         except Exception as exc:
             log.debug("应用音效预设失败: %s", exc)
 
@@ -2218,6 +2226,49 @@ class MainWindow(Adw.ApplicationWindow):
         win.present()
         self._advanced_dsp_win = win
 
+    def _on_dsp_state_changed(self, state, params: dict) -> None:
+        """DspState 变更 → 统一出口下发。
+
+        这是重构后的唯一「下发触发点」。各视图（EffectPage / 高级窗口 /
+        ReplayGain）只调 DspState.patch()，由这里统一 set_dsp + Camilla YAML。
+
+        防抖策略：
+        - 总开关 enabled 变化 → 立即下发（关键切换，不能延迟）。
+        - 其它（拖滑块）→ 80ms 防抖合并，避免频繁重建管线。
+        """
+        if not isinstance(params, dict):
+            return
+        enabled = bool(params.get("enabled", False))
+        prev = getattr(self, "_last_state_enabled", None)
+        enabled_changed = (prev is not None and prev != enabled)
+        self._last_state_enabled = enabled
+        immediate = bool(enabled_changed)
+        # 记录待下发参数（后者覆盖前者，只发最新）
+        self._state_push_pending = dict(params)
+        if immediate:
+            self._flush_state_push(immediate=True)
+            return
+        # 防抖
+        try:
+            if getattr(self, "_state_push_timer", None) is not None:
+                GLib.source_remove(self._state_push_timer)
+            self._state_push_timer = GLib.timeout_add(80, self._flush_state_push)
+        except Exception:
+            self._flush_state_push()
+
+    def _flush_state_push(self, *, immediate: bool = False) -> bool:
+        """把挂起的 DspState 参数下发到后端。"""
+        self._state_push_timer = None
+        params = getattr(self, "_state_push_pending", None)
+        if not isinstance(params, dict):
+            return False
+        self._state_push_pending = None
+        try:
+            self._push_dsp_to_engine(params, debounce=False)
+        except Exception:
+            log.debug("统一出口下发失败", exc_info=True)
+        return False
+
     def _push_dsp_to_engine(self, params: dict, *, debounce: bool = False) -> None:
         """把 DSP 参数下发到后端：Rust 内置链（set_dsp）+ 内嵌 Camilla YAML。
 
@@ -2269,8 +2320,18 @@ class MainWindow(Adw.ApplicationWindow):
         self._last_dsp_enabled = enabled
         # 立即下发条件：上游要求立即（开关/按钮）或总开关变化。
         do_immediate = bool(immediate) or enabled_changed
-        # 统一下发：Rust set_dsp + 内嵌 Camilla YAML（拖滑块防抖合并）。
-        self._push_dsp_to_engine(params, debounce=not do_immediate)
+        # 重构后：不再在此直接下发；统一写 DspState（唯一真相源），
+        # 由订阅的 _on_dsp_state_changed 统一出口下发（含防抖）。
+        wrote_state = False
+        if getattr(self, "_dsp_state", None) is not None:
+            try:
+                self._dsp_state.replace(params, source=self)
+                wrote_state = True
+            except Exception:
+                log.debug("写入 DspState 失败", exc_info=True)
+        if not wrote_state:
+            # 回退：无 DspState 时直接下发（兼容/降级）
+            self._push_dsp_to_engine(params, debounce=not do_immediate)
         try:
             from config.settings import get_config
             _cfg = get_config()
@@ -2289,13 +2350,7 @@ class MainWindow(Adw.ApplicationWindow):
                         _cfg.set("effect_preset", "关闭")
                     else:
                         _cfg.set("effect_preset", "")
-            # 同步回主界面 DSP 页参数 + UI（高级窗口改动后，主界面也是最新的）
-            if getattr(self, "dsp_page", None) is not None:
-                self.dsp_page._params.update(params)  # noqa: SLF001
-                try:
-                    self.dsp_page.refresh_from_params()
-                except Exception:
-                    pass
+            # 注：不再手工同步 dsp_page —— DspState 广播已让所有视图自动刷新。
         except Exception:
             pass
 
