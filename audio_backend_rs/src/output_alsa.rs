@@ -15,7 +15,7 @@
 //!   - 通过 `write_dsd` 接收原始 DSD 字节，按 mode（native/dop）在写线程内转换；
 //!   - Native 需要设备支持相应 DSD 格式，否则返回错误由上层回退。
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -33,6 +33,9 @@ const BUFFER_US: u32 = 100_000;
 const RING_SECONDS: f64 = 0.2;
 /// 假定采样率（构造时未知，实际 rebuild 时按真实采样率重建）。
 const RING_DEFAULT_RATE: u32 = 48_000;
+
+/// seek 淡出/淡入「时间」（毫秒），与 PipeWire 层一致（消除过渡生硬感）。
+const FADE_MS: f64 = 10.0;
 
 // ============================================================
 // 设备枚举
@@ -341,12 +344,26 @@ impl Ring {
 // 共享状态
 // ============================================================
 
+/// 输出状态机（与 PipeWire 层一致）。
+const STATE_PLAYING: u8 = 0;
+const STATE_DRAINING: u8 = 1;
+const STATE_REFILLING: u8 = 2;
+
 struct Shared {
     ring: Mutex<Ring>,
     channels: AtomicUsize,
     paused: AtomicBool,
     played_frames: AtomicU64,
     underruns: AtomicU64,
+    /// 输出状态机（Playing/Draining/Refilling）。
+    state: AtomicU8,
+}
+
+impl Shared {
+    #[inline]
+    fn state(&self) -> u8 {
+        self.state.load(Ordering::Acquire)
+    }
 }
 
 // ============================================================
@@ -391,6 +408,7 @@ impl AlsaOutput {
                 paused: AtomicBool::new(true),
                 played_frames: AtomicU64::new(0),
                 underruns: AtomicU64::new(0),
+                state: AtomicU8::new(STATE_PLAYING),
             }),
             fmt: Mutex::new(None),
             stop: Arc::new(AtomicBool::new(false)),
@@ -579,8 +597,31 @@ impl AlsaOutput {
         self.write_inner(&pcm, pcm_rate, channels, Some(DsdOutputMode::Dop));
     }
 
+    /// 清空输出缓冲（切歌 / 播放开始）。
     pub fn flush(&self) {
         self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.shared.state.store(STATE_PLAYING, Ordering::Release);
+    }
+
+    /// 开始 seek：进入 Draining（写线程输出静音 + 淡出，直至重填完成）。
+    pub fn begin_seek(&self) {
+        self.shared.state.store(STATE_DRAINING, Ordering::Release);
+    }
+
+    /// seek 定位后、开始写新数据前：清 ring + 进入 Refilling。
+    pub fn mark_refilling(&self) {
+        self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.shared.state.store(STATE_REFILLING, Ordering::Release);
+    }
+
+    /// 新数据填够、恢复播放。
+    pub fn mark_playing(&self) {
+        self.shared.state.store(STATE_PLAYING, Ordering::Release);
+    }
+
+    /// 结束 seek 过渡（EOF / 解码异常兜底）：直接回 Playing。
+    pub fn end_seek(&self) {
+        self.shared.state.store(STATE_PLAYING, Ordering::Release);
     }
 
     pub fn pause(&self) {
@@ -800,25 +841,61 @@ fn run_alsa(
         .max(64) as usize;
     let mut scratch: Vec<f32> = vec![0.0; period * actual_ch as usize];
     let mut conv: Vec<i32> = vec![0; period * actual_ch as usize];
+    // 淡变每帧步进 = 1 / (FADE_MS 对应帧数)。
+    let fade_step = 1.0f32 / ((actual_rate as f64 * FADE_MS / 1000.0).max(1.0) as f32);
+    // 当前淡变增益（0.0~1.0）：seek 过渡时淡出到 0，恢复时淡入到 1。
+    let mut fade_gain = 1.0f32;
+    // 上一帧输出（淡出期间「延续」的最后一帧）。
+    let mut last_l = 0.0f32;
+    let mut last_r = 0.0f32;
 
     while !stop.load(Ordering::SeqCst) {
         let paused = shared.paused.load(Ordering::Relaxed);
         let ch = shared.channels.load(Ordering::Relaxed).max(1);
-        let got = if paused {
+        // seek 过渡（Draining/Refilling）或暂停：输出静音，不 pop 旧数据。
+        let seek_transition = shared.state() != STATE_PLAYING;
+        let got = if paused || seek_transition {
             0
         } else {
             shared.ring.lock().unwrap_or_else(|e| e.into_inner()).pop(&mut scratch)
         };
 
         if got == 0 {
-            // 无数据：写静音保持时钟，避免 xrun。
-            for s in scratch.iter_mut() {
-                *s = 0.0;
+            // 无数据（暂停 / seek 过渡 / 欠载）：保持时钟。
+            let n = scratch.len();
+            if seek_transition || paused {
+                // seek / 暂停：**淡出**——从上一帧按递减增益衰减到 0
+                //（避免「旧音乐突变到静音」的生硬感），之后保持静音。
+                for i in (0..n).step_by(ch) {
+                    fade_gain = (fade_gain - fade_step).max(0.0);
+                    let g = fade_gain;
+                    scratch[i] = last_l * g;
+                    if ch > 1 { scratch[i + 1] = last_r * g; }
+                }
+            } else {
+                // 欠载：补 hold（延续上一帧），不用淡变。
+                for i in (0..n).step_by(ch) {
+                    scratch[i] = last_l;
+                    if ch > 1 { scratch[i + 1] = last_r; }
+                }
             }
             let _ = write_alsa(&io_f32, &io_i32, &scratch, &mut conv, 0, is_dsd);
             std::thread::sleep(Duration::from_millis(2));
             continue;
         }
+
+        // 恢复播放：若在淡入中（fade_gain < 1），本块逐帧升到 1。
+        if fade_gain < 1.0 {
+            for i in (0..got * ch).step_by(ch) {
+                fade_gain = (fade_gain + fade_step).min(1.0);
+                scratch[i] *= fade_gain;
+                if ch > 1 { scratch[i + 1] *= fade_gain; }
+            }
+        }
+        // 记录本块最后一帧（供 seek 淡出时「延续」）。
+        let last = (got - 1) * ch;
+        last_l = scratch[last];
+        if ch > 1 { last_r = scratch[last + 1]; }
 
         let n_samples = got * ch;
         match write_alsa(&io_f32, &io_i32, &scratch[..n_samples], &mut conv, n_samples, is_dsd) {

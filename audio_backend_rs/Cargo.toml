@@ -36,3 +36,6 @@ libspa-sys = "0.10"
 # ALSA 硬件直连输出（指定输出设备时启用，绕过音频服务，独占 hw: 设备）
 # 需要系统安装 libasound2-dev（头文件）。
 alsa = "0.9"
+
+# seek 双缓冲：原子 Arc 交换（RT 无锁读取，切换「active ring」）
+arc-swap = "1"

@@ -5,19 +5,30 @@
 //!
 //! 设计要点：
 //! 1. **回调零阻塞**：PipeWire process 是实时线程，绝不加锁、不分配、不做 IO。
-//!    因此环形缓冲是无锁 SPSC（单生产者解码线程 / 单消费者 RT 回调），
-//!    用原子读写指针 + Acquire/Release 内存序同步。
-//! 2. **位精确**：输出 f32（与 PipeWire 内部格式一致），保持源采样率，
-//!    不重采样；采样率转换交给 PipeWire/声卡。
-//! 3. **缓冲分层**：PipeWire 侧 latency 取固定较小时间（低延迟），
-//!    应用侧环形缓冲取较大容量（吸收解码抖动，防 xrun）。
+//!    环形缓冲是无锁 SPSC（单生产者解码线程 / 单消费者 RT 回调）。
+//! 2. **位精确**：输出 f32（与 PipeWire 内部格式一致），保持源采样率。
+//! 3. **缓冲分层**：PipeWire 侧 latency 固定较小（低延迟），应用侧环形缓冲
+//!    取较大容量（吸收解码抖动，防 xrun）。
 //! 4. **流生命周期**：同格式切歌复用 stream；仅采样率/声道变化时重建。
 //!
+//! ## seek 设计：状态机（非双缓冲抢时序）
+//!
+//! seek 是「离散重定位」，不是「无缝续接」。用一个明确的状态机表达，
+//! 避免任何「抢 <1 个 RT 周期窗口」的时序竞争：
+//!
+//!   Playing（0） 正常播放：RT pop active；不足补 hold。
+//!   Draining（1） seek 已请求：RT 输出静音 + flush 硬件（丢弃旧数据）。
+//!   Refilling（2） 新数据填充中：RT 输出静音（active 正被重填）。
+//!
+//! 状态由**解码线程显式推进**（begin_seek → mark_refilling → mark_playing），
+//! RT 只被动按状态输出——没有竞争、没有超时兜底、没有 pending 双缓冲。
+//!
 //! 对外契约（与 engine.rs 一致）：
-//!   new() / write(pcm, rate, channels) / flush() / pause() / resume()
-//!   / stop() / latency()
+//!   new() / write(pcm, rate, channels) / flush() / begin_seek() / mark_refilling()
+//!   / mark_playing() / pause() / resume() / stop() / played_frames()
+//!   / reset_played_frames(v) / latency()
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -32,25 +43,37 @@ use libspa_sys as spa_sys;
 const CLIENT_NAME: &str = "Xiatiao Player";
 
 /// PipeWire 侧流缓冲「时间」（毫秒）。决定 process 回调的节奏（quantum）。
-/// 固定为时间常量，按流采样率换算成帧数，保证任何采样率下回调间隔一致。
 const STREAM_LATENCY_MS: f64 = 20.0;
 
 /// 应用侧环形缓冲目标「时间」（秒）。
 ///
-/// 注意：缓冲**同时**决定了「参数变化到听见」的最大延迟——缓冲里积压的
-/// 数据必须先播完，新的 DSP/音效才生效。因此**不能取太大**。
-/// 取 0.1 秒：足够吸收解码/调度的瞬时抖动（防 xrun），延迟又可忽略。
-/// （此前取 2.0 秒，配合按 768kHz 预分配，导致 48kHz 下实际积压 ~32 秒，
-///  表现为「切音效/调 DSP 要等十几秒才生效」。）
+/// 注意：缓冲**同时**决定了「参数变化到听见」的最大延迟。因此不能取太大。
+/// 取 0.2 秒：足够吸收解码/调度的瞬时抖动（防 xrun），延迟又可忽略。
 const RING_SECONDS: f64 = 0.2;
 
 /// 首次构造时（尚不知实际采样率）的假定采样率。
-/// 真正的缓冲会在 rebuild(rate) 时**按实际采样率**重建，
-/// 保证任何采样率下缓冲时长都等于 RING_SECONDS。
 const RING_DEFAULT_RATE: u32 = 48_000;
+
+/// seek 淡出/淡入「时间」（毫秒）。
+///
+/// seek 时输出静音会造成「旧音乐突变到静音 → 静音 → 突变到新音乐」的生硬感。
+/// 用几毫秒线性淡出（旧音乐→0）+ 淡入（0→新音乐）消除突变，听感自然。
+/// 业界常用 5–20ms；取 10ms 兼顾「干脆」与「柔和」。
+const FADE_MS: f64 = 10.0;
 
 /// 最大声道数（通道位置数组用）。
 const MAX_CHANNELS: usize = 2;
+
+// ============================================================
+// 输出状态机
+// ============================================================
+
+/// 正常播放：RT 从 active pop。
+const STATE_PLAYING: u8 = 0;
+/// seek 已请求：RT 输出静音 + flush 硬件（丢弃服务端/硬件缓冲里的旧数据）。
+const STATE_DRAINING: u8 = 1;
+/// 新数据填充中：RT 输出静音（active ring 正被解码线程清空重填）。
+const STATE_REFILLING: u8 = 2;
 
 // ============================================================
 // 无锁 SPSC 环形缓冲（以「帧」为单位）
@@ -60,7 +83,6 @@ const MAX_CHANNELS: usize = 2;
 // - 读写指针用「帧」计数（单调递增），索引时与 mask 相与。
 // - 容量是 2 的幂，故可用位与取模；保留 1 帧空位区分「满/空」。
 // - 所有样本以「整帧」读写，从结构上杜绝左右声道错位。
-// - 回调只做内存拷贝，无锁、无分配。
 
 struct Ring {
     /// 交错样本缓冲，长度 = frames_cap * channels。
@@ -99,9 +121,14 @@ impl Ring {
         w.wrapping_sub(r)
     }
 
+    /// 当前可读帧数（供解码线程判断「填够」）。
+    fn available(&self) -> usize {
+        let w = self.write.load(Ordering::Acquire);
+        let r = self.read.load(Ordering::Relaxed);
+        self.avail_frames(w, r)
+    }
+
     /// 生产者：写入交错样本，返回写入的「帧」数（仅整帧）。
-    /// 无锁 SPSC：生产者只写 [write, write+n) 区间，消费者只读 [read, read+n)，
-    /// 区间不重叠，故用原始指针访问是安全的。
     fn push(&self, samples: &[f32]) -> usize {
         let ch = self.channels;
         let frames = samples.len() / ch;
@@ -109,7 +136,6 @@ impl Ring {
             return 0;
         }
         let w = self.write.load(Ordering::Relaxed);
-        // 与消费者同步：读取消费进度
         let r = self.read.load(Ordering::Acquire);
         let free = self.free_frames(w, r);
         let n = frames.min(free);
@@ -130,8 +156,7 @@ impl Ring {
         n
     }
 
-    /// 消费者（RT 回调）：读取到 dst（f32），返回读取的「帧」数（仅整帧）。
-    /// 无锁、无分配，仅拷贝。
+    /// 消费者（RT 回调）：读取到 dst（f32），返回读取的「帧」数。
     fn pop(&self, dst: &mut [f32]) -> usize {
         let ch = self.channels;
         let total_frames = dst.len() / ch;
@@ -139,7 +164,6 @@ impl Ring {
             return 0;
         }
         let r = self.read.load(Ordering::Relaxed);
-        // 与生产者同步：读取写入进度
         let w = self.write.load(Ordering::Acquire);
         let avail = self.avail_frames(w, r);
         let n = total_frames.min(avail);
@@ -153,13 +177,12 @@ impl Ring {
             }
         }
         if n > 0 {
-            // Release：确保读取进度对生产者可见
             self.read.store(r.wrapping_add(n), Ordering::Release);
         }
         n
     }
 
-    /// 清空（切歌 / seek）。生产者调用；与消费者用原子指针协作。
+    /// 清空（seek 重填前调用）。生产者调用；与消费者用原子指针协作。
     fn clear(&self) {
         let w = self.write.load(Ordering::Acquire);
         self.read.store(w, Ordering::Release);
@@ -173,23 +196,48 @@ impl Ring {
 struct Shared {
     /// 环形缓冲。用 Mutex 包裹：仅在 rebuild 时替换（非 RT 路径），
     /// RT 回调/push 短暂 lock 取用（无竞争时开销极小）。
-    /// 这样可**按实际采样率**重建容量，避免「按最高采样率预分配」
-    /// 导致低采样率下缓冲时长远超预期（曾因此引入 ~32 秒延迟）。
     ring: Mutex<Ring>,
     channels: AtomicUsize,
     paused: AtomicBool,
-    /// 是否已播放过至少一帧（用于区分「播放中欠载」与「刚启动」）。
+    /// 是否已播放过至少一帧（区分「播放中欠载」与「刚启动」）。
     started: AtomicBool,
-    /// 实际已送入声卡播放的「帧」数（由 RT 回调累加）。
-    /// 用于精确进度：它反映真正播放到的位置，而非解码/写入位置。
+    /// 实际已送入声卡播放的「帧」数（RT 回调累加）。进度基准。
     played_frames: AtomicU64,
     /// 欠载计数（诊断）。
     underruns: AtomicU64,
-    /// seek/切歌：请求在 RT 回调里 flush PipeWire stream（清服务端缓冲）。
-    /// flush() 只清软件 ring，清不掉 PipeWire 已 dequeue 的硬件缓冲（~node.latency，
-    /// 20ms）——这正是 seek 后「混入 20-50ms 旧声音」的根因。RT 回调检查此标志，
-    /// 置位时调 pw stream.flush(false) 丢弃服务端缓冲。
+    /// 输出状态机：STATE_PLAYING / STATE_DRAINING / STATE_REFILLING。
+    state: AtomicU8,
+    /// RT 已完成 drain（flush 硬件缓冲）。解码线程据此确认 drain 完成。
+    drain_done: AtomicBool,
+    /// 请求 RT flush PipeWire stream（清服务端已 dequeue 的缓冲）。
     flush_req: AtomicBool,
+}
+
+impl Shared {
+    #[inline]
+    fn state(&self) -> u8 {
+        self.state.load(Ordering::Acquire)
+    }
+
+    /// seek 开始：进入 Draining（RT 输出静音 + flush 硬件）。
+    fn begin_drain(&self) {
+        self.drain_done.store(false, Ordering::SeqCst);
+        self.flush_req.store(true, Ordering::SeqCst);
+        self.state.store(STATE_DRAINING, Ordering::Release);
+    }
+
+    /// 新数据填充开始：进入 Refilling（清 ring 后由解码线程重填）。
+    fn begin_refill(&self) {
+        if let Ok(g) = self.ring.lock() {
+            g.clear();
+        }
+        self.state.store(STATE_REFILLING, Ordering::Release);
+    }
+
+    /// 新数据填够：回到 Playing（RT 恢复 pop）。
+    fn end_refill(&self) {
+        self.state.store(STATE_PLAYING, Ordering::Release);
+    }
 }
 
 // ============================================================
@@ -222,6 +270,8 @@ impl PipewireOutput {
                 started: AtomicBool::new(false),
                 played_frames: AtomicU64::new(0),
                 underruns: AtomicU64::new(0),
+                state: AtomicU8::new(STATE_PLAYING),
+                drain_done: AtomicBool::new(true),
                 flush_req: AtomicBool::new(false),
             }),
             fmt: Mutex::new(None),
@@ -232,7 +282,7 @@ impl PipewireOutput {
         }
     }
 
-    /// 中断 write：让卡在 write 的解码线程立即返回（切歌用，不销毁 stream）。
+    /// 中断 write：让卡在 write 的解码线程立即返回（切歌用）。
     pub fn abort_write(&self) {
         self.abort_write.store(true, Ordering::SeqCst);
     }
@@ -245,7 +295,6 @@ impl PipewireOutput {
     /// 设置输出设备（PipeWire sink 名；空=默认）。会重建 stream 使新设备生效。
     pub fn set_output_device(&self, name: &str) {
         *self.device.lock().unwrap_or_else(|e| e.into_inner()) = name.to_string();
-        // 若已有活动流，重建以应用新设备。
         let cur = *self.fmt.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((rate, channels)) = cur {
             self.rebuild(rate, channels);
@@ -267,26 +316,22 @@ impl PipewireOutput {
                 cur_fmt, rate, channels
             );
             self.shared.channels.store(channels as usize, Ordering::Relaxed);
-            self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).clear();
             self.rebuild(rate, channels);
-        } else {
-            // 仅在 rate 首次出现时打印，避免刷屏
-            if cur_fmt.is_none() {
-                eprintln!("[output][rate] 初始格式：rate={rate} ch={channels}");
-            }
+        } else if cur_fmt.is_none() {
+            eprintln!("[output][rate] 初始格式：rate={rate} ch={channels}");
         }
 
         // 阻塞式写入：缓冲满时小睡等待，让解码跟随播放速度。
-        // 注意：这里在**解码线程**（非 RT），sleep 是允许的。
         let ch = channels as usize;
         let mut off = 0;
         while off < pcm.len() {
-            let wrote_frames = self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).push(&pcm[off..]);
+            let wrote_frames = {
+                let g = self.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
+                g.push(&pcm[off..])
+            };
             off += wrote_frames * ch;
             if off < pcm.len() {
-                if self.stop.load(Ordering::Relaxed)
-                    || self.abort_write.load(Ordering::Relaxed)
-                {
+                if self.stop.load(Ordering::Relaxed) || self.abort_write.load(Ordering::Relaxed) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(2));
@@ -294,13 +339,33 @@ impl PipewireOutput {
         }
     }
 
-    /// 清空缓冲（切歌 / seek）。
-    ///
-    /// 清软件 ring + 置 flush_req（让 RT 回调 flush PipeWire 服务端缓冲，
-    /// 清掉已 dequeue 的 ~20ms 硬件缓冲，避免 seek 后混入旧声音）。
+    /// 清空输出缓冲（切歌 / 播放开始）。纯「丢弃旧数据」语义。
     pub fn flush(&self) {
-        self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        if let Ok(g) = self.shared.ring.lock() {
+            g.clear();
+        }
         self.shared.flush_req.store(true, Ordering::SeqCst);
+        self.shared.state.store(STATE_PLAYING, Ordering::Release);
+    }
+
+    /// 开始 seek：进入 Draining（RT 输出静音 + flush 硬件旧数据）。
+    pub fn begin_seek(&self) {
+        self.shared.begin_drain();
+    }
+
+    /// seek 定位完成后、开始写新数据前调用：清 ring + 进入 Refilling。
+    pub fn mark_refilling(&self) {
+        self.shared.begin_refill();
+    }
+
+    /// 新数据填够、可恢复播放时调用：进入 Playing。
+    pub fn mark_playing(&self) {
+        self.shared.end_refill();
+    }
+
+    /// 结束 seek 过渡（EOF / 解码异常兜底）：直接回 Playing。
+    pub fn end_seek(&self) {
+        self.shared.end_refill();
     }
 
     pub fn pause(&self) {
@@ -342,14 +407,13 @@ impl PipewireOutput {
         let device = self.device.lock().map(|d| d.clone()).unwrap_or_default();
         eprintln!("[output][rate] REBUILD 开始：rate={rate} ch={channels} device='{device}'");
         self.stop();
-        eprintln!("[output][rate] 旧 stream 已停止（线程已 join）");
-        // 按实际采样率重建环形缓冲：保证缓冲时长 == RING_SECONDS，
-        // 不随采样率变化（这是消除「参数变化延迟」的关键）。
+        // 按实际采样率重建环形缓冲：保证缓冲时长 == RING_SECONDS。
         {
             let ch = channels.max(1) as usize;
             let frames_cap = ring_frames(rate, ch);
-            let mut g = self.shared.ring.lock().unwrap_or_else(|e| e.into_inner());
-            *g = Ring::new(frames_cap, ch);
+            if let Ok(mut g) = self.shared.ring.lock() {
+                *g = Ring::new(frames_cap, ch);
+            }
             eprintln!("[output][rate] 环形缓冲按 rate={rate} 重建：{} 帧（约 {:.0} ms）",
                 frames_cap, 1000.0 * frames_cap as f64 / rate.max(1) as f64);
         }
@@ -376,7 +440,6 @@ impl Drop for PipewireOutput {
 }
 
 /// 按采样率计算环形缓冲「帧」容量（不含声道）。
-/// 注意：Ring::new 内部会 × channels 得到样本存储量。
 fn ring_frames(rate: u32, _channels: usize) -> usize {
     let frames = (rate as f64 * RING_SECONDS).ceil() as usize;
     frames.max(4096)
@@ -399,19 +462,12 @@ fn run_pipewire(
     let core = context.connect_rc(None).map_err(|e| e.to_string())?;
 
     let channels_str = channels.to_string();
-    // node.latency = 帧数/采样率，是「时间」。按固定时间（20ms）换算成与
-    // 当前 rate 匹配的帧数，保证任何采样率下缓冲「时间」一致。
     let lat_frames = ((rate as f64) * (STREAM_LATENCY_MS / 1000.0)).max(64.0) as u32;
     let latency_str = format!("{lat_frames}/{rate}");
-    // 目标设备名（非空时用于把流路由到指定 sink）。
     let device_val = device.clone();
-    // 设备非空时，额外加 target.object 属性。
     let use_device = !device.is_empty();
-
-    // node.force-rate：请求 PipeWire 把 graph 采样率切到本流采样率，
-    // 使 DAC 跟随源采样率（而非固定 48k 重采样）。这是「采样率跟随」的关键。
     let force_rate_str = rate.to_string();
-    // 统一构造属性（有设备时加 target.object）。
+
     let props = if use_device {
         pw::properties::properties! {
             *pw::keys::MEDIA_TYPE => "Audio",
@@ -442,12 +498,15 @@ fn run_pipewire(
 
     let sh = Arc::clone(&shared);
     let stop2 = Arc::clone(&stop);
-    // user_data = 上一帧输出的 (L, R)，用于欠载/过渡时「补 hold」——
-    // 延续上一帧而非补零（补零=突兀静音；hold=自然延续，业界标准做法）。
+    // 淡变每帧步进 = 1 / (FADE_MS 对应的帧数)。
+    let fade_step = 1.0f32 / ((rate as f64 * FADE_MS / 1000.0).max(1.0) as f32);
+    // user_data = (上一帧 L, 上一帧 R, 当前淡变增益)。
+    // - hold：欠载时「补 hold」——延续上一帧（欠载是连续播放中的瞬时抖动）。
+    // - fade_gain：seek 淡出/淡入的当前增益（0.0~1.0），每帧按步进变化。
     let _listener = stream
-        .add_local_listener_with_user_data((0.0f32, 0.0f32))
+        .add_local_listener_with_user_data((0.0f32, 0.0f32, 1.0f32))
         .state_changed(|_, _, _old, _new| {})
-        .process(move |stream, hold| {
+        .process(move |stream, ud| {
             // ---- 实时回调：绝不加锁、不分配、不做 IO ----
             if stop2.load(Ordering::Relaxed) {
                 return;
@@ -464,53 +523,72 @@ fn run_pipewire(
             let ch = sh.channels.load(Ordering::Relaxed).max(1);
             let frame_bytes = ch * std::mem::size_of::<f32>();
             let paused = sh.paused.load(Ordering::Relaxed);
-            // seek/切歌：丢弃 PipeWire 服务端缓冲（清掉已 dequeue 的旧数据），
-            // **但不再填静音**——直接继续从 ring 取新位置数据。
-            // 旧实现 flush 后填满静音，导致：seek 后 RT 取到空 ring 就播
-            // 整块静音（12288 帧 = 279ms @44.1k），听觉上「点到后要等」。
-            // 改为：flush 后立即 pop ring（seek 时解码线程已开始填新数据，
-            // 若暂无则取多少算多少，不补满静音）。
+
+            // seek drain 请求：flush PipeWire 服务端已 dequeue 的旧数据。
             if sh.flush_req.swap(false, Ordering::SeqCst) {
                 let _ = stream.flush(false);
-                // 不 return：继续走下方 pop ring 的正常流程。
+                sh.drain_done.store(true, Ordering::SeqCst);
             }
+
+            let state = sh.state();
 
             let n_frames = if let Some(slice) = data.data() {
                 let total_frames = slice.len() / frame_bytes;
                 let total_samples = total_frames * ch;
-                // 把字节缓冲视为 f32 切片（F32LE，对齐由 PipeWire 保证）。
                 let dst = unsafe {
                     std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, total_samples)
                 };
-                if paused {
-                    // 暂停：填 hold（延续上一帧），避免突然静音/爆点。
+
+                if paused || state != STATE_PLAYING {
+                    // 暂停 / seek 过渡（Draining/Refilling）：输出**静音**，
+                    // 但 seek 过渡带**淡出**——从上一帧平滑衰减到 0，
+                    // 避免「旧音乐突变到静音」的生硬感。
+                    //
+                    // seek 是离散重定位：旧数据属旧时间段、新数据尚未就绪，
+                    // 中间输出静音最干净（不播错误数据、不制造 DC 电平）。
                     for f in 0..total_frames {
-                        dst[f * ch] = hold.0;
-                        if ch > 1 { dst[f * ch + 1] = hold.1; }
+                        // 淡出：增益逐帧向 0 递减（到达 0 后保持）。
+                        if ud.2 > 0.0 {
+                            ud.2 = (ud.2 - fade_step).max(0.0);
+                        }
+                        let g = ud.2;
+                        dst[f * ch] = ud.0 * g;
+                        if ch > 1 { dst[f * ch + 1] = ud.1 * g; }
                     }
                 } else {
-                    // 无锁读取；不足部分「补 hold」而非补零。
-                    let got_frames = sh.ring.lock().unwrap_or_else(|e| e.into_inner()).pop(dst);
+                    // 正常播放：无锁读取；不足部分「补 hold」而非补零。
+                    let got_frames = if let Ok(g) = sh.ring.lock() {
+                        g.pop(dst)
+                    } else {
+                        0
+                    };
                     if got_frames > 0 {
                         sh.started.store(true, Ordering::Relaxed);
-                        // 累加实际播放帧数（进度基准）。
                         sh.played_frames.fetch_add(got_frames as u64, Ordering::Relaxed);
-                        // 记录最后一帧，供下次 hold 用。
                         let last = (got_frames - 1) * ch;
-                        hold.0 = dst[last];
-                        if ch > 1 { hold.1 = dst[last + 1]; }
+                        ud.0 = dst[last];
+                        if ch > 1 { ud.1 = dst[last + 1]; }
+                    }
+                    // 淡入：seek 后恢复播放时，增益从 0 平滑升到 1。
+                    // （正常播放中 ud.2 已是 1.0，无额外开销。）
+                    if ud.2 < 1.0 {
+                        for f in 0..got_frames {
+                            ud.2 = (ud.2 + fade_step).min(1.0);
+                            let g = ud.2;
+                            dst[f * ch] *= g;
+                            if ch > 1 { dst[f * ch + 1] *= g; }
+                        }
+                        // 若本块末尾仍未到 1.0，后续块继续淡入（ud.2 保留）。
                     }
                     if got_frames < total_frames {
-                        // 欠载：记录（限流，避免刷屏）
                         let u = sh.underruns.fetch_add(1, Ordering::Relaxed) + 1;
                         if u % 20 == 1 {
                             eprintln!("[output] UNDERRUN#{u}: want={} got={} short={}（补 hold）",
                                 total_frames, got_frames, total_frames - got_frames);
                         }
-                        // 标准做法：不足部分用 hold（延续上一帧），不补零。
                         for f in got_frames..total_frames {
-                            dst[f * ch] = hold.0;
-                            if ch > 1 { dst[f * ch + 1] = hold.1; }
+                            dst[f * ch] = ud.0;
+                            if ch > 1 { dst[f * ch + 1] = ud.1; }
                         }
                     }
                 }
@@ -564,8 +642,6 @@ fn run_pipewire(
         .map_err(|e| e.to_string())?;
     eprintln!("[output][rate] stream connect 完成：rate={rate} ch={channels}（PipeWire 应据此重协商）");
 
-    // 低频定时器：周期检查 stop，为 true 则退出主循环（同线程 quit）。
-    // 不使用 add_idle（会忙循环占满 CPU）。
     let lp = mainloop.loop_();
     let ml_timer = mainloop.clone();
     let stop_timer = Arc::clone(&stop);
@@ -575,10 +651,7 @@ fn run_pipewire(
         }
     });
     if let Err(e) = timer
-        .update_timer(
-            Some(Duration::from_millis(500)),
-            Some(Duration::from_millis(500)),
-        )
+        .update_timer(Some(Duration::from_millis(500)), Some(Duration::from_millis(500)))
         .into_result()
     {
         eprintln!("[pipewire] 启动停止检查定时器失败: {e}");
@@ -591,26 +664,16 @@ fn run_pipewire(
 // ============================================================
 // 统一输出后端（PipeWire 默认 / ALSA 独占）
 // ============================================================
-//
-// Engine 与解码层通过本枚举写入，无需关心底层是 PipeWire 还是 ALSA：
-//   - 输出设备为空（默认）→ PipeWire（系统默认音频接口）；
-//   - 指定了 ALSA hw 设备 → ALSA 独占直连。
-//
-// 设计：不使用 trait 对象，避免改动解码函数签名时的借用复杂度；
-// 用枚举转发，语义清晰，性能无损耗。
 
 use crate::output_alsa::AlsaOutput;
 
 /// 输出后端选择。
 pub enum AudioOut {
-    /// PipeWire（默认，走系统音频服务）。
     Pipewire(PipewireOutput),
-    /// ALSA 独占硬件设备。
     Alsa(AlsaOutput),
 }
 
 impl AudioOut {
-    /// 写入一块交错 f32 PCM。
     pub fn write(&self, pcm: &[f32], rate: u32, channels: u32) {
         match self {
             AudioOut::Pipewire(p) => p.write(pcm, rate, channels),
@@ -618,11 +681,43 @@ impl AudioOut {
         }
     }
 
-    /// 清空输出缓冲（切歌 / seek）。
+    /// 清空输出缓冲（切歌 / 播放开始）。
     pub fn flush(&self) {
         match self {
             AudioOut::Pipewire(p) => p.flush(),
             AudioOut::Alsa(a) => a.flush(),
+        }
+    }
+
+    /// 开始 seek（进入 drain 状态）。
+    pub fn begin_seek(&self) {
+        match self {
+            AudioOut::Pipewire(p) => p.begin_seek(),
+            AudioOut::Alsa(a) => a.begin_seek(),
+        }
+    }
+
+    /// seek 定位后开始重填新数据。
+    pub fn mark_refilling(&self) {
+        match self {
+            AudioOut::Pipewire(p) => p.mark_refilling(),
+            AudioOut::Alsa(a) => a.mark_refilling(),
+        }
+    }
+
+    /// 新数据填够、恢复播放。
+    pub fn mark_playing(&self) {
+        match self {
+            AudioOut::Pipewire(p) => p.mark_playing(),
+            AudioOut::Alsa(a) => a.mark_playing(),
+        }
+    }
+
+    /// 结束 seek 过渡（EOF / 解码异常兜底）。
+    pub fn end_seek(&self) {
+        match self {
+            AudioOut::Pipewire(p) => p.end_seek(),
+            AudioOut::Alsa(a) => a.end_seek(),
         }
     }
 
@@ -668,7 +763,6 @@ impl AudioOut {
         }
     }
 
-    /// 取出并清空后端产生的运行时错误（目前仅 ALSA 独占后端的写线程会写入）。
     pub fn take_error(&self) -> Option<String> {
         match self {
             AudioOut::Pipewire(_) => None,
@@ -676,7 +770,6 @@ impl AudioOut {
         }
     }
 
-    /// 后端是否已失败退出（ALSA 写线程失败时为 true）。
     pub fn is_failed(&self) -> bool {
         match self {
             AudioOut::Pipewire(_) => false,
@@ -684,7 +777,6 @@ impl AudioOut {
         }
     }
 
-    /// 中断 write（切歌时让卡在 write 的解码线程退出，不销毁 stream）。
     pub fn abort_write(&self) {
         match self {
             AudioOut::Pipewire(p) => p.abort_write(),
@@ -692,7 +784,6 @@ impl AudioOut {
         }
     }
 
-    /// 清除中断标志（开始新播放前）。
     pub fn clear_abort(&self) {
         match self {
             AudioOut::Pipewire(p) => p.clear_abort(),
@@ -704,7 +795,6 @@ impl AudioOut {
     pub fn write_dsd(&self, data: &crate::dsd::DsdData, mode: crate::output_alsa::DsdOutputMode) {
         match self {
             AudioOut::Alsa(a) => a.write_dsd(data, mode),
-            // PipeWire 后端不支持原生 DSD 直通：此处不应被调用（由解码层分流）。
             AudioOut::Pipewire(_) => {
                 eprintln!("[output] PipeWire 后端不支持 DSD 直通，已忽略（应由解码层走 pcm 软解）");
             }
@@ -716,7 +806,6 @@ impl AudioOut {
 mod tests {
     use super::*;
 
-    /// 生成连续的正弦样本（模拟正常播放数据流），用于验证 seek 后是否产生静音空洞。
     fn sine_interleaved(frames: usize, freq: f32, rate: f32) -> Vec<f32> {
         let mut v = Vec::with_capacity(frames * 2);
         for i in 0..frames {
@@ -727,55 +816,71 @@ mod tests {
         v
     }
 
-    /// 复现核心问题：
-    /// 模拟 RT 回调「每个 buffer 固定取 N 帧」。seek（clear）后，
-    /// 如果解码线程尚未写入新数据，RT 取到 0 帧 → 整块填静音 → 听觉空洞。
+    /// 状态机：seek 期间（Draining/Refilling）RT 应输出静音，不 pop 旧 active。
     #[test]
-    fn seek_without_prefill_causes_silence() {
+    fn state_machine_silences_during_seek() {
         let ch = 2usize;
         let rate = 44100.0f32;
-        let buffer_frames = 6144usize; // 实测 PipeWire 一次给 6144 帧
-        let ring = Ring::new(ring_frames(rate as u32, ch), ch);
+        let shared = Shared {
+            ring: Mutex::new(Ring::new(ring_frames(rate as u32, ch), ch)),
+            channels: AtomicUsize::new(ch),
+            paused: AtomicBool::new(false),
+            started: AtomicBool::new(true),
+            played_frames: AtomicU64::new(0),
+            underruns: AtomicU64::new(0),
+            state: AtomicU8::new(STATE_PLAYING),
+            drain_done: AtomicBool::new(true),
+            flush_req: AtomicBool::new(false),
+        };
 
-        // 正常播放：ring 填满
-        let data = sine_interleaved(buffer_frames * 2, 1000.0, rate);
-        ring.push(&data);
+        // 正常播放：ring 有数据。
+        let data = sine_interleaved(2048, 1000.0, rate);
+        shared.ring.lock().unwrap().push(&data);
+        assert_eq!(shared.state(), STATE_PLAYING);
 
-        // ---- seek：清空 ring ----
-        ring.clear();
+        // begin_seek → Draining。
+        shared.begin_drain();
+        assert_eq!(shared.state(), STATE_DRAINING);
+        assert!(!shared.drain_done.load(Ordering::SeqCst));
+        assert!(shared.flush_req.load(Ordering::SeqCst));
 
-        // seek 后 RT 立刻取一个 buffer（此时解码线程还没写入新数据）
-        let mut dst = vec![0.0f32; buffer_frames * ch];
-        let got = ring.pop(&mut dst);
-        // 不足部分补零（与 RT 回调一致）
-        let silent = dst[got * ch..].iter().all(|&s| s == 0.0);
-        println!("[复现] seek 后 RT 取到 {got} 帧 / 需 {buffer_frames} 帧，补静音={silent}");
-        assert_eq!(got, 0, "seek 后 ring 应为空（复现空洞）");
-        assert!(silent, "seek 后应补静音（复现听觉空洞）");
+        // begin_refill → 清 ring + Refilling。
+        shared.begin_refill();
+        assert_eq!(shared.state(), STATE_REFILLING);
+        assert_eq!(shared.ring.lock().unwrap().available(), 0, "Refilling 应清空 ring");
+
+        // 填新数据 → end_refill → Playing。
+        let fresh = sine_interleaved(2048, 2000.0, rate);
+        shared.ring.lock().unwrap().push(&fresh);
+        shared.end_refill();
+        assert_eq!(shared.state(), STATE_PLAYING);
+        assert!(shared.ring.lock().unwrap().available() > 0);
     }
 
-    /// 验证修复：seek 后「预填充」ring，RT 取到时即有数据，无静音空洞。
+    /// Ring::available 反映可读帧数。
     #[test]
-    fn seek_with_prefill_no_silence() {
+    fn ring_available_tracks_push_pop() {
         let ch = 2usize;
-        let rate = 44100.0f32;
-        let buffer_frames = 6144usize;
-        let ring = Ring::new(ring_frames(rate as u32, ch), ch);
-
-        let data = sine_interleaved(buffer_frames * 2, 1000.0, rate);
-        ring.push(&data);
-        ring.clear();
-
-        // ---- 修复：seek 后解码线程先预填充一个 buffer 的新数据 ----
-        let fresh = sine_interleaved(buffer_frames, 1000.0, rate);
-        ring.push(&fresh);
-
-        // RT 取
-        let mut dst = vec![0.0f32; buffer_frames * ch];
+        let ring = Ring::new(ring_frames(48000, ch), ch);
+        assert_eq!(ring.available(), 0);
+        let data = sine_interleaved(1000, 1000.0, 48000.0);
+        let n = ring.push(&data);
+        assert_eq!(n, 1000);
+        assert_eq!(ring.available(), 1000);
+        let mut dst = vec![0.0f32; 400 * ch];
         let got = ring.pop(&mut dst);
-        let all_sound = dst.iter().any(|&s| s.abs() > 1e-6);
-        println!("[修复] seek 后 RT 取到 {got} 帧 / 需 {buffer_frames} 帧，有声音={all_sound}");
-        assert_eq!(got, buffer_frames, "预填充后应取满一个 buffer");
-        assert!(all_sound, "预填充后无静音空洞");
+        assert_eq!(got, 400);
+        assert_eq!(ring.available(), 600);
+    }
+
+    /// clear 后 available == 0（seek 重填语义）。
+    #[test]
+    fn ring_clear_empties() {
+        let ch = 2usize;
+        let ring = Ring::new(ring_frames(48000, ch), ch);
+        ring.push(&sine_interleaved(5000, 1000.0, 48000.0));
+        assert!(ring.available() > 0);
+        ring.clear();
+        assert_eq!(ring.available(), 0);
     }
 }

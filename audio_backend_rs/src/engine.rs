@@ -36,6 +36,15 @@ pub struct Engine {
     output: Arc<AudioOut>,
     /// 当前播放曲目路径（用于切换输出设备后自动续播）。
     current_path: Option<String>,
+    /// 暂停期间是否发生过 seek。
+    ///
+    /// 暂停时解码线程卡在「等待恢复」循环（不处理 seek），若此时 seek，
+    /// 请求会积压到 resume 后才处理——而 RT 已先 pop 了 ring 里的旧位置
+    /// 数据 → 听到「一小段跳转前的声音」。
+    /// 修复：记录暂停中的 seek，resume 时**先让输出进入 Draining（静音）**
+    /// 再恢复播放，使解码线程醒来处理的 seek 期间 RT 输出静音，
+    /// 不会漏出旧位置数据。
+    seek_during_pause: bool,
 }
 
 impl Engine {
@@ -65,6 +74,7 @@ impl Engine {
             decode_thread: None,
             output: Arc::new(AudioOut::Pipewire(crate::output::PipewireOutput::new())),
             current_path: None,
+            seek_during_pause: false,
         }
     }
 
@@ -164,10 +174,18 @@ impl Engine {
                 // 且进度（基于 played_frames）不会跳动。回调转为输出静音。
                 self.output.pause();
                 self.state = State::Paused;
+                self.seek_during_pause = false; // 新一次暂停，清标记。
                 Event::State { state: "paused".into() }
             }
             Request::Resume => {
                 eprintln!("[engine] RESUME (played={} pos={:.3}s)", self.output.played_frames(), self.position());
+                // 若暂停期间发生过 seek：先让输出进入 Draining（RT/写线程
+                // 输出静音），再恢复播放——解码线程醒来后处理的 seek 期间
+                // RT 保持静音，不会先 pop 旧位置数据。
+                if self.seek_during_pause {
+                    self.output.begin_seek();
+                    self.seek_during_pause = false;
+                }
                 self.shared.playing.store(true, Ordering::SeqCst);
                 self.output.resume();
                 self.state = State::Playing;
@@ -189,6 +207,15 @@ impl Engine {
                 eprintln!("[engine] SEEK → {:.3}s", seconds);
                 let ms = (seconds.max(0.0) * 1000.0) as u64;
                 self.shared.seek_target_ms.store(ms, Ordering::SeqCst);
+                // 关键：中断可能卡在 output.write 的解码线程（ring 满时 sleep
+                // 重试，不响应 seek）。置 abort_write 让它立即返回主循环，
+                // 主循环顶部会检测 seek 并处理（begin_seek → mark_refilling ...）。
+                // 解码线程处理完 seek 后调 clear_abort 清除（见 decode.rs）。
+                self.output.abort_write();
+                // 暂停中 seek：标记，供 resume 时先静音再恢复（见 Resume）。
+                if self.state == State::Paused {
+                    self.seek_during_pause = true;
+                }
                 Event::Ack { cmd: "seek".into() }
             }
             Request::SetVolume { value } => {
@@ -314,6 +341,8 @@ impl Engine {
         shared.frames_out.store(0, Ordering::SeqCst);
         // 切歌：清空输出缓冲（丢弃上一首残留），复用同一条 PipeWire stream；
         // 进度基准（played_frames）归零。
+        // 用 flush（纯清空语义，不引入 seeking 过渡）——切歌后解码线程
+        // 直接从 0 写新 active，RT 立刻从新数据 pop，无需「填→切」。
         self.output.flush();
         self.output.reset_played_frames(0);
         self.output.resume();

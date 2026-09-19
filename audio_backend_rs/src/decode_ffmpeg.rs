@@ -155,12 +155,17 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
         }
 
         // seek：重启 ffmpeg；输出缓冲清空
+        let mut just_seeked = false;
         let seek_ms = shared.seek_target_ms.swap(u64::MAX, Ordering::SeqCst);
         if seek_ms != u64::MAX {
             drop(ff_out);
             let _ = ff.kill();
             let _ = ff.wait();
-            output.flush();
+            // 状态机（与 symphonia 路径一致）：Draining → Refilling，
+            // 期间输出静音；第一块新数据写入后 mark_playing → Playing。
+            output.begin_seek();
+            output.mark_refilling();
+            just_seeked = true;
 
             let ss = seek_ms as f64 / 1000.0;
             ff = crate::deps::command("ffmpeg")
@@ -183,6 +188,9 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
         let n = ff_out.read(&mut buf).unwrap_or(0);
         if n == 0 {
             shared.eof.store(true, Ordering::SeqCst);
+            // 结束 seek 过渡（EOF 兜底）：避免状态机停在 Draining/
+            // Refilling 导致永久静音。
+            output.end_seek();
             break;
         }
         // 拼上上一轮残留字节，保证 f32 样本按 4 字节对齐解析。
@@ -239,6 +247,11 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             }
         } else {
             output.write(&pcm, in_rate, ch);
+            // seek 后第一块新数据写完：恢复 Playing。
+            if just_seeked {
+                output.mark_playing();
+                just_seeked = false;
+            }
         }
     }
 

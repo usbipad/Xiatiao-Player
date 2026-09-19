@@ -168,24 +168,47 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
             break;
         }
 
-        // seek
+        // seek：状态机 begin_seek → Draining（输出静音 + flush 硬件旧数据）；
+        // mark_refilling → 清 ring + Refilling（旧数据彻底丢弃）。
+        // 随后本轮解码出的第一块新数据写入 ring，写完后 mark_playing →
+        // Playing（RT 恢复 pop）。
+        let mut just_seeked = false;
         let seek_ms = shared.seek_target_ms.swap(u64::MAX, Ordering::SeqCst);
         if seek_ms != u64::MAX {
             if let Err(e) = do_seek(&mut *format, seek_ms) {
                 eprintln!("[engine] seek failed: {e}");
+                // 兜底：seek 失败时恢复 Playing，避免状态停在 Draining/
+                // Refilling（尤其是 resume 时 engine 已提前置 Draining 的情况）
+                // 导致永久静音。同时清 abort_write，避免后续 write 立即返回。
+                output.clear_abort();
+                output.end_seek();
             } else {
-                // 清空输出缓冲，从新位置继续
-                output.flush();
+                // 清除 seek 时置的 abort_write（engine.rs Seek handler 置的），
+                // 使后续 write 正常写入新数据。
+                output.clear_abort();
+                output.begin_seek();
+                output.mark_refilling();
+                just_seeked = true;
                 frames_written = (seek_ms as f64 / 1000.0 * in_rate as f64) as u64;
                 output.reset_played_frames(frames_written);
                 shared.frames_out.store(frames_written, Ordering::SeqCst);
                 shared.eof.store(false, Ordering::SeqCst);
-                // 关键：seek 后重置 DSP 运行时状态（滤波器延迟/包络/平滑器），
+                // seek 后重置 DSP 运行时状态（滤波器延迟/包络/平滑器），
                 // 否则新位置的信号会与旧位置的滤波器状态不连续 → 衔接不自然
                 // / 爆音。
                 dsp.reset_state();
                 // Camilla 也触发短淡入，避免跳转硬切。
                 camilla_engine.trigger_fade();
+                // 【关键】seek 后**重建 Camilla pipeline**：camillalib 没有
+                // 滤波器状态的 reset API（FIR 卷积历史无法单独清），只能重建
+                // 管线来丢弃卷积尾。否则 seek 后新数据接旧卷积尾 →
+                // 「记忆音频」（**开音效**即 Camilla 跑，故出现；关音效正常）。
+                if let Some(yaml) = shared.camilla_yaml.lock().ok().and_then(|g| g.clone()) {
+                    camilla_engine.clear();
+                    if let Err(e) = camilla_engine.set_yaml(&yaml) {
+                        eprintln!("[camilla] seek 后重建失败: {e}");
+                    }
+                }
             }
         }
 
@@ -193,6 +216,10 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
             Ok(p) => p,
             Err(_) => {
                 shared.eof.store(true, Ordering::SeqCst);
+                // 结束 seek 过渡：EOF 后不再有新数据写输出，若正处于 seek
+                // 过渡（seeking=true）且 pending 未填够切换，write() 兜底不会
+                // 被触发 → RT 永久 hold。主动清 seeking，让 RT 恢复 pop。
+                output.end_seek();
                 break;
             }
         };
@@ -258,6 +285,11 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
                         }
                     } else {
                         output.write(&pcm, rate_out, ch_out);
+                        // seek 后第一块新数据写完：恢复 Playing。
+                        if just_seeked {
+                            output.mark_playing();
+                            just_seeked = false;
+                        }
                     }
                 }
             }
@@ -387,6 +419,7 @@ fn run_playback_dsd(path: &str, shared: Arc<Shared>,
 
         // ---- seek 处理 ----
         // DSD 是顺序字节流，按固定字节率定位到目标帧。
+        // DSD 直通不走 PCM 状态机（采样率/帧数语义不同）。
         let seek_ms = shared.seek_target_ms.swap(u64::MAX, Ordering::SeqCst);
         if seek_ms != u64::MAX {
             let target_sec = seek_ms as f64 / 1000.0;
@@ -404,6 +437,9 @@ fn run_playback_dsd(path: &str, shared: Arc<Shared>,
 
             match reader.seek_to_frame(target_frame) {
                 Ok(actual_frame) => {
+                    // DSD 直通不走 PCM 状态机（避免采样率/帧数语义混淆）：
+                    // 仅清 abort_write + flush ALSA 缓冲，丢弃 seek 前残留。
+                    output.clear_abort();
                     // 清空输出缓冲，丢弃 seek 前残留。
                     alsa.flush();
                     // seek 完成后再校正一次（实际帧可能因字节对齐略有出入）。
@@ -423,6 +459,9 @@ fn run_playback_dsd(path: &str, shared: Arc<Shared>,
                 }
                 Err(e) => {
                     eprintln!("[engine/dsd] seek 失败: {e}");
+                    // 兜底：seek 失败时恢复 Playing + 清 abort_write。
+                    output.clear_abort();
+                    output.end_seek();
                 }
             }
         }
