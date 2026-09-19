@@ -143,6 +143,14 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
     // 保证每次处理的都是完整 f32 样本，避免字节错位导致杂音。
     let mut buf = vec![0u8; 131072];
     let mut carry: Vec<u8> = Vec::with_capacity(4);
+    // seek 后若刚重启的 ffmpeg 尚未吐数据就被读到 EOF，允许有限次重试
+    // （子进程启动延迟），超过阈值才认定为真 EOF，避免误跳下一首，
+    // 同时避免无限重试死循环。声明在 loop 外，否则 continue 会被重置。
+    let mut seek_eof_retries: u32 = 0;
+    const SEEK_EOF_MAX_RETRIES: u32 = 40;
+    // seek 后待恢复 Playing 的标志：必须跨迭代保持（读到第一块新数据才清），
+    // 否则 EOF 重试时 just_seeked 被重置为 false，重试逻辑失效。
+    let mut just_seeked = false;
     loop {
         if shared.stop.load(Ordering::SeqCst) {
             break;
@@ -155,7 +163,6 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
         }
 
         // seek：重启 ffmpeg；输出缓冲清空
-        let mut just_seeked = false;
         let seek_ms = shared.seek_target_ms.swap(u64::MAX, Ordering::SeqCst);
         if seek_ms != u64::MAX {
             drop(ff_out);
@@ -166,6 +173,16 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             output.begin_seek();
             output.mark_refilling();
             just_seeked = true;
+
+            // 【关键】清 seek 时置的 abort_write，否则 output.write 会立即
+            // 返回（解码线程以为要中断），新数据写不进去 → seek 后静音。
+            // 与 symphonia 路径（decode.rs）保持一致。
+            output.clear_abort();
+
+            // 【关键】丢弃跨块残留字节：seek 后 ffmpeg 从新位置输出全新字节流，
+            // 旧 carry 是旧位置的非 4 字节尾部，拼到新数据开头会导致样本错位
+            // （听起来像加速 / 杂音）。
+            carry.clear();
 
             let ss = seek_ms as f64 / 1000.0;
             ff = crate::deps::command("ffmpeg")
@@ -183,10 +200,37 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             // 否则 seek 后进度条会回弹到 0。
             output.reset_played_frames(frames_written);
             shared.eof.store(false, Ordering::SeqCst);
+            // 新一次 seek：重置 EOF 重试计数。
+            seek_eof_retries = 0;
+
+            // seek 后重置 DSP 运行时状态（滤波器延迟 / 包络 / 平滑器），
+            // 否则新位置的信号会与旧位置的滤波器状态不连续 → 衔接不自然 / 爆音。
+            // 与 symphonia 路径（decode.rs）保持一致。
+            dsp.reset_state();
+            // Camilla 触发短淡入，避免跳转硬切。
+            camilla_engine.trigger_fade();
+            // 【关键】seek 后重建 Camilla pipeline：camillalib 没有滤波器状态
+            // 的 reset API（FIR 卷积历史无法单独清），只能重建管线来丢弃卷积尾。
+            // 否则 seek 后新数据接旧卷积尾 → 「记忆音频」（开音效时出现）。
+            if let Some(yaml) = shared.camilla_yaml.lock().ok().and_then(|g| g.clone()) {
+                camilla_engine.clear();
+                if let Err(e) = camilla_engine.set_yaml(&yaml) {
+                    eprintln!("[camilla/ffmpeg] seek 后重建失败: {e}");
+                }
+            }
         }
 
         let n = ff_out.read(&mut buf).unwrap_or(0);
         if n == 0 {
+            // 【关键】seek 后刚重启的 ffmpeg 可能还没吐出数据就被读到 EOF
+            // （子进程启动延迟 / -ss 定位到文件尾部附近）。此时不能直接
+            // 判定整首播完跳下一首，应短暂重试；只有连续多次仍无数据，
+            // 才认定为真 EOF。
+            if just_seeked && seek_eof_retries < SEEK_EOF_MAX_RETRIES {
+                seek_eof_retries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
             shared.eof.store(true, Ordering::SeqCst);
             // 结束 seek 过渡（EOF 兜底）：避免状态机停在 Draining/
             // Refilling 导致永久静音。
@@ -247,11 +291,13 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             }
         } else {
             output.write(&pcm, in_rate, ch);
-            // seek 后第一块新数据写完：恢复 Playing。
-            if just_seeked {
-                output.mark_playing();
-                just_seeked = false;
-            }
+        }
+        // seek 后第一块新数据写完：恢复 Playing。
+        // 必须放在 if/else 之外：pwcat 分支不经过 output.write，若只在 else
+        // 清除，just_seeked 永远为 true、状态机永久停在 Refilling → 静音。
+        if just_seeked {
+            output.mark_playing();
+            just_seeked = false;
         }
     }
 
