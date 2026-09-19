@@ -273,6 +273,15 @@ class PlayerPanel(Gtk.Box):
         self._effect_buttons: dict = {}
         self._effect_current = ""
         self._effect_dialog = None
+        self._effect_dialog_rows: dict = {}
+        # 订阅「当前音效」单一状态源：任何一处改动都会广播到这里，
+        # 若音效弹窗正开着则自动刷新高亮（无需手动同步）。
+        try:
+            from core.effect_state import get_effect_state
+            self._effect_state = get_effect_state()
+            self._effect_state.connect("changed", self._on_effect_state_changed)
+        except Exception:
+            self._effect_state = None
 
         # 添加到歌单：把当前播放曲目加入歌单（弹出选择对话框）
         self._add_queue_btn = Gtk.Button(icon_name="xiatiao-queue-add-symbolic")
@@ -641,14 +650,16 @@ class PlayerPanel(Gtk.Box):
         group = Adw.PreferencesGroup()
         group.set_title(_("内置音效"))
 
-        # 当前选中：优先从配置实时读（DSP 页改开关后会更新 effect_preset），
-        # 避免用可能过期的 _effect_current 导致勾选与实际不符。
-        cur = getattr(self, "_effect_current", "")
+        # 当前选中：从「当前音效」单一状态源读取，避免各视图缓存不一致。
+        cur = ""
         try:
-            from config.settings import get_config
-            _cfg_cur = get_config().get("effect_preset")
-            if isinstance(_cfg_cur, str):
-                cur = _cfg_cur
+            if getattr(self, "_effect_state", None) is not None:
+                cur = self._effect_state.current()
+            else:
+                from config.settings import get_config
+                _cfg_cur = get_config().get("effect_preset")
+                if isinstance(_cfg_cur, str):
+                    cur = _cfg_cur
         except Exception:
             pass
         # 选中态用「行高亮」表达（不再用勾选框）：
@@ -730,6 +741,25 @@ class PlayerPanel(Gtk.Box):
     def _on_effect_dialog_closed(self, _dialog) -> None:
         """对话框关闭：清引用。"""
         self._effect_dialog = None
+
+    def _on_effect_state_changed(self, _state, name: str) -> None:
+        """「当前音效」变更：同步本地缓存 + 刷新已打开的弹窗高亮。"""
+        self._effect_current = name or ""
+        self._refresh_effect_dialog_highlight(name or "")
+
+    def _refresh_effect_dialog_highlight(self, current: str) -> None:
+        """按 current 刷新音效弹窗各行高亮（弹窗未开则无操作）。"""
+        rows = getattr(self, "_effect_dialog_rows", None)
+        if not rows:
+            return
+        for name, row in rows.items():
+            try:
+                if name == current:
+                    row.add_css_class("effect-selected")
+                else:
+                    row.remove_css_class("effect-selected")
+            except Exception:
+                pass
 
     def _on_effect_dialog_choice(self, _row, name: str) -> None:
         """点某行：高亮该行、取消其它行高亮，并下发。

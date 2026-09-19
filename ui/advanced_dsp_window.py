@@ -369,6 +369,14 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
             base.update(params)         # 再套预设
             self._params = base
             self._emit()
+            # 记录「当前音效预设」为该名称（走单一状态源，广播给所有视图，
+            # 主界面音效弹窗会自动高亮）。必须在 _emit() 之后：_on_dsp_changed
+            # 会先把它清成 ""/"关闭"，这里再写回预设名。
+            try:
+                from core.effect_state import get_effect_state
+                get_effect_state().set_current(name)
+            except Exception:
+                log.debug("记录预设名失败", exc_info=True)
             # 同步到各功能页并刷新 UI：开关勾选、置灰状态、滑块值。
             for page in getattr(self, "_feature_pages", []) or []:
                 try:

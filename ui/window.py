@@ -1277,7 +1277,12 @@ class MainWindow(Adw.ApplicationWindow):
             self._push_dsp_to_engine(params, debounce=False)
             cfg = get_config()
             cfg.set("dsp_params", params)
-            cfg.set("effect_preset", key)
+            # 当前音效走单一状态源：会广播到所有订阅者（音效弹窗自动高亮）。
+            try:
+                from core.effect_state import get_effect_state
+                get_effect_state().set_current(key)
+            except Exception:
+                cfg.set("effect_preset", key)
             # 同步到设置页（若打开着）：统一刷新，避免漏刷卷积/额外开关。
             try:
                 win = getattr(self, "_settings_win", None)
@@ -1310,11 +1315,15 @@ class MainWindow(Adw.ApplicationWindow):
             log.debug("应用音效预设失败: %s", exc)
 
     def _current_effect_preset(self) -> str:
-        """读取上次选中的音效预设名（用于对话框高亮）。"""
+        """读取当前音效预设名（单一状态源）。"""
         try:
-            return get_config().get("effect_preset") or ""
+            from core.effect_state import get_effect_state
+            return get_effect_state().current()
         except Exception:
-            return ""
+            try:
+                return get_config().get("effect_preset") or ""
+            except Exception:
+                return ""
 
     def _init_effect_presets(self) -> None:
         """启动时把已选预设名同步给面板（仅用于高亮）。"""
@@ -2217,13 +2226,18 @@ class MainWindow(Adw.ApplicationWindow):
             _cfg = get_config()
             _cfg.set("dsp_params", params)
             _cfg.set_bool("dsp_enabled", bool(params.get("enabled", False)))
-            # 同步「当前音效」标记：
-            # - DSP 关闭 → 音效对话框应勾「关闭」
-            # - DSP 开着但手动调了参数 → 已不是任何预设，清空标记（不勾预设）
-            if not params.get("enabled", False):
-                _cfg.set("effect_preset", "关闭")
-            else:
-                _cfg.set("effect_preset", "")
+            # 同步「当前音效」标记（走单一状态源，会广播给所有视图）：
+            # - DSP 关闭 → 音效对话框高亮「关闭」
+            # - DSP 开着但手动调了参数 → 已不是任何预设，清空标记
+            try:
+                from core.effect_state import get_effect_state
+                get_effect_state().set_current(
+                    "关闭" if not params.get("enabled", False) else "")
+            except Exception:
+                if not params.get("enabled", False):
+                    _cfg.set("effect_preset", "关闭")
+                else:
+                    _cfg.set("effect_preset", "")
             # 同步回主界面 DSP 页参数 + UI（高级窗口改动后，主界面也是最新的）
             if getattr(self, "dsp_page", None) is not None:
                 self.dsp_page._params.update(params)  # noqa: SLF001

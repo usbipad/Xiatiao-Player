@@ -1526,13 +1526,17 @@ class EffectPage(Adw.PreferencesPage):
                 pass
         self._emit()
         # 同步清空「当前音效预设」记录：重置后实际已是默认状态，
-        # 若保留旧的 effect_preset，音效对话框会假高亮上次选的预设，
-        # 与实际听感不一致。此处清掉，高亮回到「关闭」。
+        # 若保留旧的记录，音效对话框会假高亮上次选的预设，与实际听感不一致。
+        # 走单一状态源，广播给所有视图。
         try:
-            from config.settings import get_config
-            get_config().set("effect_preset", "")
+            from core.effect_state import get_effect_state
+            get_effect_state().set_current("")
         except Exception:
-            pass
+            try:
+                from config.settings import get_config
+                get_config().set("effect_preset", "")
+            except Exception:
+                pass
         # 提示已重置
         try:
             dlg = Adw.MessageDialog(
