@@ -27,6 +27,7 @@ mod output;
 mod output_alsa;
 mod dsd;
 mod reverb;
+mod ir_resample;
 mod ipc;
 mod protocol;
 mod viz;

@@ -196,6 +196,21 @@ impl CamillaEngine {
         conf.devices.samplerate = self.rate as usize;
         // 记录 chunksize（Conv 等滤波器要求「块大小 == chunksize」）
         self.chunksize = conf.devices.chunksize.max(1);
+        // Conv（卷积）用的 WAV IR 若采样率 ≠ 当前播放率 → 重采样到当前率，
+        // 否则卷积按错误采样率消费 IR，音效频率整体偏移（差越大越糟）。
+        // 只重采样 IR（控制信号），不改歌曲。
+        if let Some(filters) = conf.filters.as_mut() {
+            for (_name, f) in filters.iter_mut() {
+                if let config::Filter::Conv { parameters, .. } = f {
+                    if let config::ConvParameters::Wav(w) = parameters {
+                        let matched = crate::ir_resample::ensure_ir_rate(&w.filename, self.rate);
+                        if matched != w.filename {
+                            w.filename = matched;
+                        }
+                    }
+                }
+            }
+        }
         // 校验配置（不改设备，只检查管线合法性）
         config::validate_config(&mut conf, None)
             .map_err(|e| format!("camilla 配置无效: {e}"))?;
@@ -519,6 +534,41 @@ mod tests {
         measure_response(&y("x", "Highshelf", 8000.0, 1.5, 0.8), "单 Highshelf 8k +1.5");
         measure_response(&y("x", "Peaking", 3000.0, -1.0, 1.4), "单 Peaking 3k -1");
         measure_response(&y("x", "Lowshelf", 150.0, 4.5, 1.0), "单 Lowshelf 150 +4.5 q1");
+    }
+
+    /// 端到端验证：同一 IR + 不同播放采样率，音效曲线应一致（重采样生效）。
+    /// 需 XIATIAO_TEST_IR。
+    #[test]
+    fn ir_resample_keeps_response() {
+        let ir = match std::env::var("XIATIAO_TEST_IR") {
+            Ok(p) => p, Err(_) => { println!("[IR-E2E] 未设 XIATIAO_TEST_IR，跳过"); return; }
+        };
+        // 对每个播放采样率，测卷积频响（关键频点），应彼此一致
+        for &rate in &[44100u32, 48000, 96000, 192000] {
+            let y = format!("devices:\n  samplerate: {rate}\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters:\n  ir:\n    type: Conv\n    parameters:\n      type: Wav\n      filename: {ir}\n      channel: 0\nprocessors: {{}}\nmixers: {{}}\npipeline:\n- type: Filter\n  channels:\n  - 0\n  - 1\n  names:\n  - ir\n");
+            let freqs = [100.0, 500.0, 1000.0, 3000.0, 8000.0];
+            print!("[IR-E2E] {rate}Hz: ");
+            for &f in &freqs {
+                // 每个 (采样率,频率) 独立建引擎（避免状态污染）
+                let mut eng = CamillaEngine::new(rate);
+                if eng.set_yaml(&y).is_err() { print!("{f:.0}Hz=配置失败 "); continue; }
+                let frames = (rate as usize) * 3; // 3s：远大于 IR 延迟(372ms)，进入稳态
+                let mut buf = Vec::with_capacity(frames * 2);
+                for i in 0..frames {
+                    let s = (2.0 * std::f32::consts::PI * f * (i as f32 / rate as f32)).sin() * 0.25;
+                    buf.push(s); buf.push(s);
+                }
+                // 输入/输出 RMS 取最后 1/4（完全进入卷积稳态）
+                let st = frames * 3 / 4;
+                let in_rms = { let mut sum=0.0f32; let mut n=0; for i in st..frames { sum+=buf[i*2]*buf[i*2]; n+=1; } (sum/n as f32).sqrt() };
+                for c in buf.chunks_mut(4096) { eng.process_interleaved(c, 2); }
+                let out_rms = { let mut sum=0.0f32; let mut n=0; for i in st..frames { sum+=buf[i*2]*buf[i*2]; n+=1; } (sum/n as f32).sqrt() };
+                let db = 20.0 * (out_rms / in_rms.max(1e-9)).log10();
+                print!("{f:.0}Hz={db:+.1} ");
+            }
+            println!();
+        }
+        println!("[IR-E2E] 各采样率下同一 IR 的频响应基本一致（差异应远小于「不重采样」的 4.35× 偏移）");
     }
 
     /// 测指定 IR 文件的卷积频响（需 XIATIAO_TEST_IR 环境变量）。
