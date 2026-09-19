@@ -236,6 +236,35 @@ impl Reverb {
         }
     }
 
+    /// 清空所有内部缓冲与状态（保留参数）。用于开关切换时避免旧状态爆音。
+    pub fn reset(&mut self) {
+        for c in self.comb_l.iter_mut() {
+            c.buf.iter_mut().for_each(|s| *s = 0.0);
+            c.pos = 0;
+            c.filter_state = 0.0;
+        }
+        for c in self.comb_r.iter_mut() {
+            c.buf.iter_mut().for_each(|s| *s = 0.0);
+            c.pos = 0;
+            c.filter_state = 0.0;
+        }
+        for a in self.allpass_l.iter_mut() {
+            a.buf.iter_mut().for_each(|s| *s = 0.0);
+            a.pos = 0;
+        }
+        for a in self.allpass_r.iter_mut() {
+            a.buf.iter_mut().for_each(|s| *s = 0.0);
+            a.pos = 0;
+        }
+        for p in [&mut self.pre_l, &mut self.pre_r] {
+            p.buf.iter_mut().for_each(|s| *s = 0.0);
+            p.pos = 0;
+        }
+        self.hp_l.prev_x = 0.0; self.hp_l.prev_y = 0.0;
+        self.hp_r.prev_x = 0.0; self.hp_r.prev_y = 0.0;
+        self.lfo_phase = 0.0;
+    }
+
     /// 处理一帧（立体声）。返回 (out_l, out_r)。
     #[inline]
     pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {

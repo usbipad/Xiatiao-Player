@@ -561,7 +561,11 @@ class MainWindow(Adw.ApplicationWindow):
                 _init_params = _saved
         except Exception:
             _init_params = None
-        self.dsp_page = EffectPage(on_dsp_changed=self._on_dsp_changed, initial=_init_params)
+        self.dsp_page = EffectPage(
+            on_dsp_changed=self._on_dsp_changed,
+            initial=_init_params,
+            on_coloring=self._on_coloring_changed,
+        )
         right_panel.append(self.stack)
 
         scroll = Gtk.ScrolledWindow()
@@ -2213,12 +2217,18 @@ class MainWindow(Adw.ApplicationWindow):
                 pass
         self._dsp_yaml_timer = GLib.timeout_add(80, self._emit_camilla_yaml_now)
 
-    def _on_dsp_changed(self, params: dict) -> None:
-        """设置页拖动滑块：实时下发 DSP 参数并持久化。
+    def _on_dsp_changed(self, params: dict, *, clear_mark: bool = True) -> None:
+        """下发 DSP 参数并持久化。
 
         - Rust 内置 DSP：通过 set_dsp 下发（camilla 模式下 Rust 会跳过，但无害）
         - CamillaDSP 模式：同时更新 camilladsp 配置并触发重载
+
+        clear_mark=True（默认，手动改参数）：因为已不是任何预设，清空「当前
+        音效」标记。clear_mark=False（加载预设等）：保留标记，由调用方随后
+        显式 set_current(预设名)。这样「下发」与「音效标记」解耦，避免下发
+        顺带清空标记导致的高亮丢失。
         """
+        log.info("[_on_dsp_changed] clear_mark=%s enabled=%s", clear_mark, params.get("enabled"))
         # 统一下发：Rust set_dsp + 内嵌 Camilla YAML（拖滑块防抖合并）。
         self._push_dsp_to_engine(params, debounce=True)
         try:
@@ -2226,18 +2236,19 @@ class MainWindow(Adw.ApplicationWindow):
             _cfg = get_config()
             _cfg.set("dsp_params", params)
             _cfg.set_bool("dsp_enabled", bool(params.get("enabled", False)))
-            # 同步「当前音效」标记（走单一状态源，会广播给所有视图）：
-            # - DSP 关闭 → 音效对话框高亮「关闭」
-            # - DSP 开着但手动调了参数 → 已不是任何预设，清空标记
-            try:
-                from core.effect_state import get_effect_state
-                get_effect_state().set_current(
-                    "关闭" if not params.get("enabled", False) else "")
-            except Exception:
-                if not params.get("enabled", False):
-                    _cfg.set("effect_preset", "关闭")
-                else:
-                    _cfg.set("effect_preset", "")
+            if clear_mark:
+                # 手动改参数：清空「当前音效」标记（走单一状态源，广播给所有视图）：
+                # - DSP 关闭 → 高亮「关闭」
+                # - DSP 开着但手动调了参数 → 已不是任何预设，清空标记
+                try:
+                    from core.effect_state import get_effect_state
+                    get_effect_state().set_current(
+                        "关闭" if not params.get("enabled", False) else "")
+                except Exception:
+                    if not params.get("enabled", False):
+                        _cfg.set("effect_preset", "关闭")
+                    else:
+                        _cfg.set("effect_preset", "")
             # 同步回主界面 DSP 页参数 + UI（高级窗口改动后，主界面也是最新的）
             if getattr(self, "dsp_page", None) is not None:
                 self.dsp_page._params.update(params)  # noqa: SLF001

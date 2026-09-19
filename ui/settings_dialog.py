@@ -432,6 +432,7 @@ class SettingsWindow(Adw.PreferencesWindow):
             on_convolution_cleared=self._on_convolution_cleared,
             mode="basic",
             on_open_advanced=self._open_advanced_dsp,
+            on_coloring=self._on_coloring,
         )
         # 回填已保存的 IR 文件名，避免显示「未加载」造成误导
         try:

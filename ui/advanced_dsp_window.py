@@ -53,6 +53,61 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         # 预设管理
         self._build_presets_page()
 
+        # 订阅「DSP 参数已重置」广播：重置后从 config 重读，刷新本窗口
+        # 各功能页与染色开关（各页持独立 _params 快照，需显式同步）。
+        self._effect_state = None
+        try:
+            from core.effect_state import get_effect_state
+            self._effect_state = get_effect_state()
+            self._effect_state.connect("reset", self._on_state_reset)
+        except Exception:
+            log.debug("订阅 EffectState 失败", exc_info=True)
+            self._effect_state = None
+
+    def _on_state_reset(self, _state) -> None:
+        """收到「DSP 参数已重置」广播：重读 config 并刷新本窗口 UI。"""
+        from config.settings import get_config
+        saved = None
+        try:
+            _s = get_config().get("dsp_params")
+            if isinstance(_s, dict):
+                saved = dict(_s)
+        except Exception:
+            saved = None
+        if saved is None:
+            return
+        # 用 _on_preset_load 相同的「默认基底 + 覆盖」语义重建
+        from .effect_page import _default_params as _ep_defaults
+        defaults = _ep_defaults()
+        base = dict(self._params)
+        base.update(defaults)
+        base["tube_enabled"] = False
+        base["bbe_enabled"] = False
+        base.update(saved)
+        self._params = base
+        for page in getattr(self, "_feature_pages", []) or []:
+            try:
+                p = dict(defaults)
+                p.update(saved)
+                page._params = p
+                page.refresh_from_params()
+            except Exception:
+                log.debug("重置后同步功能页失败", exc_info=True)
+        # 染色页开关 + 滑块 + 置灰
+        try:
+            if getattr(self, "_tube_switch", None) is not None:
+                self._tube_switch.set_active(bool(self._params.get("tube_enabled", False)))
+            if getattr(self, "_bbe_switch", None) is not None:
+                self._bbe_switch.set_active(bool(self._params.get("bbe_enabled", False)))
+            for key, sc in (getattr(self, "_coloring_scales", {}) or {}).items():
+                try:
+                    sc.set_value(float(self._params.get(key, 0.0)))
+                except Exception:
+                    pass
+            self._update_coloring_sensitivity()
+        except Exception:
+            log.debug("重置后同步染色页失败", exc_info=True)
+
     # ------------------------------------------------------------
     # 每功能一页（按音频链路顺序）
     # ------------------------------------------------------------
@@ -128,19 +183,34 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         self._params.update(params)
         self._emit()
 
-    def _emit(self) -> None:
-        """防抖：拖滑块时延迟下发，避免频繁重建 Pipeline 导致音频颤动。"""
+    def _emit(self, *, immediate: bool = False, clear_mark: bool = True) -> None:
+        """下发参数。
+
+        默认防抖（拖滑块时合并，避免频繁重建 Pipeline 导致音频颤动）；
+        immediate=True 时立即下发（选预设等一次性操作，需保证下发顺序）。
+        clear_mark=True（默认，手动改）：清空音效标记；加载预设传 False。
+        """
+        self._pending_clear_mark = clear_mark
         if self._emit_timer is not None:
             try:
                 GLib.source_remove(self._emit_timer)
             except Exception:
                 pass
+            self._emit_timer = None
+        if immediate:
+            self._emit_now()
+            return
         self._emit_timer = GLib.timeout_add(120, self._emit_now)
 
     def _emit_now(self) -> bool:
         self._emit_timer = None
         if self._on_dsp_changed is not None:
-            self._on_dsp_changed(dict(self._params))
+            clear = getattr(self, "_pending_clear_mark", True)
+            try:
+                self._on_dsp_changed(dict(self._params), clear_mark=clear)
+            except TypeError:
+                # 兼容不接受 clear_mark 的旧回调
+                self._on_dsp_changed(dict(self._params))
         return False
 
     # ------------------------------------------------------------
@@ -184,13 +254,13 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         page.add(g3)
 
         self.add(page)
-        # 染色归 Rust DSP 链（受「启用 DSP」总开关控制）：
+        # 染色归 Rust DSP 链（受「启用音频处理」总开关控制）：
         # 总开关关闭时置灰。存下组引用，供加载预设后刷新置灰状态。
         self._coloring_groups = [g2, g3]
         self._update_coloring_sensitivity()
 
     def _update_coloring_sensitivity(self) -> None:
-        """按「启用 DSP」总开关刷新染色组置灰状态。"""
+        """按「启用音频处理」总开关刷新染色组置灰状态。"""
         enabled = bool(self._params.get("enabled", False))
         for g in getattr(self, "_coloring_groups", []) or []:
             try:
@@ -208,6 +278,10 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         sc.set_valign(Gtk.Align.CENTER)
         sc.set_value(float(self._params.get(key, 0.0)))
         sc.connect("value-changed", self._on_scale_changed, key)
+        # 存引用：重置广播后需要把滑块拉回默认值
+        if not hasattr(self, "_coloring_scales"):
+            self._coloring_scales = {}
+        self._coloring_scales[key] = sc
         return sc
 
     def _on_scale_changed(self, scale, key: str) -> None:
@@ -368,15 +442,9 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
             base["bbe_enabled"] = False
             base.update(params)         # 再套预设
             self._params = base
-            self._emit()
-            # 记录「当前音效预设」为该名称（走单一状态源，广播给所有视图，
-            # 主界面音效弹窗会自动高亮）。必须在 _emit() 之后：_on_dsp_changed
-            # 会先把它清成 ""/"关闭"，这里再写回预设名。
-            try:
-                from core.effect_state import get_effect_state
-                get_effect_state().set_current(name)
-            except Exception:
-                log.debug("记录预设名失败", exc_info=True)
+            # 立即下发且不清空音效标记（clear_mark=False）：因为这次是「加载
+            # 预设」，参数即预设内容，随后由 set_current(name) 记录预设名。
+            self._emit(immediate=True, clear_mark=False)
             # 同步到各功能页并刷新 UI：开关勾选、置灰状态、滑块值。
             for page in getattr(self, "_feature_pages", []) or []:
                 try:
@@ -395,6 +463,15 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
                 self._update_coloring_sensitivity()
             except Exception:
                 log.debug("同步染色页失败", exc_info=True)
+            # 最后一步：记录「当前音效预设」为该名称（走单一状态源，广播给
+            # 所有视图，主界面音效弹窗自动高亮）。必须放在所有会触发下发
+            # （_emit → _on_dsp_changed → 清空标记）的操作之后，否则会被
+            # 随后的 refresh 清掉，表现为高亮「闪一下就不见」。
+            try:
+                from core.effect_state import get_effect_state
+                get_effect_state().set_current(name)
+            except Exception:
+                log.debug("记录预设名失败", exc_info=True)
 
     def _on_preset_delete(self, _btn) -> None:
         from core.dsp_store import get_dsp_preset_store

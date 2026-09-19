@@ -650,28 +650,16 @@ class PlayerPanel(Gtk.Box):
         group = Adw.PreferencesGroup()
         group.set_title(_("内置音效"))
 
-        # 当前选中：从「当前音效」单一状态源读取，避免各视图缓存不一致。
-        cur = ""
-        try:
-            if getattr(self, "_effect_state", None) is not None:
-                cur = self._effect_state.current()
-            else:
-                from config.settings import get_config
-                _cfg_cur = get_config().get("effect_preset")
-                if isinstance(_cfg_cur, str):
-                    cur = _cfg_cur
-        except Exception:
-            pass
         # 选中态用「行高亮」表达（不再用勾选框）：
         # 勾选框可被手动取消，造成「勾没了但音效还开着」的矛盾。
+        # 高亮统一在构建完所有行后由 _refresh_effect_dialog_highlight()
+        # 按单一源设置，这里不逐个判断，避免与单一源不一致。
         self._effect_dialog_rows = {}
         for preset in BUILTIN_PRESETS:
             name = preset["name"]
             row = Adw.ActionRow()
             row.set_title(name)
             row.set_activatable(True)
-            if name == cur:
-                row.add_css_class("effect-selected")
             # 点整行 = 选中该音效（高亮 + 下发）
             row.connect("activated", self._on_effect_dialog_choice, name)
             group.add(row)
@@ -702,8 +690,6 @@ class PlayerPanel(Gtk.Box):
                 del_btn.connect("clicked", self._on_effect_dialog_delete, name)
                 row.add_suffix(del_btn)
                 row.set_activatable(True)
-                if name == cur:
-                    row.add_css_class("effect-selected")
                 # 点整行 = 选中该音效（高亮 + 下发）
                 row.connect("activated", self._on_effect_dialog_choice, name)
                 custom_group.add(row)
@@ -733,6 +719,8 @@ class PlayerPanel(Gtk.Box):
         scroll.set_child(body)
         toolbar.set_content(scroll)
         dialog.set_child(toolbar)
+        # 构建完各行后，统一按单一源刷新一次高亮（保证打开即正确）。
+        self._refresh_effect_dialog_highlight()
         # 手动关闭时清理引用（否则 _effect_dialog 会悬空，
         # 且下次点击按钮时防重逻辑会误判为「已开着」）
         dialog.connect("closed", self._on_effect_dialog_closed)
@@ -743,15 +731,25 @@ class PlayerPanel(Gtk.Box):
         self._effect_dialog = None
 
     def _on_effect_state_changed(self, _state, name: str) -> None:
-        """「当前音效」变更：同步本地缓存 + 刷新已打开的弹窗高亮。"""
+        """「当前音效」变更：同步缓存 + 刷新已打开的弹窗高亮。"""
         self._effect_current = name or ""
-        self._refresh_effect_dialog_highlight(name or "")
+        self._refresh_effect_dialog_highlight()
 
-    def _refresh_effect_dialog_highlight(self, current: str) -> None:
-        """按 current 刷新音效弹窗各行高亮（弹窗未开则无操作）。"""
+    def _refresh_effect_dialog_highlight(self) -> None:
+        """把弹窗各行高亮刷新为「当前音效」（实时读单一源，幂等）。
+
+        始终读 EffectState.current()，不依赖广播传参、不缓存 —— 保证任何
+        时刻高亮都等于单一真相，不会因广播时机/值未变而漏刷。
+        """
         rows = getattr(self, "_effect_dialog_rows", None)
         if not rows:
             return
+        current = ""
+        try:
+            if getattr(self, "_effect_state", None) is not None:
+                current = self._effect_state.current()
+        except Exception:
+            current = ""
         for name, row in rows.items():
             try:
                 if name == current:
@@ -762,19 +760,11 @@ class PlayerPanel(Gtk.Box):
                 pass
 
     def _on_effect_dialog_choice(self, _row, name: str) -> None:
-        """点某行：高亮该行、取消其它行高亮，并下发。
+        """点某行：选中该音效（高亮 + 下发）。
 
-        用行高亮代替勾选框：不存在「手动取消勾选但音效没关」的矛盾。
+        高亮统一走「单一源 + 广播 → _refresh_effect_dialog_highlight」，
+        不在此手动改 class，避免与单一源不一致。
         """
-        # 单选：只保留当前行高亮
-        for _n, r in getattr(self, "_effect_dialog_rows", {}).items():
-            try:
-                if _n == name:
-                    r.add_css_class("effect-selected")
-                else:
-                    r.remove_css_class("effect-selected")
-            except Exception:
-                pass
         self._select_effect(name)
 
     def _on_effect_dialog_delete(self, _btn, name: str) -> None:
@@ -797,12 +787,18 @@ class PlayerPanel(Gtk.Box):
         self._open_effect_dialog()
 
     def _select_effect(self, name: str) -> None:
-        """选中预设：记录 + 回调 window。
+        """选中预设：更新单一源 + 回调 window（下发音频）。
 
-        不自动关闭对话框：方便连续试听、对比不同预设；
-        由用户手动点标题栏关闭按钮退出。
+        高亮由 EffectState 广播统一刷新，此处不再直接改 UI。
+        不自动关闭对话框：方便连续试听、对比不同预设。
         """
         self._effect_current = name
+        # 更新单一源：广播 → _refresh_effect_dialog_highlight 统一刷新高亮。
+        try:
+            if getattr(self, "_effect_state", None) is not None:
+                self._effect_state.set_current(name)
+        except Exception:
+            pass
         if self._on_effect is not None:
             self._on_effect(name)
 

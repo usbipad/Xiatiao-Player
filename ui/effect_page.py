@@ -31,6 +31,8 @@ def _default_params() -> dict:
         "enabled": False,
         "camilla_enabled": False,
         "pre_gain_db": 0.0,
+        "headroom_enabled": False,
+        "headroom_db": 0.0,
         "replaygain_enabled": False,
         "replaygain_mode": "track",
         "replaygain_db": 0.0,
@@ -78,6 +80,11 @@ def _default_params() -> dict:
         "reverb_width": 1.0,
         "reverb_low_cut_hz": 100.0,
         "reverb_mod_depth": 0.5,
+        # 音色染色（电子管 / BBE）：归「启用音频处理」总开关管，纳入默认体系
+        "tube_enabled": False,
+        "tube_drive": 1.0,
+        "bbe_enabled": False,
+        "bbe_amount": 0.5,
     }
 
 
@@ -90,7 +97,8 @@ class EffectPage(Adw.PreferencesPage):
                  on_convolution_cleared: Optional[Callable[[], None]] = None,
                  mode: str = "full",
                  only=None,
-                 on_open_advanced: Optional[Callable[[], None]] = None) -> None:
+                 on_open_advanced: Optional[Callable[[], None]] = None,
+                 on_coloring: Optional[Callable[[float, float], None]] = None) -> None:
         super().__init__()
         self.set_title(_("DSP 音效"))
         self.set_icon_name("multimedia-equalizer-symbolic")
@@ -100,6 +108,9 @@ class EffectPage(Adw.PreferencesPage):
         self._on_convolution_ir = on_convolution_ir
         self._on_convolution_cleared = on_convolution_cleared
         self._on_open_advanced = on_open_advanced
+        # 染色回调（电子管 / BBE 走独立的 set_coloring，不经 set_dsp）：
+        # 供「重置」关闭染色用。
+        self._on_coloring = on_coloring
         self._mode = mode
         self._params = _default_params()
         if initial:
@@ -109,11 +120,25 @@ class EffectPage(Adw.PreferencesPage):
         self._camilla_groups: list = []
         # 恢复默认值期间为 True：抑制滑块回调，避免旧值被写回
         self._restoring: bool = False
+        # 刷新 UI（refresh_from_params）期间为 True：抑制 _emit，
+        # 避免刷新过程中被触发的回调把「刷新」变成「下发」。
+        self._syncing: bool = False
         # 防抖定时器（滑块拖动合并下发）
         self._emit_timer = None
 
         #: 本页包含的组（single 模式用；决定「重置本页」的范围）
         self._page_groups: list = []
+
+        # 订阅「DSP 参数已重置」广播：任何一处重置后，本实例从 config
+        # 重读 dsp_params 刷新 UI。解决「多个 EffectPage 实例各自缓存
+        # _params，重置只清当前实例，其它页面开关不回归」的问题。
+        self._effect_state = None
+        try:
+            from core.effect_state import get_effect_state
+            self._effect_state = get_effect_state()
+            self._effect_state.connect("reset", self._on_state_reset)
+        except Exception:
+            self._effect_state = None
 
         # 单功能页（高级窗口用）：只建指定组（only 可为字符串或列表）
         if mode == "single" and only:
@@ -331,17 +356,70 @@ class EffectPage(Adw.PreferencesPage):
             ("_compressor_switch", "compressor_enabled", "_on_compressor_toggled"),
             ("_limiter_row", "limiter_enabled", "_on_limiter_toggled"),
         )
+        # 兜底：老代码里通过属性名登记的开关（保留以兼容未打标记的控件）。
         for sw_name, key, cb_name in pairs:
             sw = getattr(self, sw_name, None)
             cb = getattr(self, cb_name, None)
             if sw is None or cb is None:
                 continue
+            target = bool(self._params.get(key, False))
             try:
                 sw.handler_block_by_func(cb)
-                sw.set_active(bool(self._params.get(key, False)))
+                sw.set_active(target)
                 sw.handler_unblock_by_func(cb)
             except Exception:
                 pass
+        # 自动遍历：本页所有打了 param_key 标记的开关，按 _params 同步。
+        # 这是主路径 —— 新增开关只要设 _param_key 即自动生效，
+        # 不再需要维护手工清单（历史 bug：立体声 width_enabled 漏登记）。
+        for sw, key in self._iter_marked_switches():
+            self._set_switch_silently(sw, bool(self._params.get(key, False)))
+
+    def _iter_marked_switches(self):
+        """递归收集本页所有打了 _param_key 标记的开关。
+
+        注意：用 Python 原生属性（widget._param_key）而非 GObject 的
+        set_data/get_data —— PyGObject 明确禁用了 data 访问方法，
+        调用会抛 RuntimeError（"Data access methods are unsupported"）。
+        """
+        out = []
+
+        def _walk(widget):
+            try:
+                key = getattr(widget, "_param_key", None)
+                if key and hasattr(widget, "set_active"):
+                    out.append((widget, key))
+            except Exception:
+                pass
+            try:
+                child = widget.get_first_child()
+            except Exception:
+                child = None
+            while child is not None:
+                _walk(child)
+                try:
+                    child = child.get_next_sibling()
+                except Exception:
+                    child = None
+        _walk(self)
+        return out
+
+    def _set_switch_silently(self, sw, active: bool) -> None:
+        """设置开关状态但不触发其回调（避免把「同步」变成「下发」）。
+
+        关键：_syncing 必须「保存-恢复」而非硬编码 True/False。
+        本方法常在 refresh_from_params 的 _syncing=True 块内被调用，
+        若 finally 里直接置 False，会把外层的抑制状态提前清掉，
+        导致后续控件同步回调漏网、把「刷新」变成「下发」。
+        """
+        prev = getattr(self, "_syncing", False)
+        try:
+            self._syncing = True
+            sw.set_active(bool(active))
+        except Exception:
+            pass
+        finally:
+            self._syncing = prev
 
     # ------------------------------------------------------------
     # 重置（单组 / 整页）
@@ -353,7 +431,7 @@ class EffectPage(Adw.PreferencesPage):
         "replaygain": ["replaygain_enabled", "replaygain_mode", "replaygain_db", "replaygain_preamp_db"],
         "eq": ["eq_enabled", "eq_gains", "eq_q"],
         "peq": ["peq_enabled", "peq_bands"],
-        "convolution": ["convolution_enabled", "convolution_ir", "convolution_channel", "convolution_stereo_ir"],
+        "convolution": ["convolution_enabled", "convolution_ir", "convolution_channel", "convolution_stereo_ir", "convolution_dry", "convolution_wet"],
         "bass_treble": ["bass_enabled", "bass_gain_db", "bass_freq", "treble_gain_db", "treble_freq"],
         "loudness": ["loudness_enabled", "loudness_amount"],
         "stereo": ["width_enabled", "stereo_width", "balance"],
@@ -362,6 +440,7 @@ class EffectPage(Adw.PreferencesPage):
         "reverb": ["reverb_enabled", "reverb_mix", "reverb_pre_delay_ms", "reverb_decay", "reverb_damping", "reverb_width", "reverb_low_cut_hz", "reverb_mod_depth"],
         "compressor": ["compressor_enabled", "compressor_threshold_db", "compressor_ratio", "compressor_makeup_db", "compressor_attack", "compressor_release"],
         "limiter": ["limiter_enabled", "limiter_threshold_db", "limiter_soft_clip"],
+        "coloring": ["tube_enabled", "tube_drive", "bbe_enabled", "bbe_amount"],
     }
 
     def _add_group_reset(self, group, fields: list) -> None:
@@ -380,14 +459,19 @@ class EffectPage(Adw.PreferencesPage):
         """把指定字段重置为默认值，刷新 UI 并（可选）下发。"""
         defaults = _default_params()
         for k in fields:
-            if k in defaults:
-                # 列表/字典类要深拷贝，避免与默认值共享引用
-                v = defaults[k]
-                self._params[k] = list(v) if isinstance(v, list) else (
-                    dict(v) if isinstance(v, dict) else v)
+            if k not in defaults:
+                # 字段不在默认表 → 说明清单不一致（会导致重置漏项）。
+                # 报警告而非静默跳过，便于尽早发现缺口。
+                import logging as _lg
+                _lg.getLogger(__name__).warning(
+                    "[_reset_fields] 字段 %r 不在 _default_params，已跳过", k)
+                continue
+            # 列表/字典类要深拷贝，避免与默认值共享引用
+            v = defaults[k]
+            self._params[k] = list(v) if isinstance(v, list) else (
+                dict(v) if isinstance(v, dict) else v)
         self._sync_sliders()
         self._sync_all_switches()
-        self._sync_extra_switches()
         self._update_camilla_sensitivity()
         # 刷新 PEQ 曲线
         if getattr(self, "_peq_curve", None) is not None:
@@ -398,36 +482,60 @@ class EffectPage(Adw.PreferencesPage):
             self._emit()
 
     def _sync_extra_switches(self) -> None:
-        """同步未纳入 _sync_all_switches 的开关（卷积 / 图形EQ / 宽度等）。"""
-        pairs = (
-            ("_convolution_switch", "convolution_enabled", "_on_convolution_toggled"),
-            ("_eq_switch", "eq_enabled", None),
-        )
-        for sw_name, key, cb_name in pairs:
-            sw = getattr(self, sw_name, None)
-            if sw is None:
-                continue
-            try:
-                cb = getattr(self, cb_name, None) if cb_name else None
-                if cb is not None:
-                    sw.handler_block_by_func(cb)
-                sw.set_active(bool(self._params.get(key, False)))
-                if cb is not None:
-                    sw.handler_unblock_by_func(cb)
-            except Exception:
-                pass
+        """兼容旧调用：开关同步已并入 _sync_all_switches 的自动遍历。"""
+        self._sync_all_switches()
+
+    def _broadcast_reset(self) -> None:
+        """广播「参数已重置」，让其它 EffectPage 实例同步 UI。"""
+        try:
+            if getattr(self, "_effect_state", None) is not None:
+                self._effect_state.notify_reset()
+        except Exception:
+            pass
+
+    def _on_state_reset(self, _state) -> None:
+        """收到「DSP 参数已重置」广播：从 config 重读并刷新本页 UI。
+
+        重置由某个 EffectPage 实例发起，但它只清了自己的 _params；
+        其它实例（设置页 / 高级窗口各功能页）靠这个广播重读 config
+        里已被发起的重置写回的 dsp_params，把开关 / 滑块 / 曲线拉回
+        与后端一致的状态。
+        """
+        try:
+            from config.settings import get_config
+            saved = get_config().get("dsp_params")
+            if isinstance(saved, dict):
+                # 用默认基底 + 已保存参数覆盖，避免旧副本残留字段
+                merged = _default_params()
+                merged.update(saved)
+                self._params = merged
+        except Exception:
+            pass
+        # 刷新期间抑制 _emit，避免把「刷新」变成「下发」
+        try:
+            self.refresh_from_params()
+            if getattr(self, "_peq_curve", None) is not None:
+                self._peq_curve.set_bands(self._params.get("peq_bands", []))
+        except Exception:
+            pass
 
     def refresh_from_params(self) -> None:
         """按当前 _params 统一刷新本页所有 UI。
 
         外部（加载预设 / 主界面选音效 / 高级窗口改动）同步参数后，
         调此方法即可，避免逐个记 _sync_* 而漏刷某类控件。
+
+        关键：刷新 UI 期间抑制 _emit（见 _syncing），避免各 _sync_* 设值
+        触发的回调把「刷新」变成「下发」，从而清空音效标记、覆盖参数。
         """
-        self._sync_all_switches()
-        self._sync_extra_switches()
-        self._sync_convolution_ui()
-        self._sync_sliders()
-        self._update_camilla_sensitivity()
+        self._syncing = True
+        try:
+            self._sync_all_switches()
+            self._sync_convolution_ui()
+            self._sync_sliders()
+            self._update_camilla_sensitivity()
+        finally:
+            self._syncing = False
 
     def _sync_convolution_label(self) -> None:
         """刷新卷积 IR 文件名标签（无 IR 时显示「未加载」）。"""
@@ -489,7 +597,7 @@ class EffectPage(Adw.PreferencesPage):
                 pass
 
     def _reset_all(self) -> None:
-        """重置所有 DSP 功能为默认值（总开关状态保持不变）。"""
+        """重置所有音频处理功能为默认值（总开关状态保持不变）。"""
         fields = []
         for fs in self._GROUP_FIELDS.values():
             fields.extend(fs)
@@ -497,6 +605,14 @@ class EffectPage(Adw.PreferencesPage):
         fields = [f for f in fields if f != "enabled"]
         # 一次性重置并下发（emit 只调一次，避免中间态发出去）
         self._reset_fields(fields, emit=True)
+        # 染色走独立命令：归零下发（关闭电子管 / BBE）
+        try:
+            if getattr(self, "_on_coloring", None) is not None:
+                self._on_coloring(0.0, 0.0)
+        except Exception:
+            pass
+        # 广播：让其它 EffectPage 实例（设置页 / 高级窗口）从 config 重读刷新
+        self._broadcast_reset()
 
     def _build_page_reset_row(self) -> None:
         """页面顶部右侧：圆形图标「重置本页」。
@@ -527,11 +643,12 @@ class EffectPage(Adw.PreferencesPage):
         self.add(group)
 
         row = Adw.ActionRow()
-        row.set_title(_("启用 DSP"))
+        row.set_title(_("启用音频处理"))
         master_switch = Gtk.Switch()
         master_switch.set_valign(Gtk.Align.CENTER)
         master_switch.set_active(bool(self._params.get("enabled", False)))
         master_switch.connect("notify::active", self._on_master_toggled)
+        master_switch._param_key = "enabled"
         self._master_switch = master_switch
         row.add_suffix(master_switch)
         # 一级页：开关旁放红色「重置所有」
@@ -569,6 +686,7 @@ class EffectPage(Adw.PreferencesPage):
         hsw.set_subtitle(_("预留峰值空间，防止削波"))
         hsw.set_active(bool(self._params.get("headroom_enabled", False)))
         hsw.connect("notify::active", self._on_headroom_toggled)
+        hsw._param_key = "headroom_enabled"
         group.add(hsw)
         self._headroom_switch = hsw
 
@@ -591,6 +709,7 @@ class EffectPage(Adw.PreferencesPage):
         sw.set_title(_("启用 ReplayGain"))
         sw.set_active(bool(self._params.get("replaygain_enabled", False)))
         sw.connect("notify::active", self._on_replaygain_toggled)
+        sw._param_key = "replaygain_enabled"
         group.add(sw)
         self._replaygain_switch = sw
 
@@ -635,6 +754,7 @@ class EffectPage(Adw.PreferencesPage):
         sw.set_title(_("启用图形 EQ"))
         sw.set_active(bool(self._params.get("eq_enabled", False)))
         sw.connect("notify::active", lambda r, _p: self._on_simple_toggle(r, "eq_enabled"))
+        sw._param_key = "eq_enabled"
         group.add(sw)
         self._eq_switch = sw
 
@@ -744,6 +864,7 @@ class EffectPage(Adw.PreferencesPage):
         sw_row.set_title(_("启用 PEQ"))
         sw_row.set_active(bool(self._params.get("peq_enabled", False)))
         sw_row.connect("notify::active", self._on_peq_enabled_toggled)
+        sw_row._param_key = "peq_enabled"
         group.add(sw_row)
         self._peq_switch = sw_row
 
@@ -901,6 +1022,7 @@ class EffectPage(Adw.PreferencesPage):
         sw.set_title(_("启用卷积"))
         sw.set_active(bool(self._params.get("convolution_enabled", False)))
         sw.connect("notify::active", self._on_convolution_toggled)
+        sw._param_key = "convolution_enabled"
         group.add(sw)
         self._convolution_switch = sw
 
@@ -1061,6 +1183,7 @@ class EffectPage(Adw.PreferencesPage):
         sw.set_title(_("启用音频增强"))
         sw.set_active(bool(self._params.get("bass_enabled", False)))
         sw.connect("notify::active", self._on_bass_enabled_toggled)
+        sw._param_key = "bass_enabled"
         group.add(sw)
         self._bass_switch = sw
 
@@ -1101,6 +1224,7 @@ class EffectPage(Adw.PreferencesPage):
         lsw.set_subtitle(_("随音量动态补偿低/高频（小音量时更明显）"))
         lsw.set_active(bool(self._params.get("loudness_enabled", False)))
         lsw.connect("notify::active", self._on_loudness_toggled)
+        lsw._param_key = "loudness_enabled"
         group.add(lsw)
         self._loudness_switch = lsw
 
@@ -1123,7 +1247,9 @@ class EffectPage(Adw.PreferencesPage):
         sw.set_title(_("启用立体声处理"))
         sw.set_active(bool(self._params.get("width_enabled", False)))
         sw.connect("notify::active", lambda r, _p: self._on_simple_toggle(r, "width_enabled"))
+        sw._param_key = "width_enabled"
         group.add(sw)
+        self._width_switch = sw
 
         row = Adw.ActionRow()
         row.set_title(_("宽度"))
@@ -1159,6 +1285,7 @@ class EffectPage(Adw.PreferencesPage):
         sw.set_title(_("启用混响"))
         sw.set_active(bool(self._params.get("reverb_enabled", False)))
         sw.connect("notify::active", lambda r, _p: self._on_simple_toggle(r, "reverb_enabled"))
+        sw._param_key = "reverb_enabled"
         group.add(sw)
         self._reverb_switch = sw
 
@@ -1213,6 +1340,7 @@ class EffectPage(Adw.PreferencesPage):
         sw.set_title(_("启用 Crossfeed"))
         sw.set_active(bool(self._params.get("crossfeed_enabled", False)))
         sw.connect("notify::active", self._on_crossfeed_toggled)
+        sw._param_key = "crossfeed_enabled"
         group.add(sw)
         self._crossfeed_switch = sw
 
@@ -1246,6 +1374,7 @@ class EffectPage(Adw.PreferencesPage):
         sw.set_subtitle(_("整段反相（180°）"))
         sw.set_active(bool(self._params.get("phase_invert", False)))
         sw.connect("notify::active", lambda r, _p: self._on_simple_toggle(r, "phase_invert"))
+        sw._param_key = "phase_invert"
         group.add(sw)
 
         # 通道矩阵
@@ -1281,6 +1410,7 @@ class EffectPage(Adw.PreferencesPage):
         sw.set_title(_("启用压缩器"))
         sw.set_active(bool(self._params.get("compressor_enabled", False)))
         sw.connect("notify::active", self._on_compressor_toggled)
+        sw._param_key = "compressor_enabled"
         group.add(sw)
         self._compressor_switch = sw
 
@@ -1331,6 +1461,7 @@ class EffectPage(Adw.PreferencesPage):
         row.set_title(_("启用限幅器"))
         row.set_active(bool(self._params.get("limiter_enabled", False)))
         row.connect("notify::active", self._on_limiter_toggled)
+        row._param_key = "limiter_enabled"
         group.add(row)
         self._limiter_row = row
 
@@ -1345,6 +1476,7 @@ class EffectPage(Adw.PreferencesPage):
         sw_soft.set_subtitle(_("峰值平滑过渡，减少高频毛刺（会轻微染色）"))
         sw_soft.set_active(bool(self._params.get("limiter_soft_clip", False)))
         sw_soft.connect("notify::active", lambda r, _p: self._on_simple_toggle(r, "limiter_soft_clip"))
+        sw_soft._param_key = "limiter_soft_clip"
         group.add(sw_soft)
 
     # ------------------------------------------------------------
@@ -1483,48 +1615,28 @@ class EffectPage(Adw.PreferencesPage):
                 pass
 
     def _on_reset(self, _btn) -> None:
-        """重置：所有模块开关关闭、参数归默认（总开关状态不变）。"""
+        """重置所有音频处理功能：全部开关关闭、参数归默认、染色归零。
+
+        覆盖全部功能（含染色）—— 用 _GROUP_FIELDS 统一清单，避免手动列举漏项。
+        总开关状态保持不变（重置的是「功能」，不是「总闸」）。
+        """
         keep_enabled = bool(self._params.get("enabled", False))
-        self._params = _default_params()
-        # 所有模块开关关闭
-        self._params["peq_enabled"] = False
-        self._params["convolution_enabled"] = False
-        self._params["bass_enabled"] = False
-        self._params["loudness_enabled"] = False
-        self._params["headroom_enabled"] = False
-        self._params["crossfeed_enabled"] = False
-        self._params["compressor_enabled"] = False
-        self._params["limiter_enabled"] = False
-        self._params["camilla_enabled"] = False
+        # 全部功能字段（含染色）归默认；总开关不参与。
+        fields = []
+        for fs in self._GROUP_FIELDS.values():
+            fields.extend(fs)
+        fields = [f for f in fields if f != "enabled"]
+        self._reset_fields(fields, emit=False)
         # 总开关保持
         self._params["enabled"] = keep_enabled
-        self._sync_sliders()
-        self._update_camilla_sensitivity()
-        # 刷新 PEQ 曲线
-        if getattr(self, "_peq_curve", None) is not None:
-            self._peq_curve.set_bands(self._params.get("peq_bands", []))
-        # 同步所有模块开关到界面（关闭），总开关不动
-        # mode 只建部分开关，用属性名 + getattr 取，未建的跳过。
-        for sw_name, key, cb_name in (
-            ("_peq_switch", "peq_enabled", "_on_peq_enabled_toggled"),
-            ("_bass_switch", "bass_enabled", "_on_bass_enabled_toggled"),
-            ("_loudness_switch", "loudness_enabled", "_on_loudness_toggled"),
-            ("_headroom_switch", "headroom_enabled", "_on_headroom_toggled"),
-            ("_crossfeed_switch", "crossfeed_enabled", "_on_crossfeed_toggled"),
-            ("_compressor_switch", "compressor_enabled", "_on_compressor_toggled"),
-            ("_limiter_row", "limiter_enabled", "_on_limiter_toggled"),
-        ):
-            sw = getattr(self, sw_name, None)
-            cb = getattr(self, cb_name, None)
-            if sw is None or cb is None:
-                continue
-            try:
-                sw.handler_block_by_func(cb)
-                sw.set_active(False)
-                sw.handler_unblock_by_func(cb)
-            except Exception:
-                pass
+        # 一次下发（DSP 参数：所有功能关闭 + IR 关闭且清空路径）
         self._emit()
+        # 染色走独立命令：归零下发（关闭电子管 / BBE）
+        try:
+            if getattr(self, "_on_coloring", None) is not None:
+                self._on_coloring(0.0, 0.0)
+        except Exception:
+            pass
         # 同步清空「当前音效预设」记录：重置后实际已是默认状态，
         # 若保留旧的记录，音效对话框会假高亮上次选的预设，与实际听感不一致。
         # 走单一状态源，广播给所有视图。
@@ -1537,6 +1649,8 @@ class EffectPage(Adw.PreferencesPage):
                 get_config().set("effect_preset", "")
             except Exception:
                 pass
+        # 广播：让其它 EffectPage 实例（设置页 / 高级窗口）从 config 重读刷新
+        self._broadcast_reset()
         # 提示已重置
         try:
             dlg = Adw.MessageDialog(
@@ -1561,14 +1675,20 @@ class EffectPage(Adw.PreferencesPage):
         # 滑块连续拖动：防抖下发，避免每动一下都重建管线（声音一顿一顿）
         self._emit(debounce=True)
 
-    def _emit(self, debounce: bool = False) -> None:
+    def _emit(self, debounce: bool = False, *, clear_mark: bool = True) -> None:
         """下发参数。
 
         debounce=True：延迟 80ms 合并多次拖动（滑块用），避免频繁重建管线；
         debounce=False：立即下发（开关/按钮用）。
+        clear_mark=True（默认，手动改参数）：清空音效标记；加载预设传 False。
         """
         if self._on_dsp_changed is None:
             return
+        # 正在 refresh_from_params 刷新 UI：忽略同步过程中被触发的下发，
+        # 否则刷新会变成下发（清空音效标记、覆盖参数）。
+        if getattr(self, "_syncing", False):
+            return
+        self._pending_clear_mark = clear_mark
         if not debounce:
             # 立即：若有挂起的定时器先取消，避免稍后又发一次旧值
             if getattr(self, "_emit_timer", None) is not None:
@@ -1578,7 +1698,7 @@ class EffectPage(Adw.PreferencesPage):
                 except Exception:
                     pass
                 self._emit_timer = None
-            self._on_dsp_changed(dict(self._params))
+            self._emit_now()
             return
         # 防抖
         try:
@@ -1588,12 +1708,17 @@ class EffectPage(Adw.PreferencesPage):
             self._emit_timer = GLib.timeout_add(80, self._emit_now)
         except Exception:
             # 无 GLib：退化为立即
-            self._on_dsp_changed(dict(self._params))
+            self._emit_now()
 
     def _emit_now(self) -> bool:
         self._emit_timer = None
         if self._on_dsp_changed is not None:
-            self._on_dsp_changed(dict(self._params))
+            clear = getattr(self, "_pending_clear_mark", True)
+            try:
+                self._on_dsp_changed(dict(self._params), clear_mark=clear)
+            except TypeError:
+                # 兼容不接受 clear_mark 的旧回调
+                self._on_dsp_changed(dict(self._params))
         return False
 
     def params(self) -> dict:

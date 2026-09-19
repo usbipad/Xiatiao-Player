@@ -84,6 +84,15 @@ impl Biquad {
         }
     }
 
+    /// 清空滤波器状态（延迟），保留系数。用于开关切换时避免旧状态爆音。
+    #[inline]
+    pub fn reset(&mut self) {
+        self.x1 = 0.0;
+        self.x2 = 0.0;
+        self.y1 = 0.0;
+        self.y2 = 0.0;
+    }
+
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2

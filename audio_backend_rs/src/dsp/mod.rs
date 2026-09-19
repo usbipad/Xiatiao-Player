@@ -171,8 +171,42 @@ impl DspChain {
         self.set_params(p);
     }
 
+    /// 清空所有运行时状态（延迟/包络/平滑器），保留滤波器系数与参数。
+    ///
+    /// 用于「启用 DSP」总开关切换时：避免关闭期间冻结的旧状态在重开瞬间
+    /// 与当前信号不连续，产生瞬态失真（炒豆声）。
+    pub fn reset_state(&mut self) {
+        for bq in self.peq_l.iter_mut() { bq.reset(); }
+        for bq in self.peq_r.iter_mut() { bq.reset(); }
+        for bq in self.eq_l.iter_mut() { bq.reset(); }
+        for bq in self.eq_r.iter_mut() { bq.reset(); }
+        self.bass_l.reset(); self.bass_r.reset();
+        self.treble_l.reset(); self.treble_r.reset();
+        self.loudness_l.reset(); self.loudness_r.reset();
+        self.loudness_high_l.reset(); self.loudness_high_r.reset();
+        // 压缩/限幅包络
+        self.comp_env = 0.0;
+        self.limiter_gain = 1.0;
+        // crossfeed 缓冲
+        self.cf_buf_l.iter_mut().for_each(|s| *s = 0.0);
+        self.cf_buf_r.iter_mut().for_each(|s| *s = 0.0);
+        self.cf_pos = 0;
+        self.cf_lp_l = 0.0;
+        self.cf_lp_r = 0.0;
+        // 宽度/平衡平滑器：复位，下次处理时直接取目标值
+        self.cur_width = 1.0;
+        self.cur_bal_l = 1.0;
+        self.cur_bal_r = 1.0;
+        self.smooth_init = false;
+        // 混响内部缓冲
+        self.reverb.reset();
+    }
+
     /// 更新参数（实时生效，重建滤波器系数）。
     pub fn set_params(&mut self, p: DspParams) {
+        // 记录旧的全局开关：用于检测「总开关切换」→ 重置状态。
+        let was_enabled = self.params.enabled;
+        let now_enabled = p.enabled;
         // PEQ：重建频段滤波器
         self.peq_l.clear();
         self.peq_r.clear();
@@ -222,6 +256,12 @@ impl DspChain {
         tr.x1 = x1; tr.x2 = x2; tr.y1 = y1; tr.y2 = y2;
         self.treble_r = tr;
         self.params = p;
+        // 总开关切换（开↔关）：重置全部运行时状态。
+        // 关闭期间 process_post 直接 return，状态被冻结；重开时若沿用旧状态
+        // （滤波器延迟、压缩/限幅包络、平滑器），会与当前信号不连续 → 炒豆声。
+        if was_enabled != now_enabled {
+            self.reset_state();
+        }
         // 参数更新后：按当前音量重建等响度（算法见 loudness 模块）。
         // 音量后续变化会在 process_post 里重建。
         self.rebuild_loudness();

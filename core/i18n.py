@@ -221,6 +221,7 @@ _EN: dict[str, str] = {
     "重置所有参数到默认": "Reset all parameters to default",
     "重置本组为默认值": "Reset this group to default",
     "重置本页所有功能为默认值": "Reset all features on this page to default",
+    "启用音频处理": "Enable Audio Processing",
     "启用 DSP": "Enable DSP",
     "把 DSP 音效所有功能恢复为默认值":
         "Restore all DSP effects to their defaults",
