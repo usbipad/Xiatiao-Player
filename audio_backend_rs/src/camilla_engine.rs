@@ -547,25 +547,28 @@ mod tests {
         for &rate in &[44100u32, 48000, 96000, 192000] {
             let y = format!("devices:\n  samplerate: {rate}\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters:\n  ir:\n    type: Conv\n    parameters:\n      type: Wav\n      filename: {ir}\n      channel: 0\nprocessors: {{}}\nmixers: {{}}\npipeline:\n- type: Filter\n  channels:\n  - 0\n  - 1\n  names:\n  - ir\n");
             let freqs = [100.0, 500.0, 1000.0, 3000.0, 8000.0];
-            print!("[IR-E2E] {rate}Hz: ");
+            // 收集各频点的「输入→输出变化量(dB)」
+            let mut deltas: Vec<(f32, f32)> = Vec::new();
             for &f in &freqs {
-                // 每个 (采样率,频率) 独立建引擎（避免状态污染）
                 let mut eng = CamillaEngine::new(rate);
-                if eng.set_yaml(&y).is_err() { print!("{f:.0}Hz=配置失败 "); continue; }
-                let frames = (rate as usize) * 3; // 3s：远大于 IR 延迟(372ms)，进入稳态
+                if eng.set_yaml(&y).is_err() { continue; }
+                let frames = (rate as usize) * 3; // 3s 稳态
                 let mut buf = Vec::with_capacity(frames * 2);
                 for i in 0..frames {
                     let s = (2.0 * std::f32::consts::PI * f * (i as f32 / rate as f32)).sin() * 0.25;
                     buf.push(s); buf.push(s);
                 }
-                // 输入/输出 RMS 取最后 1/4（完全进入卷积稳态）
                 let st = frames * 3 / 4;
                 let in_rms = { let mut sum=0.0f32; let mut n=0; for i in st..frames { sum+=buf[i*2]*buf[i*2]; n+=1; } (sum/n as f32).sqrt() };
                 for c in buf.chunks_mut(4096) { eng.process_interleaved(c, 2); }
                 let out_rms = { let mut sum=0.0f32; let mut n=0; for i in st..frames { sum+=buf[i*2]*buf[i*2]; n+=1; } (sum/n as f32).sqrt() };
                 let db = 20.0 * (out_rms / in_rms.max(1e-9)).log10();
-                print!("{f:.0}Hz={db:+.1} ");
+                deltas.push((f, db));
             }
+            // 以 1kHz 为基准归一（消除整体增益偏移，只看频谱塑形）
+            let ref_db = deltas.iter().min_by(|a, b| (a.0-1000.0).abs().partial_cmp(&(b.0-1000.0).abs()).unwrap()).map(|x| x.1).unwrap_or(0.0);
+            print!("[IR-E2E] {rate}Hz: ");
+            for (f, db) in &deltas { print!("{f:.0}Hz={:+.1} ", db - ref_db); }
             println!();
         }
         println!("[IR-E2E] 各采样率下同一 IR 的频响应基本一致（差异应远小于「不重采样」的 4.35× 偏移）");
