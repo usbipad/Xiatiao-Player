@@ -1273,17 +1273,11 @@ class MainWindow(Adw.ApplicationWindow):
                 # 未知键（如旧的 off/pop 等）回退到设置页
                 self._on_open_effect_settings()
                 return
-            self.player.set_dsp(params)
+            # 统一下发：Rust set_dsp + 内嵌 Camilla YAML（选预设为一次性操作，不防抖）。
+            self._push_dsp_to_engine(params, debounce=False)
             cfg = get_config()
             cfg.set("dsp_params", params)
             cfg.set("effect_preset", key)
-            # 嵌入式 camillalib：预设生成 YAML 下发给进程内引擎（无条件，含直通）
-            try:
-                from core import camilla
-                cfg2 = camilla.build_config(params, 48000)
-                self.player.set_camilla_yaml(camilla.to_yaml(cfg2))
-            except Exception as exc:
-                log.debug("下发 camilla YAML（预设）失败: %s", exc)
             # 同步到设置页（若打开着）：统一刷新，避免漏刷卷积/额外开关。
             try:
                 win = getattr(self, "_settings_win", None)
@@ -2177,14 +2171,43 @@ class MainWindow(Adw.ApplicationWindow):
         win.present()
         self._advanced_dsp_win = win
 
+    def _push_dsp_to_engine(self, params: dict, *, debounce: bool = False) -> None:
+        """把 DSP 参数下发到后端：Rust 内置链（set_dsp）+ 内嵌 Camilla YAML。
+
+        这是「下发」的统一步骤，供 _on_effect / _on_dsp_changed 共用。
+        - debounce=False：立即生成并下发 Camilla YAML（选预设等一次性操作）。
+        - debounce=True：防抖 80ms 合并（拖滑块），避免频繁重建管线卡 UI。
+        """
+        try:
+            self.player.set_dsp(params)
+        except Exception as exc:
+            log.debug("set_dsp 下发失败: %s", exc)
+        if not debounce:
+            try:
+                from core import camilla
+                cfg = camilla.build_config(params, 48000)
+                self.player.set_camilla_yaml(camilla.to_yaml(cfg))
+            except Exception as exc:
+                log.debug("下发 camilla YAML 失败: %s", exc)
+            return
+        # 防抖：拖滑块时合并，避免每个中间值都生成 YAML。
+        self._pending_dsp_params = dict(params)
+        if getattr(self, "_dsp_yaml_timer", None) is not None:
+            try:
+                GLib.source_remove(self._dsp_yaml_timer)
+            except Exception:
+                pass
+        self._dsp_yaml_timer = GLib.timeout_add(80, self._emit_camilla_yaml_now)
+
     def _on_dsp_changed(self, params: dict) -> None:
         """设置页拖动滑块：实时下发 DSP 参数并持久化。
 
         - Rust 内置 DSP：通过 set_dsp 下发（camilla 模式下 Rust 会跳过，但无害）
         - CamillaDSP 模式：同时更新 camilladsp 配置并触发重载
         """
+        # 统一下发：Rust set_dsp + 内嵌 Camilla YAML（拖滑块防抖合并）。
+        self._push_dsp_to_engine(params, debounce=True)
         try:
-            self.player.set_dsp(params)
             from config.settings import get_config
             _cfg = get_config()
             _cfg.set("dsp_params", params)
@@ -2205,15 +2228,6 @@ class MainWindow(Adw.ApplicationWindow):
                     pass
         except Exception:
             pass
-        # 嵌入式 camillalib：生成 YAML 下发给进程内引擎。
-        # 防抖：拖滑块时合并（避免每个中间值都生成 YAML，卡 UI）。
-        self._pending_dsp_params = dict(params)
-        if getattr(self, "_dsp_yaml_timer", None) is not None:
-            try:
-                GLib.source_remove(self._dsp_yaml_timer)
-            except Exception:
-                pass
-        self._dsp_yaml_timer = GLib.timeout_add(80, self._emit_camilla_yaml_now)
 
     def _emit_camilla_yaml_now(self) -> bool:
         """防抖回调：生成并下发 camilla YAML。"""
