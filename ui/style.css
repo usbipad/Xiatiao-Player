@@ -678,3 +678,16 @@ row.effect-selected label {
     color: @accent_color;
     font-weight: 600;
 }
+
+/* 正在播放高亮：曲库 / 收藏 / 歌单 / 历史等 ColumnView 列表的当前行。
+ * 与音效弹窗选中样式一致（左侧强调色竖条 + 轻背景 + 文字强调）。
+ *
+ * 注：GTK4 的 ColumnViewRow 的 CSS 节点名就是 `row`（不是 columnviewrow），
+ * 故上面的 `row.effect-selected` 已天然覆盖 ColumnView 行，无需额外选择器。
+ * 这里只补一条：让高亮行内的封面/徽标不被强调色文字规则误染。 */
+row.effect-selected picture,
+row.effect-selected image {
+    color: inherit;
+}
+
+/* 队列列表行（ListBoxRow）已由上面的 row.effect-selected 覆盖 */

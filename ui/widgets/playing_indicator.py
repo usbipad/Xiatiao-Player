@@ -123,6 +123,42 @@ class PlayingIndicator(Gtk.DrawingArea):
             self._start_timer()
         else:
             self._stop_timer()
+        self._sync_row_highlight(should)
+
+    def _sync_row_highlight(self, on: bool) -> None:
+        """给所在行加/去 `effect-selected` 类（与音效弹窗选中样式一致）。
+
+        本指示器位于 ColumnView 单元格内，向上找到行级祖先
+        （ColumnViewRow / ListBoxRow / FlowBoxChild）再切换类。
+        """
+        try:
+            row = self._find_row_widget()
+            if row is None:
+                return
+            if on:
+                row.add_css_class("effect-selected")
+            else:
+                row.remove_css_class("effect-selected")
+        except Exception:
+            pass
+
+    def _find_row_widget(self):
+        """向上遍历父链，返回第一个行级控件（或 None）。
+
+        不用 `isinstance(.., Gtk.ColumnViewRow)`：GTK4 的 ColumnViewRow 是
+        interface，对 C 实现的 widget 判定不可靠。改用 CSS 节点名识别：
+        ColumnView 行 / ListBoxRow / FlowBoxChild 的 css_name 都是 "row"
+        （ColumnView 的表头是 "header"，可据此排除）。
+        """
+        w = self.get_parent()
+        while w is not None:
+            try:
+                if w.get_css_name() == "row":
+                    return w
+            except Exception:
+                pass
+            w = w.get_parent()
+        return None
 
     # ---- 动画定时器 ----
     def _start_timer(self) -> None:
