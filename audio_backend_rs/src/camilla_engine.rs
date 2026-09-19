@@ -121,6 +121,9 @@ pub struct CamillaEngine {
     rebuild_fade: usize,
     /// 淡入总长度（交错样本数，≈5ms @48k）。
     fade_len: usize,
+    /// 上一帧输出（L/R）：out_buf 不足时 hold 用，保证输出连续。
+    last_out_l: f32,
+    last_out_r: f32,
 }
 
 impl CamillaEngine {
@@ -142,6 +145,8 @@ impl CamillaEngine {
             rebuild_fade: 0,
             // ~5ms 淡入（交错样本数）：48k × 0.005 × 2 声道
             fade_len: (sample_rate.max(1) as usize * 5 / 1000) * 2,
+            last_out_l: 0.0,
+            last_out_r: 0.0,
         }
     }
 
@@ -322,19 +327,36 @@ impl CamillaEngine {
             }
         }
 
-        // 3) 取回与输入等长的样本
+        // 3) 取回与输入等长的样本。
+        // out_buf 不足 need 时（输入未攒够一个 chunksize），**不能补零**
+        // （静音缺口 → 咔哒），也不能直通输入（未过 DSP，与前后有色差）。
+        // 正确做法：**延续上一帧的输出值（hold）**——连续、无色差跳变。
         if self.out_buf.len() >= need {
             let out: Vec<f32> = self.out_buf.drain(0..need).collect();
             pcm.copy_from_slice(&out);
+            // 记录本块最后一帧输出，供下块不足时 hold
+            if need >= 2 {
+                self.last_out_l = out[need - 2];
+                self.last_out_r = out[need - 1];
+            }
         } else {
             let have = self.out_buf.len();
             for i in 0..have {
                 pcm[i] = self.out_buf[i];
             }
-            for i in have..need {
-                pcm[i] = 0.0;
+            // 更新 last_out 为本块已有输出的最后一帧
+            if have >= 2 {
+                self.last_out_l = self.out_buf[have - 2];
+                self.last_out_r = self.out_buf[have - 1];
             }
             self.out_buf.clear();
+            // 不足部分：hold 上一帧值（连续）
+            let mut i = have;
+            while i + 1 < need {
+                pcm[i] = self.last_out_l;
+                pcm[i + 1] = self.last_out_r;
+                i += 2;
+            }
         }
 
         // 4) 重建后淡入：避免 pipeline 重建（清缓冲）造成的硬切爆音。
