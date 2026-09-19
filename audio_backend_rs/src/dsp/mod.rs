@@ -70,7 +70,10 @@ pub struct DspChain {
     cur_width: f32,
     cur_bal_l: f32,
     cur_bal_r: f32,
-    smooth_init: bool,
+    // ---- 预增益/余量（pre）的平滑值 ----
+    // 总开关切换或 pre 目标变化时，从当前值平滑过渡到目标，
+    // 避免「旁路(1.0) ↔ 目标增益」瞬间阶跃产生爆音。
+    cur_pre: f32,
 }
 
 impl DspChain {
@@ -109,7 +112,7 @@ impl DspChain {
             cur_width: 1.0,
             cur_bal_l: 1.0,
             cur_bal_r: 1.0,
-            smooth_init: false,
+            cur_pre: 1.0,
         }
     }
 
@@ -193,11 +196,15 @@ impl DspChain {
         self.cf_pos = 0;
         self.cf_lp_l = 0.0;
         self.cf_lp_r = 0.0;
-        // 宽度/平衡平滑器：复位，下次处理时直接取目标值
+        // 宽度/平衡平滑器：复位为旁路值（1.0/1.0），但**保持平滑器运行态**
+        // （不置 smooth_init=false）。否则下一帧会直接硬跳到目标值，
+        // 总开关重开瞬间仍会阶跃 → 爆音。
         self.cur_width = 1.0;
         self.cur_bal_l = 1.0;
         self.cur_bal_r = 1.0;
-        self.smooth_init = false;
+        // 预增益平滑器：复位为旁路值 1.0，重开时从 1.0 平滑到目标，
+        // 避免「直通 ↔ 带增益」瞬间阶跃 → 爆音。
+        self.cur_pre = 1.0;
         // 混响内部缓冲
         self.reverb.reset();
     }
@@ -361,12 +368,9 @@ impl DspChain {
         let target_balance = if p.width_enabled { p.balance.clamp(-1.0, 1.0) } else { 0.0 };
         let target_bal_l = if target_balance > 0.0 { 1.0 - target_balance } else { 1.0 };
         let target_bal_r = if target_balance < 0.0 { 1.0 + target_balance } else { 1.0 };
-        if !self.smooth_init {
-            self.cur_width = target_width;
-            self.cur_bal_l = target_bal_l;
-            self.cur_bal_r = target_bal_r;
-            self.smooth_init = true;
-        }
+        // 注：不再对 cur_width/bal 做「首帧直接取目标」的硬跳。
+        // 首次从初始化值 1.0 平滑到目标（15ms 过渡）完全安全，
+        // 且能避免首帧/总开关切换瞬间的阶跃爆音。
         let lim_thresh = 10f32.powf(p.limiter_threshold_db / 20.0);
         // 压缩/限幅：Camilla 参与时由 Camilla 处理，Rust 跳过
         let lim_on = !cam && p.limiter_enabled;
@@ -400,9 +404,14 @@ impl DspChain {
         let mut tube = self.tube.take();
         let mut bbe = self.bbe.take();
         let smooth_coef = 1.0 - (-1.0f32 / (0.015 * self.in_rate)).exp();
+        // 预增益平滑：更慢的时间常数（30ms），让总开关切换/预设切换时
+        // 增益从旁路值(1.0)平滑过渡到目标，彻底消除阶跃爆音。
+        let pre_coef = 1.0 - (-1.0f32 / (0.030 * self.in_rate)).exp();
         for frame in buf.chunks_mut(2) {
-            let mut l = frame[0] * pre;
-            let mut r = frame[1] * pre;
+            // 逐样本平滑逼近目标增益（替代原 `frame[0] * pre` 的硬阶跃）
+            self.cur_pre += (pre - self.cur_pre) * pre_coef;
+            let mut l = frame[0] * self.cur_pre;
+            let mut r = frame[1] * self.cur_pre;
             self.cur_width += (target_width - self.cur_width) * smooth_coef;
             self.cur_bal_l += (target_bal_l - self.cur_bal_l) * smooth_coef;
             self.cur_bal_r += (target_bal_r - self.cur_bal_r) * smooth_coef;
@@ -579,5 +588,58 @@ mod tests {
         assert!(low_low > low_mid + 0.5, "音量越低低频补偿越多");
         assert!(low_mid > low_full + 0.5, "音量中等比满音量补偿多");
         assert!(high_low > high_full, "高频也应随音量降低而补偿");
+    }
+
+    /// 总开关切换不应产生阶跃（爆音）。
+    ///
+    /// 场景：preset 带 +6dB 预增益（pre=2.0）与宽度 1.8。
+    /// 先以 enabled=false 跑一段（直通），再 enabled=true 开启，
+    /// 检查开启瞬间相邻样本差有界（平滑过渡而非阶跃）。
+    #[test]
+    fn toggle_no_pop() {
+        let rate = 48000.0f32;
+        let mut chain = DspChain::new(48000);
+
+        // 关：直通。跑一段并记录切换前最后一个输出样本。
+        let mut off = DspParams::default();
+        off.enabled = false;
+        chain.set_params(off);
+        let mut pre_buf = vec![0.3f32; 2048 * 2];
+        chain.process_interleaved(&mut pre_buf, 2);
+        let last_before = pre_buf[pre_buf.len() - 2];
+
+        // 开：带余量 -6dB（pre=0.5，Rust 侧生效）+ 宽度 1.8（均为会阶跃的参数）。
+        // 注：不用 pre_gain_db——它归 Camilla（camilla_should_engage 会命中），
+        // 单独跑 DspChain 时 Camilla 未串联，pre_gain 不生效。
+        // headroom 由 Rust 处理，可独立验证平滑。
+        let mut on = DspParams::default();
+        on.enabled = true;
+        on.gain_enabled = true;
+        on.headroom_db = -6.0;
+        on.width_enabled = true;
+        on.stereo_width = 1.8;
+        chain.set_params(on);
+
+        // 持续 DC 0.3 输入，观察输出是否平滑
+        let mut buf = vec![0.3f32; 4096 * 2];
+        chain.process_interleaved(&mut buf, 2);
+
+        // 真正的「爆音」指标：跨越切换点的样本连续性 + 块内相邻样本跳变。
+        // 关键：必须把「切换前最后样本」与「切换后第一样本」对比——
+        // 这才是爆音发生的瞬间。DC 输入下，平滑过渡该处差值应极小；
+        // 阶跃则是「0.3 → 0.15」这种整段突变。
+        let mut max_jump = (buf[0] - last_before).abs();
+        let mut prev = buf[0];
+        for &s in buf.iter().step_by(2) {
+            max_jump = max_jump.max((s - prev).abs());
+            prev = s;
+        }
+        assert!(max_jump < 0.05,
+                "总开关切换出现样本跳变（爆音）：max_jump={max_jump:.5}（应 < 0.05）");
+
+        // 且最终应收敛到目标增益（-6dB headroom → 0.3*0.5=0.15）附近
+        let tail = buf[buf.len() - 200];
+        assert!((tail - 0.15).abs() < 0.02,
+                "余量增益未收敛到目标：尾值={tail:.4}（期望≈0.15）");
     }
 }

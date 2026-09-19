@@ -230,8 +230,12 @@ class EffectPage(Adw.PreferencesPage):
         # 下拉：选中即加载
         self._preset_dropdown = Gtk.DropDown()
         self._preset_dropdown.set_valign(Gtk.Align.CENTER)
-        self._reload_preset_dropdown()
+        # 关键顺序：先连接回调，再 reload。
+        # _reload 里的 set_selected 会触发 notify::selected → 加载当前预设。
+        # 之前先 reload 后 connect，导致初始选中的预设「只显示不加载」，
+        # 其 enabled/各功能开关不会同步到 UI（表现为总开关没自动开启）。
         self._preset_dropdown.connect("notify::selected", self._on_preset_selected)
+        self._reload_preset_dropdown()
         row.add_suffix(self._preset_dropdown)
         # 新建预设
         add_btn = Gtk.Button(icon_name="list-add-symbolic")
@@ -374,7 +378,7 @@ class EffectPage(Adw.PreferencesPage):
         # 这是主路径 —— 新增开关只要设 _param_key 即自动生效，
         # 不再需要维护手工清单（历史 bug：立体声 width_enabled 漏登记）。
         for sw, key in self._iter_marked_switches():
-            self._set_switch_silently(sw, bool(self._params.get(key, False)))
+            self._set_switch_silently(sw, self._params.get(key, False))
 
     def _iter_marked_switches(self):
         """递归收集本页所有打了 _param_key 标记的开关。
@@ -388,7 +392,7 @@ class EffectPage(Adw.PreferencesPage):
         def _walk(widget):
             try:
                 key = getattr(widget, "_param_key", None)
-                if key and hasattr(widget, "set_active"):
+                if key and (hasattr(widget, "set_active") or hasattr(widget, "set_selected")):
                     out.append((widget, key))
             except Exception:
                 pass
@@ -405,8 +409,13 @@ class EffectPage(Adw.PreferencesPage):
         _walk(self)
         return out
 
-    def _set_switch_silently(self, sw, active: bool) -> None:
-        """设置开关状态但不触发其回调（避免把「同步」变成「下发」）。
+    def _set_switch_silently(self, sw, value) -> None:
+        """同步单个控件状态但不触发其回调（避免把「同步」变成「下发」）。
+
+        支持两类控件：
+        - 开关（有 set_active）：value 为 bool
+        - ComboRow（有 _param_map + set_selected）：value 为参数值，
+          映射到下标后 set_selected
 
         关键：_syncing 必须「保存-恢复」而非硬编码 True/False。
         本方法常在 refresh_from_params 的 _syncing=True 块内被调用，
@@ -416,7 +425,14 @@ class EffectPage(Adw.PreferencesPage):
         prev = getattr(self, "_syncing", False)
         try:
             self._syncing = True
-            sw.set_active(bool(active))
+            pmap = getattr(sw, "_param_map", None)
+            if pmap is not None and hasattr(sw, "set_selected"):
+                # ComboRow：按参数值找下标
+                cur = str(value) if value is not None else ""
+                idx = pmap.index(cur) if cur in pmap else 0
+                sw.set_selected(idx)
+            elif hasattr(sw, "set_active"):
+                sw.set_active(bool(value))
         except Exception:
             pass
         finally:
@@ -1407,6 +1423,9 @@ class EffectPage(Adw.PreferencesPage):
         cur = str(self._params.get("channel_matrix", "off"))
         row.set_selected(cm_map.index(cur) if cur in cm_map else 0)
         row.connect("notify::selected", self._on_matrix_changed)
+        # 标记：让重置/刷新时 _sync_all_switches 能同步此 ComboRow
+        row._param_key = "channel_matrix"
+        row._param_map = cm_map
         group.add(row)
 
     def _on_matrix_changed(self, row, _pspec) -> None:
@@ -1733,10 +1752,13 @@ class EffectPage(Adw.PreferencesPage):
         if self._on_dsp_changed is not None:
             clear = getattr(self, "_pending_clear_mark", True)
             try:
-                self._on_dsp_changed(dict(self._params), clear_mark=clear)
+                self._on_dsp_changed(dict(self._params), clear_mark=clear, immediate=True)
             except TypeError:
-                # 兼容不接受 clear_mark 的旧回调
-                self._on_dsp_changed(dict(self._params))
+                # 兼容不接受 clear_mark/immediate 的旧回调
+                try:
+                    self._on_dsp_changed(dict(self._params), clear_mark=clear)
+                except TypeError:
+                    self._on_dsp_changed(dict(self._params))
         return False
 
     def params(self) -> dict:

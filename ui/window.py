@@ -1213,15 +1213,43 @@ class MainWindow(Adw.ApplicationWindow):
             return None
 
     def _apply_replaygain_value(self, gain) -> None:
-        """主线程：把 ReplayGain 增益下发 DSP 并持久化。"""
+        """主线程：把 ReplayGain 增益下发 DSP 并持久化。
+
+        修复（关键）：不再「重读 config + 直接 set_dsp」。
+        旧实现会带来竞态：切歌的 ReplayGain 是后台线程算的，回到主线程时
+        用户可能已切换总开关；此时重读 config 可能拿到旧值（enabled=false），
+        直接 set_dsp 会把刚打开的总开关打回去，且绕过统一下发（不发 YAML），
+        导致 Camilla 卷积等不恢复。
+
+        现在改为：以主窗口参数宿主 dsp_page._params 为权威当前值，
+        只改 replaygain_db，走 _push_dsp_to_engine 统一下发（含 Camilla YAML），
+        不触碰 enabled 等其它字段。
+        """
         try:
-            cfg = get_config()
-            params = cfg.get("dsp_params")
+            params = None
+            page = getattr(self, "dsp_page", None)
+            if page is not None:
+                try:
+                    params = page.params()
+                except Exception:
+                    params = None
+            if not isinstance(params, dict):
+                # 回退：从 config 读（兼容无 dsp_page 的场景）
+                cfg = get_config()
+                _p = cfg.get("dsp_params")
+                params = dict(_p) if isinstance(_p, dict) else None
             if not isinstance(params, dict):
                 return
             params["replaygain_db"] = float(gain) if gain is not None else 0.0
-            self.player.set_dsp(params)
-            cfg.set("dsp_params", params)
+            # 走统一下发：set_dsp + Camilla YAML（保持与其它路径一致）
+            self._push_dsp_to_engine(params, debounce=False)
+            # 同步权威参数宿主与 config，保持全局一致
+            if page is not None:
+                try:
+                    page._params.update(params)  # noqa: SLF001
+                except Exception:
+                    pass
+            get_config().set("dsp_params", params)
         except Exception as exc:
             log.debug("应用 ReplayGain 失败: %s", exc)
 
@@ -2218,7 +2246,8 @@ class MainWindow(Adw.ApplicationWindow):
                 pass
         self._dsp_yaml_timer = GLib.timeout_add(80, self._emit_camilla_yaml_now)
 
-    def _on_dsp_changed(self, params: dict, *, clear_mark: bool = True) -> None:
+    def _on_dsp_changed(self, params: dict, *, clear_mark: bool = True,
+                        immediate: bool = False) -> None:
         """下发 DSP 参数并持久化。
 
         - Rust 内置 DSP：通过 set_dsp 下发（camilla 模式下 Rust 会跳过，但无害）
@@ -2228,10 +2257,20 @@ class MainWindow(Adw.ApplicationWindow):
         音效」标记。clear_mark=False（加载预设等）：保留标记，由调用方随后
         显式 set_current(预设名)。这样「下发」与「音效标记」解耦，避免下发
         顺带清空标记导致的高亮丢失。
+
+        immediate=True（开关/按钮等一次性操作）：立即下发 Camilla YAML，
+        不走防抖。**总开关 enabled 变化时必须立即下发**——否则防抖延迟/覆盖
+        会导致重开时 Camilla 管线没更新，卷积等 Camilla 功能不恢复。
         """
-        log.info("[_on_dsp_changed] clear_mark=%s enabled=%s", clear_mark, params.get("enabled"))
+        # 总开关变化 → 强制立即下发（关键状态切换，不能防抖）。
+        enabled = bool(params.get("enabled", False))
+        prev_enabled = getattr(self, "_last_dsp_enabled", None)
+        enabled_changed = (prev_enabled is not None and prev_enabled != enabled)
+        self._last_dsp_enabled = enabled
+        # 立即下发条件：上游要求立即（开关/按钮）或总开关变化。
+        do_immediate = bool(immediate) or enabled_changed
         # 统一下发：Rust set_dsp + 内嵌 Camilla YAML（拖滑块防抖合并）。
-        self._push_dsp_to_engine(params, debounce=True)
+        self._push_dsp_to_engine(params, debounce=not do_immediate)
         try:
             from config.settings import get_config
             _cfg = get_config()

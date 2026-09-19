@@ -207,10 +207,13 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         if self._on_dsp_changed is not None:
             clear = getattr(self, "_pending_clear_mark", True)
             try:
-                self._on_dsp_changed(dict(self._params), clear_mark=clear)
+                self._on_dsp_changed(dict(self._params), clear_mark=clear, immediate=True)
             except TypeError:
-                # 兼容不接受 clear_mark 的旧回调
-                self._on_dsp_changed(dict(self._params))
+                try:
+                    self._on_dsp_changed(dict(self._params), clear_mark=clear)
+                except TypeError:
+                    # 兼容不接受 clear_mark/immediate 的旧回调
+                    self._on_dsp_changed(dict(self._params))
         return False
 
     # ------------------------------------------------------------
