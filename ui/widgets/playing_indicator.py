@@ -123,24 +123,31 @@ class PlayingIndicator(Gtk.DrawingArea):
             self._start_timer()
         else:
             self._stop_timer()
-        self._sync_row_highlight(should)
-
-    def _sync_row_highlight(self, on: bool) -> None:
-        """给所在行加/去 `effect-selected` 类（与音效弹窗选中样式一致）。
-
-        本指示器位于 ColumnView 单元格内，向上找到行级祖先
-        （ColumnViewRow / ListBoxRow / FlowBoxChild）再切换类。
-        """
+        # 【关键】高亮操作**延迟到 idle** 执行，绝不在 GTK 列表 bind/布局过程中
+        # 直接修改行 CSS：那样会触发 style 失效 → 干扰 gtk_list_base 的布局
+        # 计算 → 命中 `gtk_list_base_update_adjustments: bounds.y == 0` 断言
+        # 而硬崩溃（Bail out!）。idle 阶段列表布局已稳定，修改安全。
         try:
+            GLib.idle_add(self._apply_row_highlight_idle, should)
+        except Exception:
+            pass
+
+    def _apply_row_highlight_idle(self, on: bool) -> bool:
+        """idle 回调：安全地给所在行加/去 `effect-selected` 类。返回 False 只跑一次。"""
+        try:
+            # 校验自身仍在控件树内（已销毁/回收的 indicator 跳过，避免悬垂指针）。
+            if self.get_root() is None:
+                return False
             row = self._find_row_widget()
-            if row is None:
-                return
+            if row is None or row.get_root() is None:
+                return False
             if on:
                 row.add_css_class("effect-selected")
             else:
                 row.remove_css_class("effect-selected")
         except Exception:
             pass
+        return False
 
     def _find_row_widget(self):
         """向上遍历父链，返回第一个行级控件（或 None）。
