@@ -85,9 +85,50 @@ patch /tmp/xiatiao-a1a2-20260920-004427.patch
 - 7409d2a fix(audio): PCM seek 记忆音频 + 暂停中seek响应 + 交接文档
 - de2b976 fix(dsd): 软解路径 seek 修复（清 carry/abort、重置 DSP+Camilla、EOF 重试、pwcat 状态机）
 
+## DSD 直通路径按标准重写（7072cc7，未实机验证）
+用户要求按标准 DSD 解码 / DoP 封装 / PCM 实现修复直通路径。已改：
+
+### dsd.rs（读取器）
+- 新增 `block_size` 字段：DSF 数据按「每声道 N 字节块交错」存放（头部 fmt 偏移 32，
+  典型 4096）；DFF 为字节交错（block_size=0）。
+- 新增 `read_group(out, max_per_ch)`：按布局解交错到各声道连续字节。
+  原 `read_chunk`（当字节流直读）删除——它把 DSF 块交错当字节流，是
+  左右声道错乱/杂音的根因。
+- `seek_to_frame` 改为块对齐（DSF）/字节对齐（DFF）。
+- 删除死代码 pack_dop/pack_native_u32/read_dsd_bits，替换为可单测的纯函数
+  `pack_dop_group` / `pack_native_group`，并加 4 个单测。
+
+### output_alsa.rs
+- `write_native_chunk` → `write_native_group(ch_bytes, dsd_rate)`：
+  输入按声道解交错；每 4 字节→1 个 DSD_U32 采样；**ALSA 设备率 = dsd_rate/32**
+  （原代码用 dsd_rate，导致 device_supports_dsd 探测恒失败 + 速率错）。
+- `write_dop_chunk` → `write_dop_group(ch_bytes, pcm_rate, marker_phase)`：
+  每 2 字节→1 个 24-bit 样本；marker 每帧交替、同帧各声道相同。
+- DoP 承载新增 **S24_3LE** 回退（原仅 S32_LE，很多 DoP DAC 只支持 S24_3LE）。
+- 新增 `io_bytes`（S24_3LE 用字节 IO 写入）。
+- `device_supports_dsd` 统一按 DSD_U32_LE + 率/32 探测；不再宣称支持 U16/U8
+  （未实现，避免「探测通过却写不出」）。
+- 删除死代码 `write_dsd`。
+
+### decode.rs（run_playback_dsd）
+- 主循环改用 `read_group` + `write_*_group`。
+- `in_rate` 修正为 **ALSA 设备率**（native=dsd_rate/32，dop=dsd_rate/16），
+  与写线程 played_frames 单位（ALSA 采样帧）对齐——原 native 用 dsd_rate
+  与 played_frames 差 32 倍，position 会错。
+- seek 的 out_frames 换算同步修正。
+
+### 验证
+- 新增单测 dsd::tests::{dop_marker_alternates_and_bits_high,
+  dop_stereo_shares_marker_per_frame, dop_marker_continues_across_blocks,
+  native_group_interleaves_channels} —— 全过（51 passed）。
+- **DSF 布局用 ffmpeg 参考证实**（tools/verify_dsf_vs_ffmpeg.py）：
+  块交错 vs 参考 PCM 相关 0.148，字节交错仅 0.004；左右相关性
+  块交错 +0.12、字节交错 -0.60 → **块交错正确**。
+- smoke_test 52 passed。
+
 ## 遗留 / 待办
-1. DSD **直通**（decode.rs run_playback_dsd）seek 尚未实机验证——
-   用户 DoP 有问题，需先解决 DAC 的 DoP 支持，或验证 Native 直通。
-   怀疑点（未证实）：output_alsa.rs flush() 只清 ring 不清 ALSA 内核缓冲；
-   DSD 不走状态机，seek 后写线程可能卡在旧内核数据。
-2. 诊断脚本 tools/diag_dsd_seek*.py 可复用/可删。
+1. **DSD 直通仍未经真机验证**（用户 DAC 的 DoP 有问题）。需在支持 DoP/Native
+   的 DAC 上实测：native 能否打开、DoP（S32/S24_3LE）音质、seek 行为。
+2. DSD 直通 seek 仍不走 PCM 状态机；flush() 只清 ring 不清 ALSA 内核缓冲的
+   隐患仍在（未实测）。
+3. 诊断脚本 tools/diag_dsd_seek*.py、tools/verify_dsf_layout*.py 可复用/可删。
