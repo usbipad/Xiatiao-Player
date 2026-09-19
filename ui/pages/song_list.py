@@ -8,7 +8,6 @@ from gi.repository import Gdk, GLib, Gio, Gtk
 
 from core.i18n import _
 from core.tasks import run_async
-from models import TrackItem, extract_cover, make_square_cover_bytes
 from ui.widgets.playing_indicator import PlayingIndicator
 
 from .common import (
@@ -19,19 +18,9 @@ from .common import (
     cache_put,
     cover_activity,
     cover_loading_map,
+    load_cover_bytes as _load_cover_bytes,
     make_sort_func,
 )
-
-
-def _load_cover_bytes(filepath: str):
-    """后台线程：读取并缩放封面，返回 PNG bytes 或 None（不碰 UI）。"""
-    raw = extract_cover(filepath)
-    if not raw:
-        return None
-    try:
-        return make_square_cover_bytes(raw, COVER_SIZE, radius=6)
-    except Exception:
-        return None
 
 
 # ================================================================

@@ -61,6 +61,25 @@ def cover_loading_map() -> dict:
     return _COVER_LOADING
 
 
+def load_cover_bytes(filepath: str, size: int = COVER_SIZE, radius: int = 6):
+    """后台线程：读取内嵌封面并缩放为正方形 PNG bytes（不碰 UI）。
+
+    无封面 / 解析失败返回 None。供歌曲列表、队列等所有列表共用，
+    保证缩放参数与缓存一致。
+    """
+    try:
+        from models import extract_cover, make_square_cover_bytes
+    except Exception:
+        return None
+    raw = extract_cover(filepath)
+    if not raw:
+        return None
+    try:
+        return make_square_cover_bytes(raw, size, radius=radius)
+    except Exception:
+        return None
+
+
 # ================================================================
 # 封面加载活动通知器（模块级单例）
 # ================================================================

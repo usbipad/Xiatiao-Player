@@ -26,6 +26,7 @@ from .common import (
     cache_get,
     cache_put,
     cover_activity,
+    load_cover_bytes,
     section_title,
 )
 from .media_grid import CARD_COVER_PX, make_group_card
@@ -42,6 +43,9 @@ _ROW_H = 210
 _cache_get = cache_get
 _cache_put = cache_put
 _MISS = MISS
+# 队列（player_panel）按旧私有名导入封面加载函数；此前未导出 → ImportError
+# 被静默吞掉 → 队列封面永远不显示。此处补齐导出。
+_load_cover_bytes = load_cover_bytes
 
 __all__ = [
     "LocalLibraryPage",
