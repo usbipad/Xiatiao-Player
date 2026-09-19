@@ -22,6 +22,11 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// DSD 原始数据及其元信息。
+///
+/// 注：当前播放走 [`DsdReader`] 流式读取（大文件不占内存）；
+/// 本结构与其下的 `read_dsd`/`read_dsf`/`read_dff` 为「内存读取」路径，
+/// 保留供小文件/元信息探测与调试使用，故标 allow(dead_code)。
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DsdData {
     /// 原始 DSD 字节（每字节 8 个 DSD bit，按文件位序）。
@@ -34,6 +39,7 @@ pub struct DsdData {
     pub frames: u64,
 }
 
+#[allow(dead_code)]
 impl DsdData {
     /// 用于 DoP 的 PCM 采样率 = DSD 率 / 16（16 个 DSD bit 打包进一个 PCM 样本）。
     pub fn dop_pcm_rate(&self) -> u32 {
@@ -60,6 +66,7 @@ pub fn is_dsd_file(path: &str) -> bool {
 ///
 /// 注意：本函数会把整个 data 区读入内存，仅适合小文件或元信息探测。
 /// 播放大文件请使用 [`DsdReader`] 流式读取。
+#[allow(dead_code)]
 pub fn read_dsd(path: &str) -> DsdResult<DsdData> {
     let ext = Path::new(path)
         .extension()
@@ -355,6 +362,7 @@ fn read_u64_be(b: &[u8]) -> u64 {
 }
 
 /// 解析 DSF（小端）。
+#[allow(dead_code)]
 fn read_dsf(path: &str) -> DsdResult<DsdData> {
     let f = File::open(path).map_err(|e| format!("open dsf: {e}"))?;
     let mut r = BufReader::new(f);
@@ -426,6 +434,7 @@ fn read_dsf(path: &str) -> DsdResult<DsdData> {
 // ============================================================
 
 /// 解析 DFF（大端 DSDIFF）。
+#[allow(dead_code)]
 fn read_dff(path: &str) -> DsdResult<DsdData> {
     let f = File::open(path).map_err(|e| format!("open dff: {e}"))?;
     let mut r = BufReader::new(f);
