@@ -34,10 +34,14 @@ override_dh_auto_install:
 	install -d debian/xiatiao-player/usr/share/icons/hicolor/scalable/actions
 	cp data/icons/hicolor/scalable/actions/*.svg \
 		debian/xiatiao-player/usr/share/icons/hicolor/scalable/actions/ 2>/dev/null || true
-	# desktop 文件（修正 Exec 路径为系统安装位置）
+	# 启动器脚本 /usr/bin/xiatiao-player（Debian 惯例：命令名而非绝对路径）
+	install -d debian/xiatiao-player/usr/bin
+	printf '#!/bin/sh\nexec python3 /usr/lib/xiatiao-player/main.py "$$@"\n' \
+		> debian/xiatiao-player/usr/bin/xiatiao-player
+	chmod 755 debian/xiatiao-player/usr/bin/xiatiao-player
+	# desktop 文件（Exec=xiatiao-player 指向上面的启动器）
 	install -d debian/xiatiao-player/usr/share/applications
-	sed 's|Exec=python3 .*main.py|Exec=python3 /usr/lib/xiatiao-player/main.py|' \
-		data/com.xiatiao.player.desktop > \
+	cp data/com.xiatiao.player.desktop \
 		debian/xiatiao-player/usr/share/applications/com.xiatiao.player.desktop
 
 override_dh_python3:

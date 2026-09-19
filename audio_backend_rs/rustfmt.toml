@@ -1,0 +1,10 @@
+# rustfmt 配置（Xiatiao 音频后端）。
+# 用法：cargo fmt         格式化
+#       cargo fmt --check 仅检查
+# 仅使用 stable rustfmt 支持的选项。
+
+edition = "2021"
+max_width = 100
+tab_spaces = 4
+newline_style = "Unix"
+use_small_heuristics = "Default"

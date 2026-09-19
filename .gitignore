@@ -1,6 +1,11 @@
+# Python 缓存
 __pycache__/
 *.pyc
+
+# Rust 构建产物
 audio_backend_rs/target/
+
+# Unix socket
 *.sock
 
 # 工具目录的构建产物（camilladsp 源码本身保留，便于离线构建）
@@ -45,19 +50,3 @@ debian/tmp/
 *.buildinfo
 *.changes
 *.dsc
-
-
-# Debian 打包构建产物（仅 debian/ 下的源配置入库）
-debian/.debhelper/
-debian/files
-debian/debhelper-build-stamp
-debian/*.substvars
-debian/xiatiao-player/
-debian/tmp/
-
-# deb 包产物（若在仓库内构建）
-*.deb
-*.buildinfo
-*.changes
-*.dsc
-

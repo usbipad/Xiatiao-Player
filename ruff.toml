@@ -1,0 +1,34 @@
+# Ruff 静态检查配置（Xiatiao Player）。
+# 用法：ruff check .   /   ruff check --fix .
+# 设计原则：先聚焦「真问题」（未用导入/变量、未定义名、明显 bug），
+# 不开启激进的风格规则，避免对既有代码造成大面积噪音。
+
+target-version = "py310"
+line-length = 100
+exclude = [
+    ".git",
+    "__pycache__",
+    "audio_backend_rs/target",
+    "tools/camilladsp-src",
+    "tools/pwrs-check",
+    "tools/camilladsp",
+    "backups",
+    "debian",
+    "界面截图",
+]
+
+[lint]
+# 核心规则集：
+#   F  = pyflakes（未用导入/变量、未定义名、f-string 问题等——最能暴露真 bug）
+#   E9 = 语法/运行时错误类
+#   W  = 警告类
+select = ["F", "E9", "W"]
+# 明确忽略：
+#   F401 未用导入（项目有兼容性重导出，保留）
+#   E501 行太长（已设 line-length，交给格式化）
+ignore = ["F401"]
+
+[lint.per-file-ignores]
+# 测试/诊断脚本允许更多自由
+"tests/*" = ["F401", "F841"]
+"tools/*" = ["F401", "F841"]
