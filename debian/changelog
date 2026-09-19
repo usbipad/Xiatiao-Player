@@ -1,9 +1,12 @@
 xiatiao-player (1.0.0) unstable; urgency=medium
 
-  * Initial release.
-  * GTK4 UI + Rust audio backend (IPC over Unix socket).
-  * ALSA exclusive output + PipeWire default output.
-  * DSD support (native/DoP/PCM soft-decode).
-  * Embedded CamillaDSP DSP chain.
+  * 首个正式版本。
+  * GTK4 界面 + Rust 音频后端（Unix socket IPC）。
+  * 输出：PipeWire 原生（采样率跟随）+ ALSA 独占。
+  * DSD 支持：Native 直通 / DoP v1.0 / PCM 软解。
+  * 内嵌 CamillaDSP 音效链，参数平滑更新。
+  * 曲库 / 歌单 / 收藏 / 历史，MPRIS2 与系统托盘。
+  * seek 修复：PCM/DSD 软解与直通路径的定位、状态机与音效衔接。
+  * 列表正在播放行高亮（与音效弹窗选中样式一致）。
 
- -- usbipad <1495941192+usbipad@users.noreply.github.com>  Sat, 19 Sep 2026 02:30:00 +0800
+ -- usbipad <1495941192+usbipad@users.noreply.github.com>  Sun, 20 Sep 2026 03:00:00 +0800
