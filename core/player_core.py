@@ -1,7 +1,7 @@
 """播放内核 PlayerCore（壳）。
 
 职责：
-- 持有一个音频后端（当前为 GstBackend，后续可换成独立 Rust 进程 + IPC）；
+- 持有一个音频后端（当前为独立 Rust 进程 + IPC，见 core/rust_backend.py）；
 - 把后端信号转发为自己的同名信号，UI 只依赖 PlayerCore；
 - 对外方法与信号保持稳定，切换后端时 UI 无需改动。
 
@@ -51,6 +51,8 @@ class PlayerCore(GObject.Object):
         # 音量变化，param: float（0.0..1.0）。任何来源（UI / MPRIS / 恢复）
         # 改动音量都会发，供 UI 与 MPRIS 双向同步。
         "volume-changed": (GObject.SignalFlags.RUN_LAST, None, (float,)),
+        # 后端连接丢失，param: str（描述）。
+        "backend-lost": (GObject.SignalFlags.RUN_LAST, None, (str,)),
     }
 
     def __init__(self) -> None:
@@ -64,6 +66,11 @@ class PlayerCore(GObject.Object):
         self._backend.connect("error-occur", self._fwd_error)
         self._backend.connect("audio-info", self._fwd_audio_info)
         self._backend.connect("effect-changed", self._fwd_effect)
+        # backend-lost 是可选信号（老后端可能没有），用 getattr 兼容。
+        try:
+            self._backend.connect("backend-lost", self._fwd_backend_lost)
+        except Exception:
+            pass
 
     # ---- 信号转发 ----
     def _fwd_position(self, _b, seconds: float) -> None:
@@ -86,6 +93,9 @@ class PlayerCore(GObject.Object):
 
     def _fwd_effect(self, _b, preset: str) -> None:
         self.emit("effect-changed", preset)
+
+    def _fwd_backend_lost(self, _b, message: str) -> None:
+        self.emit("backend-lost", message)
 
     # ---- 播放控制（转发后端） ----
     def play_file(self, path: str) -> bool:

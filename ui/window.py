@@ -1300,6 +1300,13 @@ class MainWindow(Adw.ApplicationWindow):
                     self.dsp_page.refresh_from_params()
             except Exception:
                 pass
+            # 同步已打开的高级窗口（各功能页 + 染色页），避免其 UI 与预设不一致。
+            try:
+                adv = getattr(self, "_advanced_dsp_win", None)
+                if adv is not None:
+                    adv.apply_external_params(params)
+            except Exception:
+                log.debug("同步高级窗口失败", exc_info=True)
         except Exception as exc:
             log.debug("应用音效预设失败: %s", exc)
 
@@ -2018,6 +2025,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.player.connect("error-occur", self._on_player_error)
         self.player.connect("audio-info", self._on_audio_info)
         self.player.connect("volume-changed", self._on_volume_changed)
+        # 后端断开（可选信号，用 try 兼容）。
+        try:
+            self.player.connect("backend-lost", self._on_backend_lost)
+        except Exception:
+            pass
 
     def _on_position_update(self, _player, seconds: float) -> None:
         # 位置信号可能很密集；节流到约 30fps，避免 SeekBar 反复重绘、
@@ -2052,6 +2064,14 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_player_error(self, _player, message: str) -> None:
         self._toast(message)
+
+    def _on_backend_lost(self, _player, message: str) -> None:
+        """后端连接丢失：提示用户（RustBackend 会在后台尝试自愈重启）。"""
+        log.warning("后端连接丢失: %s", message)
+        try:
+            self._toast(message or "音频后端已断开，正在尝试恢复")
+        except Exception:
+            pass
 
     def _on_volume_changed(self, _player, value: float) -> None:
         """音量变化（来自 UI / MPRIS / 恢复）→ 同步两侧滑块。

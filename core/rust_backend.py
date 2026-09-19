@@ -81,6 +81,12 @@ class RustBackend(AudioBackend):
         self._reader_thread: Optional[threading.Thread] = None
         self._alive = False
         self._send_lock = threading.Lock()
+        # 主动关闭标志：shutdown 时置 True，_read_loop 断开不再触发自愈。
+        self._closing = False
+        # 上次自愈重启的时间戳（单调时钟，秒），用于限流。
+        self._last_restart = 0.0
+        # 自愈重启的最小间隔（秒）：避免后端持续崩溃时疯狂重启。
+        self._restart_interval = 3.0
 
         self._start_backend()
 
@@ -225,6 +231,82 @@ class RustBackend(AudioBackend):
                     continue
                 GLib.idle_add(self._dispatch, evt)
         self._alive = False
+        # 非主动关闭 → 后端意外断开：通知 UI 并尝试自愈重启。
+        if not self._closing:
+            self._handle_disconnect()
+
+    def _handle_disconnect(self) -> None:
+        """后端断开：发信号通知 UI，并在后台尝试重启进程 + 重连。
+
+        限流：距上次重启不足 _restart_interval 秒则不再重启（避免后端
+        持续崩溃时疯狂重启）。重启后恢复关键状态（音量/DSP/DSD/输出设备）。
+        """
+        log.warning("检测到后端断开（非主动关闭），尝试自愈")
+        # 通知 UI（主线程信号）
+        GLib.idle_add(self._emit_backend_lost)
+        now = time.monotonic()
+        if now - self._last_restart < self._restart_interval:
+            log.debug("自愈限流：距上次重启 %.1fs，跳过", now - self._last_restart)
+            return
+        self._last_restart = now
+        # 后台线程重启，避免阻塞读线程退出
+        t = threading.Thread(target=self._restart_backend, daemon=True)
+        t.start()
+
+    def _emit_backend_lost(self) -> bool:
+        """主线程：发 backend-lost 信号。"""
+        try:
+            self.emit("backend-lost", "音频后端已断开，正在尝试恢复")
+        except Exception:
+            pass
+        return False
+
+    def _restart_backend(self) -> None:
+        """重启后端进程并恢复关键状态。"""
+        try:
+            # 关闭旧资源
+            try:
+                if self._sock is not None:
+                    self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+            try:
+                if self._proc is not None:
+                    self._proc.kill()
+            except Exception:
+                pass
+            self._proc = None
+            # 重启 + 重连
+            self._start_backend()
+            if not self._alive:
+                log.warning("后端自愈失败：无法重连")
+                return
+            log.info("后端自愈成功，恢复状态")
+            self._restore_state_after_restart()
+        except Exception as exc:
+            log.warning("后端自愈异常: %s", exc)
+
+    def _restore_state_after_restart(self) -> None:
+        """重启后恢复关键状态到新后端进程。"""
+        try:
+            if self._volume is not None:
+                self._send({"cmd": "set_volume", "value": float(self._volume)})
+        except Exception:
+            pass
+        try:
+            if self._dsp:
+                self._send({"cmd": "set_dsp", "params": dict(self._dsp)})
+        except Exception:
+            pass
+        try:
+            self._send({"cmd": "set_dsd_mode", "mode": self._dsd_mode or "auto"})
+        except Exception:
+            pass
+        try:
+            self._send({"cmd": "set_output_device", "name": self._output_device or ""})
+        except Exception:
+            pass
 
     def _dispatch(self, evt: dict) -> bool:
         """主线程：把后端事件转为信号。"""
@@ -438,6 +520,7 @@ class RustBackend(AudioBackend):
         return dict(self._audio_info)
 
     def shutdown(self) -> None:
+        self._closing = True
         self._send({"cmd": "shutdown"})
         self._alive = False
         try:

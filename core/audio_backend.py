@@ -1,7 +1,7 @@
 """音频后端抽象接口。
 
 设计目的：把「播放内核对外契约」与「具体实现」解耦，便于替换后端
-（当前是 GStreamer，后续计划换成独立 Rust 进程 + IPC）。
+（当前实现是独立 Rust 进程 + IPC，见 core/rust_backend.py）。
 
 约定：
 - 后端不直接操作任何 GTK 控件，只通过 GObject 信号对外通报状态。
@@ -45,6 +45,8 @@ class AudioBackend(GObject.Object):
         "error-occur": (GObject.SignalFlags.RUN_LAST, None, (str,)),
         "audio-info": (GObject.SignalFlags.RUN_LAST, None, (object,)),
         "effect-changed": (GObject.SignalFlags.RUN_LAST, None, (str,)),
+        # 后端连接丢失（进程崩溃/断开），param: str（描述）。
+        "backend-lost": (GObject.SignalFlags.RUN_LAST, None, (str,)),
     }
 
     # ---- 播放控制 ----

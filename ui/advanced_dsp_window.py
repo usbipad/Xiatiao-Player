@@ -314,6 +314,39 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
                 self._reload_presets()
         dialog.destroy()
 
+    def apply_external_params(self, params: dict) -> None:
+        """外部（主界面选音效等）改动参数后，同步到本窗口 UI。
+
+        用「默认基底 + 传入覆盖」重建各功能页参数并刷新；染色页开关同步。
+        与 _on_preset_load 的刷新逻辑保持一致。
+        """
+        if not params:
+            return
+        from .effect_page import _default_params as _ep_defaults
+        defaults = _ep_defaults()
+        base = dict(self._params)
+        base.update(defaults)
+        base["tube_enabled"] = False
+        base["bbe_enabled"] = False
+        base.update(params)
+        self._params = base
+        for page in getattr(self, "_feature_pages", []) or []:
+            try:
+                p = dict(defaults)
+                p.update(params)
+                page._params = p
+                page.refresh_from_params()
+            except Exception:
+                log.debug("同步功能页失败", exc_info=True)
+        try:
+            if getattr(self, "_tube_switch", None) is not None:
+                self._tube_switch.set_active(bool(self._params.get("tube_enabled", False)))
+            if getattr(self, "_bbe_switch", None) is not None:
+                self._bbe_switch.set_active(bool(self._params.get("bbe_enabled", False)))
+            self._update_coloring_sensitivity()
+        except Exception:
+            log.debug("同步染色页失败", exc_info=True)
+
     def _on_preset_load(self, _btn) -> None:
         from core.dsp_store import get_dsp_preset_store
         idx = self._preset_dropdown.get_selected()
