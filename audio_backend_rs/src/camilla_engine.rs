@@ -521,6 +521,16 @@ mod tests {
         measure_response(&y("x", "Lowshelf", 150.0, 4.5, 1.0), "单 Lowshelf 150 +4.5 q1");
     }
 
+    /// 测指定 IR 文件的卷积频响（需 XIATIAO_TEST_IR 环境变量）。
+    #[test]
+    fn dump_ir_response() {
+        let ir = match std::env::var("XIATIAO_TEST_IR") {
+            Ok(p) => p, Err(_) => { println!("[IR] 未设 XIATIAO_TEST_IR，跳过"); return; }
+        };
+        let y = format!("devices:\n  samplerate: 44100\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters:\n  ir:\n    type: Conv\n    parameters:\n      type: Wav\n      filename: {ir}\n      channel: 0\nprocessors: {{}}\nmixers: {{}}\npipeline:\n- type: Filter\n  channels:\n  - 0\n  - 1\n  names:\n  - ir\n");
+        measure_response(&y, "IR: huawei_u9508_dolby_08");
+    }
+
     /// 批量测 /tmp/xiatiao_presets 下所有预设 YAML 的频响。
     ///
     /// 先用 python3 tools/dump_preset_yamls.py 生成 YAML。
