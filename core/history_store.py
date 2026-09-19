@@ -9,43 +9,25 @@
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import List, Optional
 
+from ._base_store import SqliteStore, track_key
+
 log = logging.getLogger(__name__)
 
-APP_DIR_NAME = "xiatiao"
 DB_FILENAME = "history.db"
 #: 最多保留条数（防止无限增长）
 MAX_ROWS = 30
 
 
-def _default_db_path() -> Path:
-    base = os.environ.get("XDG_DATA_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "share"
-    )
-    return Path(base) / APP_DIR_NAME / DB_FILENAME
-
-
-class HistoryStore:
+class HistoryStore(SqliteStore):
     """播放历史存储。"""
 
-    def __init__(self, path: Optional[Path] = None) -> None:
-        self._path = path or _default_db_path()
-        self._lock = threading.Lock()
-        self._conn: Optional[sqlite3.Connection] = None
-        self._init_db()
-
-    def _connect(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-        return self._conn
+    _db_filename = DB_FILENAME
 
     def _init_db(self) -> None:
         try:
@@ -72,10 +54,7 @@ class HistoryStore:
 
     @staticmethod
     def _key(track) -> str:
-        sid = getattr(track, "source_id", "") or getattr(track, "filepath", "")
-        if sid:
-            return sid
-        return f"{getattr(track, 'title', '')}|{getattr(track, 'artist', '')}"
+        return track_key(track)
 
     def record(self, track) -> bool:
         """记录一次播放：同曲目更新时间戳（不重复堆积）。"""
@@ -145,13 +124,12 @@ class HistoryStore:
             return 0
 
 
-_instance: Optional[HistoryStore] = None
-_store_lock = threading.Lock()
+_holder: dict = {"instance": None}
+_holder_lock = threading.Lock()
 
 
 def get_history_store() -> HistoryStore:
-    global _instance
-    with _store_lock:
-        if _instance is None:
-            _instance = HistoryStore()
-        return _instance
+    with _holder_lock:
+        if _holder["instance"] is None:
+            _holder["instance"] = HistoryStore()
+        return _holder["instance"]

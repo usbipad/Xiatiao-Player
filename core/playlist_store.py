@@ -13,52 +13,29 @@
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import List, Optional
 
+from ._base_store import SqliteStore, track_key
+
 log = logging.getLogger(__name__)
 
-APP_DIR_NAME = "xiatiao"
 DB_FILENAME = "playlists.db"
 
 
-def _default_db_path() -> Path:
-    base = os.environ.get("XDG_DATA_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "share"
-    )
-    return Path(base) / APP_DIR_NAME / DB_FILENAME
-
-
 def _track_key(track) -> str:
-    sid = getattr(track, "source_id", "") or getattr(track, "filepath", "")
-    if sid:
-        return sid
-    return f"{getattr(track, 'title', '')}|{getattr(track, 'artist', '')}"
+    """兼容旧调用点的别名。"""
+    return track_key(track)
 
 
-class PlaylistStore:
+class PlaylistStore(SqliteStore):
     """本地歌单存储。"""
 
-    def __init__(self, path: Optional[Path] = None) -> None:
-        self._path = path or _default_db_path()
-        self._lock = threading.Lock()
-        self._conn: Optional[sqlite3.Connection] = None
-        self._init_db()
-
-    def _connect(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            try:
-                self._conn.execute("PRAGMA foreign_keys = ON")
-            except Exception:
-                pass
-        return self._conn
+    _db_filename = DB_FILENAME
+    _foreign_keys = True
 
     def _init_db(self) -> None:
         try:
@@ -230,13 +207,12 @@ class PlaylistStore:
             return []
 
 
-_instance: Optional[PlaylistStore] = None
-_lock = threading.Lock()
+_holder: dict = {"instance": None}
+_holder_lock = threading.Lock()
 
 
 def get_playlist_store() -> PlaylistStore:
-    global _instance
-    with _lock:
-        if _instance is None:
-            _instance = PlaylistStore()
-        return _instance
+    with _holder_lock:
+        if _holder["instance"] is None:
+            _holder["instance"] = PlaylistStore()
+        return _holder["instance"]
