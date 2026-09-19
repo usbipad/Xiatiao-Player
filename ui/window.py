@@ -1295,8 +1295,13 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             # 同步已打开的高级窗口（各功能页 + 染色页），避免其 UI 与预设不一致。
+            # 注意：高级窗口有两个打开入口，引用可能挂在主窗口（_advanced_dsp_win）
+            # 或设置窗口（_settings_win._advanced_win）上，两处都要查。
             try:
                 adv = getattr(self, "_advanced_dsp_win", None)
+                if adv is None:
+                    sw = getattr(self, "_settings_win", None)
+                    adv = getattr(sw, "_advanced_win", None) if sw is not None else None
                 if adv is not None:
                     adv.apply_external_params(params)
             except Exception:
