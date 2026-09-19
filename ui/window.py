@@ -1344,7 +1344,8 @@ class MainWindow(Adw.ApplicationWindow):
         p = params or {}
         try:
             return (
-                abs(float(p.get("pre_gain_db", 0.0) or 0.0)) > 1e-6
+                (bool(p.get("gain_enabled", False))
+                 and abs(float(p.get("pre_gain_db", 0.0) or 0.0)) > 1e-6)
                 or bool(p.get("eq_enabled", False))
                 or bool(p.get("peq_enabled", False))
                 or bool(p.get("convolution_enabled", False))

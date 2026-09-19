@@ -348,10 +348,12 @@ impl DspChain {
         }
 
         let p = &self.params;
-        let headroom = if p.headroom_enabled { 10f32.powf(p.headroom_db / 20.0) } else { 1.0 };
+        // 增益/余量组开关：关闭时预增益与余量都旁路。
+        let gain_on = p.gain_enabled;
+        let headroom = if gain_on { 10f32.powf(p.headroom_db / 20.0) } else { 1.0 };
         // Camilla 参与时：预增益归 Camilla，Rust 只保留 headroom。
         let cam = self.camilla_enabled;
-        let pre_gain_lin = if cam { 1.0 } else { 10f32.powf(p.pre_gain_db / 20.0) };
+        let pre_gain_lin = if cam || !gain_on { 1.0 } else { 10f32.powf(p.pre_gain_db / 20.0) };
         let pre = pre_gain_lin * headroom;
         // 「启用立体声宽度」开关同时控制宽度与平衡（二者在 UI 同属一组）。
         // 关闭时：宽度复位 1.0、平衡复位 0.0。

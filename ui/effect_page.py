@@ -31,6 +31,7 @@ def _default_params() -> dict:
         "enabled": False,
         "camilla_enabled": False,
         "pre_gain_db": 0.0,
+        "gain_enabled": False,
         "headroom_enabled": False,
         "headroom_db": 0.0,
         "replaygain_enabled": False,
@@ -351,7 +352,7 @@ class EffectPage(Adw.PreferencesPage):
             ("_peq_switch", "peq_enabled", "_on_peq_enabled_toggled"),
             ("_bass_switch", "bass_enabled", "_on_bass_enabled_toggled"),
             ("_loudness_switch", "loudness_enabled", "_on_loudness_toggled"),
-            ("_headroom_switch", "headroom_enabled", "_on_headroom_toggled"),
+            ("_gain_switch", "gain_enabled", "_on_gain_toggled"),
             ("_crossfeed_switch", "crossfeed_enabled", "_on_crossfeed_toggled"),
             ("_compressor_switch", "compressor_enabled", "_on_compressor_toggled"),
             ("_limiter_row", "limiter_enabled", "_on_limiter_toggled"),
@@ -427,7 +428,7 @@ class EffectPage(Adw.PreferencesPage):
     #: 组标识 → 该组负责的参数字段（重置用）
     _GROUP_FIELDS = {
         "master": ["enabled"],
-        "gain": ["pre_gain_db", "headroom_enabled", "headroom_db"],
+        "gain": ["gain_enabled", "pre_gain_db", "headroom_enabled", "headroom_db"],
         "replaygain": ["replaygain_enabled", "replaygain_mode", "replaygain_db", "replaygain_preamp_db"],
         "eq": ["eq_enabled", "eq_gains", "eq_q"],
         "peq": ["peq_enabled", "peq_bands"],
@@ -486,21 +487,35 @@ class EffectPage(Adw.PreferencesPage):
         self._sync_all_switches()
 
     def _broadcast_reset(self) -> None:
-        """广播「参数已重置」，让其它 EffectPage 实例同步 UI。"""
+        """广播「参数已重置」，让其它 EffectPage 实例同步 UI。
+
+        发起者自己跳过响应：本实例的 _params 已是最新（刚刚重置过），
+        若也去 config 重读，反而可能读到尚未写入的最新值（_emit 写 config
+        依赖外部回调）而被旧数据覆盖。
+        """
+        prev = getattr(self, "_suppress_self_reset", False)
+        self._suppress_self_reset = True
         try:
             if getattr(self, "_effect_state", None) is not None:
                 self._effect_state.notify_reset()
         except Exception:
             pass
+        finally:
+            self._suppress_self_reset = prev
 
     def _on_state_reset(self, _state) -> None:
         """收到「DSP 参数已重置」广播：从 config 重读并刷新本页 UI。
+
+        若本次重置由本实例发起（_suppress_self_reset），直接跳过：
+        发起者的 _params 已是权威值，重读 config 会用旧数据覆盖它。
 
         重置由某个 EffectPage 实例发起，但它只清了自己的 _params；
         其它实例（设置页 / 高级窗口各功能页）靠这个广播重读 config
         里已被发起的重置写回的 dsp_params，把开关 / 滑块 / 曲线拉回
         与后端一致的状态。
         """
+        if getattr(self, "_suppress_self_reset", False):
+            return
         try:
             from config.settings import get_config
             saved = get_config().get("dsp_params")
@@ -673,6 +688,17 @@ class EffectPage(Adw.PreferencesPage):
         # 预增益归 Camilla → 整组随 Camilla 开关置灰
         self._camilla_groups.append(group)
 
+        # 组开关：统一控制预增益 + 余量（二者在 UI 同属一组）。
+        # 关闭时预增益与余量都旁路；打开时按各自滑块值生效。
+        gsw = Adw.SwitchRow()
+        gsw.set_title(_("启用增益 / 余量"))
+        gsw.set_subtitle(_("预增益与余量管理；关闭时两者都旁路"))
+        gsw.set_active(bool(self._params.get("gain_enabled", False)))
+        gsw.connect("notify::active", self._on_gain_toggled)
+        gsw._param_key = "gain_enabled"
+        group.add(gsw)
+        self._gain_switch = gsw
+
         # 预增益
         row = Adw.ActionRow()
         row.set_title(_("预增益 (dB)"))
@@ -680,18 +706,10 @@ class EffectPage(Adw.PreferencesPage):
         row.add_suffix(scale)
         group.add(row)
 
-        # Headroom 开关 + 衰减
-        hsw = Adw.SwitchRow()
-        hsw.set_title(_("启用余量管理 (Headroom)"))
-        hsw.set_subtitle(_("预留峰值空间，防止削波"))
-        hsw.set_active(bool(self._params.get("headroom_enabled", False)))
-        hsw.connect("notify::active", self._on_headroom_toggled)
-        hsw._param_key = "headroom_enabled"
-        group.add(hsw)
-        self._headroom_switch = hsw
-
+        # 余量（并入本组，由组开关统一控制）
         row = Adw.ActionRow()
         row.set_title(_("余量 (dB)"))
+        row.set_subtitle(_("预留峰值空间，防止削波"))
         scale = self._make_scale(-12.0, 0.0, 0.5, "headroom_db")
         row.add_suffix(scale)
         group.add(row)
@@ -1003,8 +1021,8 @@ class EffectPage(Adw.PreferencesPage):
         self._params["loudness_enabled"] = bool(row.get_active())
         self._emit()
 
-    def _on_headroom_toggled(self, row, _pspec) -> None:
-        self._params["headroom_enabled"] = bool(row.get_active())
+    def _on_gain_toggled(self, row, _pspec) -> None:
+        self._params["gain_enabled"] = bool(row.get_active())
         self._emit()
 
     # ------------------------------------------------------------

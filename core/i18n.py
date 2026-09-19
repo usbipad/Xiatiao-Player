@@ -227,7 +227,9 @@ _EN: dict[str, str] = {
         "Restore all DSP effects to their defaults",
     "增益 / 余量": "Gain / Headroom",
     "预增益 (dB)": "Pre-gain (dB)",
-    "启用余量管理 (Headroom)": "Enable Headroom Management",
+    "启用增益 / 余量": "Enable Gain / Headroom",
+    "预增益与余量管理；关闭时两者都旁路":
+        "Pre-gain and headroom; both bypassed when off",
     "预留峰值空间，防止削波": "Reserve peak headroom to prevent clipping",
     "余量 (dB)": "Headroom (dB)",
     "ReplayGain": "ReplayGain",

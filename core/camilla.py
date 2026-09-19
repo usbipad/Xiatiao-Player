@@ -58,8 +58,8 @@ def build_config(params: Dict[str, Any], samplerate: int,
         return _wrap(samplerate, channels, sink, filters, processors, mixers, steps, 1024)
 
     # ---- 预增益（用户设定 + 自动 headroom）----
-    # 用户显式设定
-    pre = float(p.get("pre_gain_db", 0.0) or 0.0)
+    # 用户显式设定；受「增益/余量」组开关控制，关闭时预增益旁路。
+    pre = float(p.get("pre_gain_db", 0.0) or 0.0) if p.get("gain_enabled") else 0.0
     # 自动 headroom：扫描 EQ/PEQ/低音/高音的「正向提升」，预留余量防削波
     boosts = []
     if p.get("eq_enabled"):

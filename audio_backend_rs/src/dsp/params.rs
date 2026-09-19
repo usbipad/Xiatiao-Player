@@ -43,6 +43,8 @@ impl Default for PeqBand {
 pub struct DspParams {
     /// 全局开关（false = 旁路直通）
     pub enabled: bool,
+    /// 增益/余量组开关（false = 预增益与余量都旁路）
+    pub gain_enabled: bool,
     /// 预增益（dB）
     pub pre_gain_db: f32,
     /// ReplayGain 开关
@@ -134,6 +136,7 @@ impl Default for DspParams {
     fn default() -> Self {
         DspParams {
             enabled: false,
+            gain_enabled: false,
             pre_gain_db: 0.0,
             replaygain_enabled: false,
             replaygain_db: 0.0,
@@ -214,7 +217,7 @@ pub fn camilla_should_engage(p: &DspParams) -> bool {
 /// 只列 Camilla 能提供的功能；Rust 独有的不在此列。
 pub fn camilla_features(p: &DspParams) -> Vec<(&'static str, bool)> {
     vec![
-        ("pre_gain", p.pre_gain_db.abs() > 1e-6),
+        ("pre_gain", p.gain_enabled && p.pre_gain_db.abs() > 1e-6),
         ("eq", p.eq_enabled),
         ("peq", p.peq_enabled),
         ("convolution", p.convolution_enabled),
