@@ -490,6 +490,73 @@ mod tests {
         }
     }
 
+    /// 诊断：Camilla 压缩器——超阈值输入应被压住。
+    #[test]
+    fn diag_camilla_compressor() {
+        let rate = 48000.0f32;
+        // 构造 Camilla 压缩器 YAML
+        let y = "devices:\n  samplerate: 48000\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nprocessors:\n  comp:\n    type: Compressor\n    parameters:\n      channels: 2\n      attack: 0.01\n      release: 0.2\n      threshold: -12.0\n      factor: 4.0\n      makeup_gain: 0.0\n      monitor_channels:\n      - 0\n      - 1\n      process_channels:\n      - 0\n      - 1\nfilters: {}\nmixers: {}\npipeline:\n- type: Processor\n  name: comp\n";
+        let frames = 48000usize;
+        let mut buf = Vec::with_capacity(frames*2);
+        for i in 0..frames {
+            let s = (2.0*std::f32::consts::PI*1000.0*(i as f32/rate)).sin()*0.5;
+            buf.push(s); buf.push(s);
+        }
+        let in_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=buf[i*2]*buf[i*2]; } (s/(frames/2) as f32).sqrt() };
+        let mut eng = CamillaEngine::new(48000);
+        if eng.set_yaml(y).is_err() { println!("[Camilla Comp] 配置失败"); return; }
+        for c in buf.chunks_mut(4096) { eng.process_interleaved(c, 2); }
+        let out_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=buf[i*2]*buf[i*2]; } (s/(frames/2) as f32).sqrt() };
+        let g = 20.0*(out_rms/in_rms).log10();
+        println!("[Camilla Compressor] 输入0.5(-6dB,超阈值-12dB) 增益 = {g:+.1}dB（应<0）");
+    }
+
+    /// 诊断：Camilla 相位翻转——输出应反相。
+    #[test]
+    fn diag_camilla_phase() {
+        let y = "devices:\n  samplerate: 48000\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters:\n  phase:\n    type: Gain\n    parameters:\n      gain: 0.0\n      inverted: true\n      scale: dB\nprocessors: {}\nmixers: {}\npipeline:\n- type: Filter\n  channels:\n  - 0\n  - 1\n  names:\n  - phase\n";
+        let rate = 48000.0f32;
+        let frames = 8192usize;
+        let mut buf = Vec::with_capacity(frames*2);
+        for i in 0..frames {
+            let s = (2.0*std::f32::consts::PI*1000.0*(i as f32/rate)).sin()*0.5;
+            buf.push(s); buf.push(s);
+        }
+        let orig = buf.clone();
+        let mut eng = CamillaEngine::new(48000);
+        if eng.set_yaml(y).is_err() { println!("[Camilla Phase] 配置失败"); return; }
+        for c in buf.chunks_mut(4096) { eng.process_interleaved(c, 2); }
+        let mut max_err = 0.0f32;
+        for i in (frames/2)..frames { max_err = max_err.max((buf[i*2] + orig[i*2]).abs()); }
+        println!("[Camilla Phase] 输出+输入 最大偏差 = {max_err:.5}（应≈0=已反相）");
+    }
+
+    /// 诊断：Camilla 通道矩阵 swap。
+    #[test]
+    fn diag_camilla_matrix_swap() {
+        let y = "devices:\n  samplerate: 48000\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters: {}\nprocessors: {}\nmixers:\n  matrix:\n    channels:\n      in: 2\n      out: 2\n    mapping:\n    - dest: 0\n      sources:\n      - channel: 1\n        gain: 0.0\n        inverted: false\n        scale: dB\n    - dest: 1\n      sources:\n      - channel: 0\n        gain: 0.0\n        inverted: false\n        scale: dB\npipeline:\n- type: Mixer\n  name: matrix\n";
+        let rate = 48000.0f32;
+        let frames = 8192usize;
+        // 左=1000Hz, 右=3000Hz（可区分）
+        let mut buf = Vec::with_capacity(frames*2);
+        for i in 0..frames {
+            buf.push((2.0*std::f32::consts::PI*1000.0*(i as f32/rate)).sin()*0.3);
+            buf.push((2.0*std::f32::consts::PI*3000.0*(i as f32/rate)).sin()*0.3);
+        }
+        let mut eng = CamillaEngine::new(48000);
+        if eng.set_yaml(y).is_err() { println!("[Camilla Matrix] 配置失败"); return; }
+        for c in buf.chunks_mut(4096) { eng.process_interleaved(c, 2); }
+        // 交换后：新左应≈原右(3000Hz)，新右应≈原左(1000Hz)。用互相关符号验证。
+        // 简化：比较新左与原右的差的 RMS（稳定段）应小。
+        let mut diff_lr = 0.0f32;
+        for i in (frames/2)..frames {
+            let orig_r = (2.0*std::f32::consts::PI*3000.0*(i as f32/rate)).sin()*0.3;
+            diff_lr += (buf[i*2] - orig_r).powi(2);
+        }
+        let rms = (diff_lr/(frames/2) as f32).sqrt();
+        println!("[Camilla Matrix swap] 新左 vs 原右 RMS差 = {rms:.5}（应≈0=已交换）");
+    }
+
     /// 同一引擎：先直通，再平滑更新为低架，输出应变化。
     #[test]
     fn smooth_update_changes_output() {

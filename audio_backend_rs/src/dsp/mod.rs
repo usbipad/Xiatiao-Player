@@ -37,7 +37,11 @@ pub struct DspChain {
     treble_r: Biquad,
     loudness_l: Biquad,
     loudness_r: Biquad,
-    // 动态等响度：高频补偿（低频复用 loudness_l/r）
+    // 动态等响度：极低频补偿（第二段 lowshelf @ LOW2? 不，@LOW1）
+    // 注：loudness_l/r 为极低频段（@40Hz），loudness_low2_l/r 为中低频段（@180Hz）
+    loudness_low2_l: Biquad,
+    loudness_low2_r: Biquad,
+    // 动态等响度：高频补偿
     loudness_high_l: Biquad,
     loudness_high_r: Biquad,
     /// 当前播放器音量（0.0~1.0），由 set_volume 实时更新，供动态等响度用
@@ -92,6 +96,8 @@ impl DspChain {
             treble_r: Biquad::identity(),
             loudness_l: Biquad::identity(),
             loudness_r: Biquad::identity(),
+            loudness_low2_l: Biquad::identity(),
+            loudness_low2_r: Biquad::identity(),
             loudness_high_l: Biquad::identity(),
             loudness_high_r: Biquad::identity(),
             volume: 1.0,
@@ -186,6 +192,7 @@ impl DspChain {
         self.bass_l.reset(); self.bass_r.reset();
         self.treble_l.reset(); self.treble_r.reset();
         self.loudness_l.reset(); self.loudness_r.reset();
+        self.loudness_low2_l.reset(); self.loudness_low2_r.reset();
         self.loudness_high_l.reset(); self.loudness_high_r.reset();
         // 压缩/限幅包络
         self.comp_env = 0.0;
@@ -287,13 +294,15 @@ impl DspChain {
         if !p.loudness_enabled || p.loudness_amount <= 1e-6 {
             self.loudness_l = Biquad::identity();
             self.loudness_r = Biquad::identity();
+            self.loudness_low2_l = Biquad::identity();
+            self.loudness_low2_r = Biquad::identity();
             self.loudness_high_l = Biquad::identity();
             self.loudness_high_r = Biquad::identity();
             self.loudness_last_vol = self.volume;
             return;
         }
         let comp = loudness::compute(self.volume, p.loudness_amount);
-        // 低频 Lowshelf（保留状态，避免爆音）
+        // 极低频 Lowshelf @40Hz（保留状态，避免爆音）
         let (x1, x2, y1, y2) = (self.loudness_l.x1, self.loudness_l.x2, self.loudness_l.y1, self.loudness_l.y2);
         let mut ll = Biquad::lowshelf(loudness::low_freq(), comp.low_db, self.in_rate);
         ll.x1 = x1; ll.x2 = x2; ll.y1 = y1; ll.y2 = y2;
@@ -302,6 +311,15 @@ impl DspChain {
         let mut lr = Biquad::lowshelf(loudness::low_freq(), comp.low_db, self.in_rate);
         lr.x1 = x1; lr.x2 = x2; lr.y1 = y1; lr.y2 = y2;
         self.loudness_r = lr;
+        // 中低频 Lowshelf @180Hz
+        let (x1, x2, y1, y2) = (self.loudness_low2_l.x1, self.loudness_low2_l.x2, self.loudness_low2_l.y1, self.loudness_low2_l.y2);
+        let mut l2l = Biquad::lowshelf(loudness::low2_freq(), comp.low2_db, self.in_rate);
+        l2l.x1 = x1; l2l.x2 = x2; l2l.y1 = y1; l2l.y2 = y2;
+        self.loudness_low2_l = l2l;
+        let (x1, x2, y1, y2) = (self.loudness_low2_r.x1, self.loudness_low2_r.x2, self.loudness_low2_r.y1, self.loudness_low2_r.y2);
+        let mut l2r = Biquad::lowshelf(loudness::low2_freq(), comp.low2_db, self.in_rate);
+        l2r.x1 = x1; l2r.x2 = x2; l2r.y1 = y1; l2r.y2 = y2;
+        self.loudness_low2_r = l2r;
         // 高频 Highshelf
         let (x1, x2, y1, y2) = (self.loudness_high_l.x1, self.loudness_high_l.x2, self.loudness_high_l.y1, self.loudness_high_l.y2);
         let mut hl = Biquad::highshelf(loudness::high_freq(), comp.high_db, self.in_rate);
@@ -378,8 +396,13 @@ impl DspChain {
         let comp_thresh = 10f32.powf(p.compressor_threshold_db / 20.0);
         let comp_ratio = p.compressor_ratio.clamp(1.0, 20.0);
         let comp_makeup = 10f32.powf(p.compressor_makeup_db / 20.0);
-        let comp_attack = 0.005;
-        let comp_release = 0.0005;
+        // 压缩器包络时间常数（每样本系数）。
+        // 注：Rust DspParams 无 compressor_attack/release 字段（Python 传但
+        // 结构体未含），为不改协议，用固定合理值：attack 5ms、release 60ms。
+        // coef = 1 - exp(-1/(τ·fs))。旧代码 attack=0.005/release=0.0005 的
+        // release 过快，包络几乎不保持，导致对周期信号几乎不压缩。
+        let comp_attack = 1.0 - (-1.0f32 / (0.005 * self.in_rate)).exp();
+        let comp_release = 1.0 - (-1.0f32 / (0.060 * self.in_rate)).exp();
         let eq_on = p.eq_enabled && !cam;
         let peq_on = p.peq_enabled && !cam;
         // 低音/高音同组：开关（bass_enabled）统一控制二者。
@@ -462,8 +485,11 @@ impl DspChain {
                 r = self.treble_r.process(r);
             }
             if loud_on {
+                // 极低频 → 中低频 → 高频（三段级联整形，贴合 ISO 226）
                 l = self.loudness_l.process(l);
                 r = self.loudness_r.process(r);
+                l = self.loudness_low2_l.process(l);
+                r = self.loudness_low2_r.process(r);
                 l = self.loudness_high_l.process(l);
                 r = self.loudness_high_r.process(r);
             }
@@ -494,9 +520,12 @@ impl DspChain {
                 r += self.cf_lp_r * cf_amt;
             }
             if comp_on {
+                // 用「整流后的峰值」估计包络：对正弦等周期信号更可靠。
+                // 平滑：上升用 attack，下降用 release（标准压缩器包络跟随）。
                 let peak = l.abs().max(r.abs());
                 let coef = if peak > self.comp_env { comp_attack } else { comp_release };
                 self.comp_env += (peak - self.comp_env) * coef;
+                // 增益计算用「平滑包络」比阈值：超阈值部分按压缩比衰减。
                 if self.comp_env > comp_thresh && comp_thresh > 0.0 {
                     let over_db = 20.0 * (self.comp_env / comp_thresh).log10();
                     let reduced_db = over_db * (1.0 - 1.0 / comp_ratio);
@@ -641,5 +670,436 @@ mod tests {
         let tail = buf[buf.len() - 200];
         assert!((tail - 0.15).abs() < 0.02,
                 "余量增益未收敛到目标：尾值={tail:.4}（期望≈0.15）");
+    }
+
+    // ============================================================
+    // 测量工具（声学验证）：频响 / 谐波失真 / 梳状凹陷
+    // ============================================================
+
+    /// 用正弦扫频测链的频响（相对 1kHz 归一，dB）。
+    fn measure_chain(chain: &mut DspChain, freqs: &[f32], rate: f32) -> Vec<(f32, f32)> {
+        let frames = 24000usize;
+        let mut out = Vec::new();
+        for &f in freqs {
+            let mut buf = Vec::with_capacity(frames * 2);
+            for i in 0..frames {
+                let s = (2.0 * std::f32::consts::PI * f * (i as f32 / rate)).sin() * 0.25;
+                buf.push(s); buf.push(s);
+            }
+            let in_rms = {
+                let st = frames / 4; let mut sum = 0.0f32; let mut n = 0usize;
+                for i in st..frames { sum += buf[i*2]*buf[i*2]; n += 1; }
+                (sum / n as f32).sqrt()
+            };
+            chain.process_interleaved(&mut buf, 2);
+            let out_rms = {
+                let st = frames / 4; let mut sum = 0.0f32; let mut n = 0usize;
+                for i in st..frames { sum += buf[i*2]*buf[i*2]; n += 1; }
+                (sum / n as f32).sqrt()
+            };
+            let db = 20.0 * (out_rms / in_rms.max(1e-9)).log10();
+            out.push((f, db));
+        }
+        // 以 1kHz 归一
+        let ref_db = out.iter().min_by(|a,b|
+            (a.0-1000.0).abs().partial_cmp(&(b.0-1000.0).abs()).unwrap())
+            .map(|x| x.1).unwrap_or(0.0);
+        out.iter().map(|(f,d)| (*f, d - ref_db)).collect()
+    }
+
+    /// 测 THD+N（总谐波失真）：输入纯正弦，输出中非基波分量占比。
+    ///
+    /// 简化实现：用 Goertzel 提取基波能量，总能量减基波 = 失真能量。
+    fn measure_thd(chain: &mut DspChain, freq: f32, rate: f32) -> f32 {
+        let frames = 48000usize;
+        let mut buf = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let s = (2.0 * std::f32::consts::PI * freq * (i as f32 / rate)).sin() * 0.3;
+            buf.push(s); buf.push(s);
+        }
+        chain.process_interleaved(&mut buf, 2);
+        let st = frames / 2;
+        let n = (frames - st) as f32;
+        // 总能量
+        let mut total = 0.0f32;
+        for i in st..frames { total += buf[i*2]*buf[i*2]; }
+        total /= n;
+        // 基波能量（Goertzel）
+        let w = 2.0 * std::f32::consts::PI * freq / rate;
+        let (mut re, mut im) = (0.0f32, 0.0f32);
+        for i in st..frames {
+            let ang = w * i as f32;
+            re += buf[i*2] * ang.cos();
+            im += buf[i*2] * ang.sin();
+        }
+        let fund = (re*re + im*im) / (n*n) * 2.0;
+        let dist = (total - fund).max(0.0);
+        if total <= 1e-12 { return 0.0; }
+        10.0 * (dist / fund.max(1e-12)).log10()
+    }
+
+    /// 诊断：BBE 打开时的频响（找相位抵消/梳状凹陷）+ THD。
+    #[test]
+    fn diag_bbe_response() {
+        let rate = 48000.0f32;
+        let freqs = [20.0, 50.0, 100.0, 200.0, 400.0, 700.0, 1000.0, 1500.0, 2000.0,
+                     3000.0, 5000.0, 8000.0, 12000.0, 16000.0];
+        let mut p = DspParams::default();
+        p.enabled = true;
+        let mut chain = DspChain::new(48000);
+        chain.set_params(p);
+        chain.set_coloring(0.0, 1.0); // tube 关，bbe 全开（染色独立于 DspParams）
+        let resp = measure_chain(&mut chain, &freqs, rate);
+        print!("[BBE amount=1.0 响应] ");
+        for (f,d) in &resp { print!("{f:.0}={d:+.1} "); }
+        println!();
+        // 梳状凹陷检测：相邻频点落差 > 3dB 视为可疑
+        let mut max_dip = 0.0f32;
+        for w in resp.windows(2) {
+            let jump = (w[0].1 - w[1].1).abs();
+            if jump > max_dip { max_dip = jump; }
+        }
+        println!("[BBE] 相邻频点最大落差 = {max_dip:.1}dB（>3dB 疑梳状滤波）");
+
+        let mut chain2 = DspChain::new(48000);
+        chain2.set_params(DspParams { enabled: true, ..Default::default() });
+        chain2.set_coloring(0.0, 1.0);
+        let thd = measure_thd(&mut chain2, 1000.0, rate);
+        println!("[BBE] 1kHz THD+N = {thd:.1}dB");
+    }
+
+    /// 诊断：Tube 打开时的 THD + 电平变化。
+    #[test]
+    fn diag_tube_distortion() {
+        let rate = 48000.0f32;
+        // 电平变化
+        let mut p = DspParams::default();
+        p.enabled = true;
+        let mut chain = DspChain::new(48000);
+        chain.set_params(p.clone());
+        chain.set_coloring(3.0, 0.0); // tube drive=3, bbe 关
+        let resp = measure_chain(&mut chain, &[1000.0], rate);
+        println!("[Tube drive=3] 1kHz 增益 = {:+.2}dB（应≈0，不应整体变响）", resp[0].1);
+        let thd = measure_thd(&mut chain, 1000.0, rate);
+        println!("[Tube drive=3] 1kHz THD+N = {thd:.1}dB（应有偶次谐波，但不过高）");
+
+        // drive=1（最小）应几乎无染色
+        let mut chain1 = DspChain::new(48000);
+        chain1.set_params(DspParams { enabled: true, ..Default::default() });
+        chain1.set_coloring(1.0, 0.0);
+        let thd1 = measure_thd(&mut chain1, 1000.0, rate);
+        println!("[Tube drive=1] 1kHz THD+N = {thd1:.1}dB（应很低，接近直通）");
+    }
+
+    /// 诊断：Loudness 实际补偿曲线（对比 ISO 226 目标）。
+    #[test]
+    fn diag_loudness_curve() {
+        let rate = 48000.0f32;
+        // ISO 226 等响曲线（相对 1kHz）：80 phon（低音量聆听）相对 100 phon 的
+        // 补偿量近似值（低频 +10~20dB，高频 +2~6dB）。这里给出参考目标。
+        // 测各音量下，几个关键频点的提升量。
+        let freqs = [30.0, 60.0, 100.0, 300.0, 1000.0, 3000.0, 8000.0, 12000.0];
+        for vol in [0.5f32, 0.2, 0.1] {
+            let mut p = DspParams::default();
+            p.enabled = true;
+            p.loudness_enabled = true;
+            p.loudness_amount = 1.0;
+            let mut chain = DspChain::new(48000);
+            chain.set_volume(vol);
+            chain.set_params(p);
+            let resp = measure_chain(&mut chain, &freqs, rate);
+            let vol_db = 20.0 * vol.log10();
+            print!("[Loudness vol={vol} ({vol_db:+.0}dBFS)] ");
+            for (f, d) in &resp { print!("{f:.0}={d:+.1} "); }
+            println!();
+        }
+        // 期望：低频（30-100Hz）补偿 > 高频（8-12k）> 中频（1k≈0 基准）
+    }
+
+    /// 诊断：染色组合（Tube+BBE 同时开）整体频响是否仍平坦。
+    #[test]
+    fn diag_coloring_combined() {
+        let rate = 48000.0f32;
+        let freqs = [100.0, 1000.0, 5000.0, 10000.0, 18000.0];
+        let mut p = DspParams::default();
+        p.enabled = true;
+        let mut chain = DspChain::new(48000);
+        chain.set_params(p);
+        chain.set_coloring(3.0, 1.0); // tube drive=3 + bbe 全开
+        let resp = measure_chain(&mut chain, &freqs, rate);
+        print!("[Tube+BBE 组合] ");
+        for (f, d) in &resp { print!("{f:.0}={d:+.1} "); }
+        println!();
+        let mut max_dev = 0.0f32;
+        for (_, d) in &resp { max_dev = max_dev.max(d.abs()); }
+        println!("[Tube+BBE] 最大频响偏差 = {max_dev:.1}dB（应 < 2dB）");
+        let thd = measure_thd(&mut chain, 1000.0, rate);
+        println!("[Tube+BBE] 1kHz THD+N = {thd:.1}dB");
+    }
+
+    /// 诊断：混响——冲激响应能量/衰减时间（RT60 估算）。
+    #[test]
+    fn diag_reverb() {
+        let rate = 48000.0f32;
+        let mut p = DspParams::default();
+        p.enabled = true;
+        p.reverb_enabled = true;
+        p.reverb_mix = 1.0;      // 全湿，便于测混响本身
+        p.reverb_decay = 0.7;
+        p.reverb_damping = 0.5;
+        p.reverb_pre_delay_ms = 20.0;
+        p.reverb_low_cut_hz = 100.0;
+        p.reverb_mod_depth = 0.3;
+        p.reverb_width = 1.0;
+        let mut chain = DspChain::new(48000);
+        chain.set_params(p);
+        // 冲激响应：单样本 1.0，其余 0
+        let frames = 48000usize; // 1s
+        let mut buf = vec![0.0f32; frames * 2];
+        buf[0] = 1.0; buf[1] = 1.0;
+        chain.process_interleaved(&mut buf, 2);
+        // 分段能量
+        let seg = frames / 10;
+        let mut energies = Vec::new();
+        for s in 0..10 {
+            let mut e = 0.0f32;
+            for i in (s*seg)..((s+1)*seg) {
+                e += buf[i*2]*buf[i*2] + buf[i*2+1]*buf[i*2+1];
+            }
+            energies.push(e);
+        }
+        print!("[Reverb IR 分段能量] ");
+        for (i,e) in energies.iter().enumerate() { print!("{:.0}ms={e:.4} ", i as f32*100.0); }
+        println!();
+        // 峰值 + 早期反射是否可闻
+        let peak = buf.iter().fold(0.0f32, |a,&b| a.max(b.abs()));
+        println!("[Reverb] 冲激响应峰值 = {peak:.4}（应>0.01，否则混响过弱）");
+        // 尾段能量（应逐渐衰减但非 0）
+        let tail: f32 = buf[frames*2-frames/5..].iter().map(|x| x*x).sum();
+        println!("[Reverb] 末段(0.8-1s)能量 = {tail:.5}（应>0，混响尾巴存在）");
+    }
+
+    /// 诊断：压缩器——输入超阈值时是否压住。
+    #[test]
+    fn diag_compressor() {
+        let rate = 48000.0f32;
+        let mut p = DspParams::default();
+        p.enabled = true;
+        p.compressor_enabled = true;
+        p.compressor_threshold_db = -12.0;
+        p.compressor_ratio = 4.0;
+        p.compressor_makeup_db = 0.0;
+        let mut chain = DspChain::new(48000);
+        chain.set_params(p);
+        // 输入 0.5（-6dBFS，超阈值 -12dB）正弦
+        let frames = 48000usize;
+        let mut buf = Vec::with_capacity(frames*2);
+        for i in 0..frames {
+            let s = (2.0*std::f32::consts::PI*1000.0*(i as f32/rate)).sin()*0.5;
+            buf.push(s); buf.push(s);
+        }
+        let in_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=buf[i*2]*buf[i*2]; } (s/(frames/2) as f32).sqrt() };
+        chain.process_interleaved(&mut buf, 2);
+        let out_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=buf[i*2]*buf[i*2]; } (s/(frames/2) as f32).sqrt() };
+        let g = 20.0*(out_rms/in_rms).log10();
+        println!("[Compressor] 输入0.5(-6dB,超阈值-12dB) 增益 = {g:+.1}dB（应<0，压住）");
+    }
+
+    /// 诊断：限幅器——超阈值时是否限到阈值。
+    #[test]
+    fn diag_limiter() {
+        let rate = 48000.0f32;
+        let mut p = DspParams::default();
+        p.enabled = true;
+        p.limiter_enabled = true;
+        p.limiter_threshold_db = -6.0; // 阈值 0.5
+        let mut chain = DspChain::new(48000);
+        chain.set_params(p);
+        let frames = 96000usize;
+        let mut buf = Vec::with_capacity(frames*2);
+        for i in 0..frames {
+            let s = (2.0*std::f32::consts::PI*1000.0*(i as f32/rate)).sin()*0.9; // 0.9 > 阈值0.5
+            buf.push(s); buf.push(s);
+        }
+        chain.process_interleaved(&mut buf, 2);
+        let peak = buf[frames..].iter().fold(0.0f32, |a,&b| a.max(b.abs()));
+        println!("[Limiter] 输入峰值0.9, 阈值-6dB(0.5) → 输出峰值 = {peak:.3}（应≈0.5）");
+    }
+
+    /// 诊断：Crossfeed——应只交叉低频、保持总能量。
+    #[test]
+    fn diag_crossfeed() {
+        let rate = 48000.0f32;
+        let mut p = DspParams::default();
+        p.enabled = true;
+        p.crossfeed_enabled = true;
+        p.crossfeed_amount = 1.0;
+        p.crossfeed_delay_ms = 0.3;
+        let mut chain = DspChain::new(48000);
+        chain.set_params(p);
+        // 左声道给信号，右声道静音 → 右声道应收到串扰
+        let frames = 24000usize;
+        let mut buf = vec![0.0f32; frames*2];
+        for i in 0..frames {
+            buf[i*2] = (2.0*std::f32::consts::PI*500.0*(i as f32/rate)).sin()*0.5; // 左=500Hz
+            // 右=0
+        }
+        chain.process_interleaved(&mut buf, 2);
+        let l_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=buf[i*2]*buf[i*2]; } (s/(frames/2) as f32).sqrt() };
+        let r_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=buf[i*2+1]*buf[i*2+1]; } (s/(frames/2) as f32).sqrt() };
+        println!("[Crossfeed] 左输入0.5 → L={l_rms:.4} R={r_rms:.4}（R应>0=有串扰，且<R<L）");
+    }
+
+    /// 诊断：相位翻转——输出应与输入反相（频谱一致）。
+    #[test]
+    fn diag_phase_invert() {
+        let rate = 48000.0f32;
+        let mut p = DspParams::default();
+        p.enabled = true;
+        p.phase_invert = true;
+        let mut chain = DspChain::new(48000);
+        chain.set_params(p);
+        let frames = 8192usize;
+        let mut buf = Vec::with_capacity(frames*2);
+        for i in 0..frames {
+            let s = (2.0*std::f32::consts::PI*1000.0*(i as f32/rate)).sin()*0.5;
+            buf.push(s); buf.push(s);
+        }
+        let orig = buf.clone();
+        chain.process_interleaved(&mut buf, 2);
+        // 稳定段：输出应 ≈ -输入
+        let mut max_err = 0.0f32;
+        for i in (frames/2)..frames {
+            max_err = max_err.max((buf[i*2] + orig[i*2]).abs());
+        }
+        println!("[Phase] 反相后 输出+输入 最大偏差 = {max_err:.5}（应≈0）");
+    }
+
+    /// 诊断：立体声宽度——width=2 侧信号增强，width=0 变单声道。
+    #[test]
+    fn diag_width_balance() {
+        let rate = 48000.0f32;
+        let frames = 8192usize;
+        let mk = || {
+            let mut b = Vec::with_capacity(frames*2);
+            for i in 0..frames {
+                let l = (2.0*std::f32::consts::PI*1000.0*(i as f32/rate)).sin()*0.3;
+                let r = -(2.0*std::f32::consts::PI*1000.0*(i as f32/rate)).sin()*0.3; // 反相=纯侧信号
+                b.push(l); b.push(r);
+            }
+            b
+        };
+        let rms = |b: &[f32]| { let mut s=0.0f32; for i in (frames/2)..frames { s+=b[i*2]*b[i*2]+b[i*2+1]*b[i*2+1]; } (s/(2*(frames/2)) as f32).sqrt() };
+        // width=2（加宽）
+        let mut p = DspParams::default();
+        p.enabled = true; p.width_enabled = true; p.stereo_width = 2.0; p.balance = 0.0;
+        let mut c = DspChain::new(48000); c.set_params(p);
+        let mut b = mk(); let in_rms = rms(&b); c.process_interleaved(&mut b, 2);
+        let w2 = rms(&b);
+        // width=1（原始）
+        let mut p1 = DspParams::default();
+        p1.enabled = true; p1.width_enabled = true; p1.stereo_width = 1.0;
+        let mut c1 = DspChain::new(48000); c1.set_params(p1);
+        let mut b1 = mk(); c1.process_interleaved(&mut b1, 2);
+        let w1 = rms(&b1);
+        // width=0（单声道，侧信号消失）
+        let mut p0 = DspParams::default();
+        p0.enabled = true; p0.width_enabled = true; p0.stereo_width = 0.0;
+        let mut c0 = DspChain::new(48000); c0.set_params(p0);
+        let mut b0 = mk(); c0.process_interleaved(&mut b0, 2);
+        let w0 = rms(&b0);
+        println!("[Width] 纯侧信号: width2={w2:.4} width1={w1:.4} width0={w0:.4}（应 w2>w1>w0≈0）");
+        // 平衡：全左
+        let mut pb = DspParams::default();
+        pb.enabled = true; pb.width_enabled = true; pb.stereo_width = 1.0; pb.balance = 1.0;
+        let mut cb = DspChain::new(48000); cb.set_params(pb);
+        let mut bb = mk(); cb.process_interleaved(&mut bb, 2);
+        let l_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=bb[i*2]*bb[i*2]; } (s/(frames/2) as f32).sqrt() };
+        let r_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=bb[i*2+1]*bb[i*2+1]; } (s/(frames/2) as f32).sqrt() };
+        println!("[Balance] balance=1(全右): L={l_rms:.4} R={r_rms:.4}（应 R>L，L≈0）");
+    }
+
+    /// 诊断：通道矩阵——swap/mono/left_both/right_both。
+    #[test]
+    fn diag_channel_matrix() {
+        let rate = 48000.0f32;
+        let frames = 4096usize;
+        // 左=1000Hz, 右=2000Hz（可区分）
+        let mk = || {
+            let mut b = Vec::with_capacity(frames*2);
+            for i in 0..frames {
+                b.push((2.0*std::f32::consts::PI*1000.0*(i as f32/rate)).sin()*0.3);
+                b.push((2.0*std::f32::consts::PI*2000.0*(i as f32/rate)).sin()*0.3);
+            }
+            b
+        };
+        let run = |mode: &str| -> Vec<f32> {
+            let mut p = DspParams::default();
+            p.enabled = true; p.channel_matrix = mode.to_string();
+            let mut c = DspChain::new(48000); c.set_params(p);
+            let mut b = mk(); c.process_interleaved(&mut b, 2); b
+        };
+        // swap: L↔R，应 左轨变成原右轨
+        let sw = run("swap");
+        let l_after = sw[frames]; // 稳定段某点
+        println!("[Matrix swap] 处理前后(单点) L: {:.4} → {:.4}", mk()[frames], l_after);
+        // mono: L=R，左右相同
+        let mo = run("mono");
+        let mut max_diff = 0.0f32;
+        for i in (frames/2)..frames { max_diff = max_diff.max((mo[i*2]-mo[i*2+1]).abs()); }
+        println!("[Matrix mono] L-R 最大差 = {max_diff:.5}（应≈0，左右相同）");
+        // left_both: R=L
+        let lb = run("left_both");
+        let mut max_diff2 = 0.0f32;
+        for i in (frames/2)..frames { max_diff2 = max_diff2.max((lb[i*2]-lb[i*2+1]).abs()); }
+        println!("[Matrix left_both] L-R 最大差 = {max_diff2:.5}（应≈0）");
+    }
+
+    /// 诊断：ReplayGain——增益应精确。
+    #[test]
+    fn diag_replaygain() {
+        let rate = 48000.0f32;
+        let mut p = DspParams::default();
+        p.enabled = true;
+        p.replaygain_enabled = true;
+        p.replaygain_db = 6.0;      // +6dB → ×2
+        p.replaygain_preamp_db = 0.0;
+        let mut chain = DspChain::new(48000);
+        chain.set_params(p);
+        let frames = 8192usize;
+        let mut buf = Vec::with_capacity(frames*2);
+        for i in 0..frames {
+            let s = (2.0*std::f32::consts::PI*1000.0*(i as f32/rate)).sin()*0.1;
+            buf.push(s); buf.push(s);
+        }
+        let in_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=buf[i*2]*buf[i*2]; } (s/(frames/2) as f32).sqrt() };
+        chain.process_interleaved(&mut buf, 2);
+        let out_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=buf[i*2]*buf[i*2]; } (s/(frames/2) as f32).sqrt() };
+        let g = 20.0*(out_rms/in_rms).log10();
+        println!("[ReplayGain] +6dB 设置 → 实测 {g:+.2}dB（应≈+6）");
+    }
+
+    /// 诊断：过采样器本身的失真（染色前的抗混叠质量）。
+    #[test]
+    fn diag_oversample_quality() {
+        let rate = 48000.0f32;
+        // 高频正弦过 4x 上采样→下采样，应尽量保真（THD 低、电平准）
+        let freqs = [1000.0f32, 8000.0, 15000.0, 18000.0];
+        let mut os = crate::oversample::Oversample2x::new();
+        for &f in &freqs {
+            let frames = 24000usize;
+            let mut input = Vec::with_capacity(frames*2);
+            for i in 0..frames {
+                let s = (2.0*std::f32::consts::PI*f*(i as f32/rate)).sin()*0.3;
+                input.push(s); input.push(s);
+            }
+            let mut up = Vec::new(); os.upsample(&input, &mut up);
+            let mut down = Vec::new(); os.downsample(&up, &mut down);
+            let st = frames/2; let n = (frames-st) as f32;
+            let mut in_e = 0.0f32; let mut out_e = 0.0f32;
+            for i in st..frames { in_e += input[i*2]*input[i*2]; out_e += down[i*2]*down[i*2]; }
+            let g = 10.0*(out_e/in_e.max(1e-12)).log10();
+            println!("[OS] {f:.0}Hz 往返增益 = {g:+.2}dB（应≈0；大偏差=插值/抗混叠劣化）");
+        }
     }
 }

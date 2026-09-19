@@ -216,9 +216,12 @@ impl Reverb {
         self.pre_delay_ms = pre_delay_ms.clamp(0.0, 100.0);
         self.mod_depth = mod_depth.clamp(0.0, 1.0);
 
-        // 反馈系数：Freeverb 标准 —— 0.28 + room_size*0.7（0.28~0.98）
-        // 起点低避免「过密金属声」，范围大给足调节空间
-        let feedback = 0.28 + self.room_size * 0.7;
+        // 反馈系数：决定混响尾巴长度（RT60）。
+        // 旧映射 0.28+room*0.7 起点太低，decay=0.7 时反馈仅 0.77
+        // → 尾巴 ~0.2s（过短）。改为 0.72+room*0.25（0.72~0.97）：
+        //   room=0.5 → 0.845（RT60≈1s）；room=0.9 → 0.945（RT60≈3s）。
+        // 上限 0.97 避免自激。
+        let feedback = (0.72 + self.room_size * 0.25).min(0.97);
         let damp = self.damping * 0.4;
         for c in self.comb_l.iter_mut() { c.set(feedback, damp); }
         for c in self.comb_r.iter_mut() { c.set(feedback, damp); }
@@ -296,10 +299,13 @@ impl Reverb {
         out_l *= 1.0 / 8.0;
         out_r *= 1.0 / 8.0;
 
-        // 4 全通串联（扩散）；全通有 0.5 固定增益，补偿回来
+        // 4 全通串联（扩散）。
+        // 注：Schroeder 全通 |H(e^jw)| = 1（幅度不变，只改相位），
+        // 不应再乘 0.5 —— 旧代码多乘 0.5 使 4 级级联后湿声衰减到 1/16，
+        // 导致混响过弱、尾巴极短（实测 200ms 即消失）。此处保持单位增益。
         for i in 0..self.allpass_l.len() {
-            out_l = self.allpass_l[i].process(out_l) * 0.5;
-            out_r = self.allpass_r[i].process(out_r) * 0.5;
+            out_l = self.allpass_l[i].process(out_l);
+            out_r = self.allpass_r[i].process(out_r);
         }
 
         // 立体声宽度（M/S 调整）

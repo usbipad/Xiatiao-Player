@@ -169,19 +169,10 @@ def build_config(params: Dict[str, Any], samplerate: int,
         }
         filter_names.append("treble")
 
-    # ---- Loudness ----
-    if p.get("loudness_enabled") and float(p.get("loudness_amount", 0.0) or 0.0) > 1e-6:
-        amt = max(0.0, min(1.0, float(p.get("loudness_amount", 0.0))))
-        # 官方参数：reference_level / high_boost / low_boost / ramp_time
-        filters["loudness"] = {
-            "type": "Loudness",
-            "parameters": {
-                "reference_level": 0.0,
-                "high_boost": 10.0 * amt,
-                "low_boost": 10.0 * amt,
-            },
-        }
-        filter_names.append("loudness")
+    # ---- Loudness：不归 Camilla ----
+    # 等响度补偿依赖「播放器音量」，而 Camilla 拿不到音量（静态配置）。
+    # 若此处生成 Camilla Loudness，会与 Rust 侧动态 ISO 226 补偿**叠加**
+    # （双重补偿 → 削波/轰头）。故完全由 Rust 侧实现（dsp/loudness.rs）。
 
     # ---- 压缩器（processor）----
     if p.get("compressor_enabled"):
