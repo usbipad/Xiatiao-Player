@@ -284,15 +284,16 @@ class SettingsWindow(Adw.PreferencesWindow):
     # ------------------------------------------------------------
     # 关于页
     # ------------------------------------------------------------
-    #: 关于信息（占位符：TODO 待替换）
+    #: 关于信息
     _ABOUT = {
         "name": "虾条播放器",
         "name_en": "Xiatiao",
-        "version": "0.1.0",
+        "version": "1.0.0",
         "developer": "usbipad",
-        "website": "TODO: 项目主页 / 仓库地址",
-        "issue": "TODO: 问题反馈地址",
+        "website": "https://github.com/usbipad/Xiatiao-Player",
+        "issue": "https://github.com/usbipad/Xiatiao-Player/issues",
         "copyright": "© 2026 usbipad",
+        "license": "GNU General Public License v3.0 (GPL-3.0)",
     }
 
     def _build_about_page(self) -> None:
@@ -322,8 +323,31 @@ class SettingsWindow(Adw.PreferencesWindow):
         info.add(self._make_info_row(_("网站"), self._ABOUT["website"]))
         info.add(self._make_info_row(_("问题反馈"), self._ABOUT["issue"]))
         info.add(self._make_info_row(_("版权"), self._ABOUT["copyright"]))
-        info.add(self._make_info_row(_("许可"), "MIT"))
+        info.add(self._make_info_row(_("许可"), self._ABOUT["license"]))
         page.add(info)
+
+        # ---- 鸣谢 ----
+        thanks = Adw.PreferencesGroup()
+        thanks.set_title(_("鸣谢"))
+        thanks.add(self._make_info_row(
+            _("AI 协作"),
+            _("DeepSeek（代码）、Kimi / Gemini（应用图标）")))
+        page.add(thanks)
+
+        # ---- 开源组件（本项目的基石）----
+        credits = Adw.PreferencesGroup()
+        credits.set_title(_("开源组件"))
+        credits.set_description(_("本项目基于以下开源项目构建，谨致谢意"))
+        for name, desc in (
+            ("CamillaDSP", "GPL-3.0 · 嵌入式 DSP 引擎"),
+            ("Symphonia", "MPL-2.0 · 音频解码（mp3/flac/aac/ogg/wav/alac）"),
+            ("PipeWire / ALSA", "音频输出（含独占与采样率跟随）"),
+            ("GTK4 / libadwaita", "LGPL · 图形界面"),
+            ("FFmpeg", "LGPL/GPL · 冷门格式与 DSD 解码"),
+            ("NumPy / PyYAML / Mutagen / Pycairo", "Python 依赖"),
+        ):
+            credits.add(self._make_info_row(_(name), desc))
+        page.add(credits)
 
         self.add(page)
 
@@ -355,10 +379,12 @@ class SettingsWindow(Adw.PreferencesWindow):
                 dlg.set_developers([self._ABOUT["developer"]])
                 dlg.set_copyright(self._ABOUT["copyright"])
                 dlg.set_comments(_("本地音乐播放器（GTK4 / libadwaita）"))
-                dlg.set_license_type(Gtk.License.MIT_X11)
-                # TODO: 补 website / issue_url 后取消注释
-                # dlg.set_website(self._ABOUT["website"])
-                # dlg.set_issue_url(self._ABOUT["issue"])
+                dlg.set_license_type(Gtk.License.GPL_3_0)
+                try:
+                    dlg.set_website(self._ABOUT["website"])
+                    dlg.set_issue_url(self._ABOUT["issue"])
+                except Exception:
+                    pass
                 self._about_dlg = dlg
             dlg.present(self)
         except Exception:

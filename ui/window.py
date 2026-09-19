@@ -2574,11 +2574,11 @@ class MainWindow(Adw.ApplicationWindow):
                 dlg = Adw.AboutDialog()
                 dlg.set_application_name(_("虾条播放器"))
                 dlg.set_application_icon("xiatiao")
-                dlg.set_version("0.1.0")
+                dlg.set_version("1.0.0")
                 dlg.set_developer_name("usbipad")
                 dlg.set_developers(["usbipad <1495941192+usbipad@users.noreply.github.com>"])
                 dlg.set_comments(_("本地音乐播放器（GTK4 / libadwaita）"))
-                dlg.set_license_type(Gtk.License.MIT_X11)
+                dlg.set_license_type(Gtk.License.GPL_3_0)
                 self._about_dlg = dlg
             dlg.present(self)
         except Exception:
