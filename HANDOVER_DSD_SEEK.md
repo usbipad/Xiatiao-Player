@@ -15,8 +15,33 @@
 2. PCM 暂停中 seek 不生效—已修复：engine.rs Seek handler 置 output.abort_write()；decode.rs seek 后 clear_abort()。
 3. PCM seek 错位/空洞—已修复：输出状态机（PLAYING/DRAINING/REFILLING）+ 10ms 淡变。
 
-## 待修：DSD 直通 seek
-现象：开音效 seek → 加速；关音效 seek → 直接跳下一首。正常播放不 seek 没问题。
+## 已修：DSD 软解（pcm 模式）seek —— 已验证
+用户实际配置为 `set_dsd_mode=pcm`（手动选，因 DAC 的 DoP 有问题），
+所有现象都走 decode_ffmpeg.rs 的 ffmpeg 路径，**不是** decode.rs 的直通路径。
+现象：seek → 加速 / 没声音 / 跳下一首（开音效更明显）。
+
+根因（decode_ffmpeg.rs，共 4 处）：
+1. seek 后未清 `carry`：旧位置残留的非 4 字节尾部拼到新数据开头 → 样本错位
+   （听起来像加速/杂音）。
+2. seek 后未重置 DSP 状态 / 未重建 Camilla pipeline：卷积尾残留 →
+   「记忆音频」（开音效时出现，与之前 decode.rs 修的是同一类问题）。
+3. seek 后未 `output.clear_abort()`：engine Seek handler 置了 abort_write 后，
+   ffmpeg 路径不清 → output.write 立即返回 → 新数据写不进去 → 静音。
+4. `just_seeked` 声明在 loop 内 + mark_playing 只在 output.write 分支：
+   EOF 重试失效 / pwcat 分支状态机永久停在 Refilling。
+
+修复：对齐 decode.rs 的 PCM seek 做法，并加 seek 后 EOF 有限重试
+（SEEK_EOF_MAX_RETRIES=40，避免子进程启动延迟误判跳歌，且不死循环）。
+
+验证（tools/diag_dsd_seek*.py，实机）：
+- 关音效：seek 前速率 1.0006 → 后 1.002，position 60.0→65.9，无跳歌。
+- 开音效(Camilla EQ/PEQ/bass)：前 1.001 → 后 1.0024，position 60.0→66.0，无跳歌。
+- 边界：seek 263s（时长 265.9s）→ 正确播到结尾再 EOF，不提前跳歌。
+- cargo build/test 通过（47 passed），smoke_test 52 passed。
+
+## 以下为旧记录（DSD 直通路径，decode.rs）——尚未实机复现
+现象（理论）：开音效 seek → 加速；关音效 seek → 跳下一首。
+注：用户 DoP 有问题未用直通，此路径暂未实测，保留供后续 Native 直通验证。
 
 根因怀疑：played_frames 单位不一致。
 - 写线程 output_alsa.rs:~903：played_frames.fetch_add(got)，got=f32帧数（DSD每4字节打包1个f32）
@@ -54,7 +79,15 @@ tag backup-a1a2-20260920-0044, backup-a1a2-20260920-004425
 patch /tmp/xiatiao-a1a2-20260920-004427.patch
 
 ## 未提交改动
-M Cargo.lock/Cargo.toml/decode.rs/decode_ffmpeg.rs/engine.rs/output.rs/output_alsa.rs
-?? diag_mem.py, tools/analyze_mem.py（诊断脚本，可删）
+无（PCM 修复与 DSD 软解 seek 修复均已提交）。
 
-建议：新对话先 git add -A && git commit 固化 PCM 修复，再查 DSD。
+## 已提交
+- 7409d2a fix(audio): PCM seek 记忆音频 + 暂停中seek响应 + 交接文档
+- de2b976 fix(dsd): 软解路径 seek 修复（清 carry/abort、重置 DSP+Camilla、EOF 重试、pwcat 状态机）
+
+## 遗留 / 待办
+1. DSD **直通**（decode.rs run_playback_dsd）seek 尚未实机验证——
+   用户 DoP 有问题，需先解决 DAC 的 DoP 支持，或验证 Native 直通。
+   怀疑点（未证实）：output_alsa.rs flush() 只清 ring 不清 ALSA 内核缓冲；
+   DSD 不走状态机，seek 后写线程可能卡在旧内核数据。
+2. 诊断脚本 tools/diag_dsd_seek*.py 可复用/可删。
