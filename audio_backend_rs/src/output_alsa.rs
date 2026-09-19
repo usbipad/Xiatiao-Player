@@ -668,7 +668,8 @@ fn run_alsa(
     // ---- 硬件参数配置 ----
     // 按硬件实际能力选择承载格式：优先 F32LE；多数 USB DAC 只支持整数
     // PCM（S16/S24_3/S32），此时用 S32_LE 承载，并在写入时把 f32 转 i32。
-    let mut chosen = Format::FloatLE;
+    // 延迟初始化：下面 if/else 各分支必定赋值（否则 return），无需初始值。
+    let chosen: Format;
     {
         let hwp = HwParams::any(&pcm).map_err(|e| format!("HwParams: {e}"))?;
         hwp.set_channels(channels).map_err(|e| format!("set_channels: {e}"))?;

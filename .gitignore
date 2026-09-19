@@ -37,6 +37,9 @@ backups/
 # 应用图标源图（生成物 data/icons/*.png 已入库；源图不入库）
 image.png
 
+# 界面展示截图（README/发布展示用，不入库）
+界面截图/
+
 # Debian 打包构建产物（仅 debian/ 下的源配置入库）
 debian/.debhelper/
 debian/files

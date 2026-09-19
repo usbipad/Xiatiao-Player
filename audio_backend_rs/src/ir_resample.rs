@@ -162,7 +162,7 @@ fn resample(src: &[f64], src_rate: u32, dst_rate: u32, taps: i32) -> Vec<f64> {
             };
             // Hann 窗（限制到 [-taps, taps]）
             let wt = 0.5 * (1.0 + (std::f64::consts::PI * x / taps as f64).cos());
-            let w = s * if (x.abs() <= taps as f64) { wt } else { 0.0 };
+            let w = s * if x.abs() <= taps as f64 { wt } else { 0.0 };
             acc += src[idx as usize] * w;
             wsum += w;
         }

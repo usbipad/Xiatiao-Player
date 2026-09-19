@@ -455,7 +455,7 @@ impl DspChain {
                 p.reverb_mod_depth,
             );
         }
-        let mut tube = self.tube.take();
+        let tube = self.tube.take();
         let mut bbe = self.bbe.take();
         let smooth_coef = 1.0 - (-1.0f32 / (0.015 * self.in_rate)).exp();
         // 预增益平滑：更慢的时间常数（30ms），让总开关切换/预设切换时

@@ -156,6 +156,10 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
     let mut dsp = crate::dsp::DspChain::new(in_rate);
     // 始终创建嵌入式 Camilla 引擎（运行时按开关决定是否参与）
     let mut camilla_engine = crate::camilla_engine::CamillaEngine::new(in_rate);
+    // seek 后待恢复 Playing 的标志：必须跨迭代保持（成功写入第一块新数据才清）。
+    // 若声明在 loop 内，seek 后 decode 返回 Err → continue 会把它重置为 false，
+    // mark_playing 永不调用 → 输出卡在 Refilling → 静音。
+    let mut just_seeked = false;
     loop {
         if shared.stop.load(Ordering::SeqCst) {
             break;
@@ -172,7 +176,6 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
         // mark_refilling → 清 ring + Refilling（旧数据彻底丢弃）。
         // 随后本轮解码出的第一块新数据写入 ring，写完后 mark_playing →
         // Playing（RT 恢复 pop）。
-        let mut just_seeked = false;
         let seek_ms = shared.seek_target_ms.swap(u64::MAX, Ordering::SeqCst);
         if seek_ms != u64::MAX {
             if let Err(e) = do_seek(&mut *format, seek_ms) {
@@ -285,11 +288,13 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
                         }
                     } else {
                         output.write(&pcm, rate_out, ch_out);
-                        // seek 后第一块新数据写完：恢复 Playing。
-                        if just_seeked {
-                            output.mark_playing();
-                            just_seeked = false;
-                        }
+                    }
+                    // seek 后第一块新数据写完：恢复 Playing。
+                    // 放在 if/else 之外：pwcat 分支不经过 output.write，
+                    // 若只在 else 清除，just_seeked 永为 true → 状态机卡 Refilling。
+                    if just_seeked {
+                        output.mark_playing();
+                        just_seeked = false;
                     }
                 }
             }
