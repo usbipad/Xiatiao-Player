@@ -185,6 +185,11 @@ struct Shared {
     played_frames: AtomicU64,
     /// 欠载计数（诊断）。
     underruns: AtomicU64,
+    /// seek/切歌：请求在 RT 回调里 flush PipeWire stream（清服务端缓冲）。
+    /// flush() 只清软件 ring，清不掉 PipeWire 已 dequeue 的硬件缓冲（~node.latency，
+    /// 20ms）——这正是 seek 后「混入 20-50ms 旧声音」的根因。RT 回调检查此标志，
+    /// 置位时调 pw stream.flush(false) 丢弃服务端缓冲。
+    flush_req: AtomicBool,
 }
 
 // ============================================================
@@ -217,6 +222,7 @@ impl PipewireOutput {
                 started: AtomicBool::new(false),
                 played_frames: AtomicU64::new(0),
                 underruns: AtomicU64::new(0),
+                flush_req: AtomicBool::new(false),
             }),
             fmt: Mutex::new(None),
             device: Mutex::new(String::new()),
@@ -289,8 +295,12 @@ impl PipewireOutput {
     }
 
     /// 清空缓冲（切歌 / seek）。
+    ///
+    /// 清软件 ring + 置 flush_req（让 RT 回调 flush PipeWire 服务端缓冲，
+    /// 清掉已 dequeue 的 ~20ms 硬件缓冲，避免 seek 后混入旧声音）。
     pub fn flush(&self) {
         self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.shared.flush_req.store(true, Ordering::SeqCst);
     }
 
     pub fn pause(&self) {
@@ -432,10 +442,12 @@ fn run_pipewire(
 
     let sh = Arc::clone(&shared);
     let stop2 = Arc::clone(&stop);
+    // user_data = 上一帧输出的 (L, R)，用于欠载/过渡时「补 hold」——
+    // 延续上一帧而非补零（补零=突兀静音；hold=自然延续，业界标准做法）。
     let _listener = stream
-        .add_local_listener_with_user_data(())
+        .add_local_listener_with_user_data((0.0f32, 0.0f32))
         .state_changed(|_, _, _old, _new| {})
-        .process(move |stream, _| {
+        .process(move |stream, hold| {
             // ---- 实时回调：绝不加锁、不分配、不做 IO ----
             if stop2.load(Ordering::Relaxed) {
                 return;
@@ -452,6 +464,16 @@ fn run_pipewire(
             let ch = sh.channels.load(Ordering::Relaxed).max(1);
             let frame_bytes = ch * std::mem::size_of::<f32>();
             let paused = sh.paused.load(Ordering::Relaxed);
+            // seek/切歌：丢弃 PipeWire 服务端缓冲（清掉已 dequeue 的旧数据），
+            // **但不再填静音**——直接继续从 ring 取新位置数据。
+            // 旧实现 flush 后填满静音，导致：seek 后 RT 取到空 ring 就播
+            // 整块静音（12288 帧 = 279ms @44.1k），听觉上「点到后要等」。
+            // 改为：flush 后立即 pop ring（seek 时解码线程已开始填新数据，
+            // 若暂无则取多少算多少，不补满静音）。
+            if sh.flush_req.swap(false, Ordering::SeqCst) {
+                let _ = stream.flush(false);
+                // 不 return：继续走下方 pop ring 的正常流程。
+            }
 
             let n_frames = if let Some(slice) = data.data() {
                 let total_frames = slice.len() / frame_bytes;
@@ -461,25 +483,34 @@ fn run_pipewire(
                     std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, total_samples)
                 };
                 if paused {
-                    dst.fill(0.0);
+                    // 暂停：填 hold（延续上一帧），避免突然静音/爆点。
+                    for f in 0..total_frames {
+                        dst[f * ch] = hold.0;
+                        if ch > 1 { dst[f * ch + 1] = hold.1; }
+                    }
                 } else {
-                    // 无锁读取；不足部分平滑补零。
-                    // 短暂 lock 取用环形缓冲（无竞争时开销极小）。
+                    // 无锁读取；不足部分「补 hold」而非补零。
                     let got_frames = sh.ring.lock().unwrap_or_else(|e| e.into_inner()).pop(dst);
                     if got_frames > 0 {
                         sh.started.store(true, Ordering::Relaxed);
                         // 累加实际播放帧数（进度基准）。
                         sh.played_frames.fetch_add(got_frames as u64, Ordering::Relaxed);
+                        // 记录最后一帧，供下次 hold 用。
+                        let last = (got_frames - 1) * ch;
+                        hold.0 = dst[last];
+                        if ch > 1 { hold.1 = dst[last + 1]; }
                     }
                     if got_frames < total_frames {
                         // 欠载：记录（限流，避免刷屏）
                         let u = sh.underruns.fetch_add(1, Ordering::Relaxed) + 1;
                         if u % 20 == 1 {
-                            eprintln!("[output] UNDERRUN#{u}: want={} got={} short={}",
+                            eprintln!("[output] UNDERRUN#{u}: want={} got={} short={}（补 hold）",
                                 total_frames, got_frames, total_frames - got_frames);
                         }
-                        for s in dst[got_frames * ch..].iter_mut() {
-                            *s = 0.0;
+                        // 标准做法：不足部分用 hold（延续上一帧），不补零。
+                        for f in got_frames..total_frames {
+                            dst[f * ch] = hold.0;
+                            if ch > 1 { dst[f * ch + 1] = hold.1; }
                         }
                     }
                 }
@@ -678,5 +709,73 @@ impl AudioOut {
                 eprintln!("[output] PipeWire 后端不支持 DSD 直通，已忽略（应由解码层走 pcm 软解）");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 生成连续的正弦样本（模拟正常播放数据流），用于验证 seek 后是否产生静音空洞。
+    fn sine_interleaved(frames: usize, freq: f32, rate: f32) -> Vec<f32> {
+        let mut v = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let s = (2.0 * std::f32::consts::PI * freq * (i as f32 / rate)).sin();
+            v.push(s);
+            v.push(s);
+        }
+        v
+    }
+
+    /// 复现核心问题：
+    /// 模拟 RT 回调「每个 buffer 固定取 N 帧」。seek（clear）后，
+    /// 如果解码线程尚未写入新数据，RT 取到 0 帧 → 整块填静音 → 听觉空洞。
+    #[test]
+    fn seek_without_prefill_causes_silence() {
+        let ch = 2usize;
+        let rate = 44100.0f32;
+        let buffer_frames = 6144usize; // 实测 PipeWire 一次给 6144 帧
+        let ring = Ring::new(ring_frames(rate as u32, ch), ch);
+
+        // 正常播放：ring 填满
+        let data = sine_interleaved(buffer_frames * 2, 1000.0, rate);
+        ring.push(&data);
+
+        // ---- seek：清空 ring ----
+        ring.clear();
+
+        // seek 后 RT 立刻取一个 buffer（此时解码线程还没写入新数据）
+        let mut dst = vec![0.0f32; buffer_frames * ch];
+        let got = ring.pop(&mut dst);
+        // 不足部分补零（与 RT 回调一致）
+        let silent = dst[got * ch..].iter().all(|&s| s == 0.0);
+        println!("[复现] seek 后 RT 取到 {got} 帧 / 需 {buffer_frames} 帧，补静音={silent}");
+        assert_eq!(got, 0, "seek 后 ring 应为空（复现空洞）");
+        assert!(silent, "seek 后应补静音（复现听觉空洞）");
+    }
+
+    /// 验证修复：seek 后「预填充」ring，RT 取到时即有数据，无静音空洞。
+    #[test]
+    fn seek_with_prefill_no_silence() {
+        let ch = 2usize;
+        let rate = 44100.0f32;
+        let buffer_frames = 6144usize;
+        let ring = Ring::new(ring_frames(rate as u32, ch), ch);
+
+        let data = sine_interleaved(buffer_frames * 2, 1000.0, rate);
+        ring.push(&data);
+        ring.clear();
+
+        // ---- 修复：seek 后解码线程先预填充一个 buffer 的新数据 ----
+        let fresh = sine_interleaved(buffer_frames, 1000.0, rate);
+        ring.push(&fresh);
+
+        // RT 取
+        let mut dst = vec![0.0f32; buffer_frames * ch];
+        let got = ring.pop(&mut dst);
+        let all_sound = dst.iter().any(|&s| s.abs() > 1e-6);
+        println!("[修复] seek 后 RT 取到 {got} 帧 / 需 {buffer_frames} 帧，有声音={all_sound}");
+        assert_eq!(got, buffer_frames, "预填充后应取满一个 buffer");
+        assert!(all_sound, "预填充后无静音空洞");
     }
 }
