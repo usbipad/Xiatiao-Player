@@ -544,7 +544,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         #   关（默认）= 走老逻辑（DSD 经 ffmpeg 软解为 PCM + PipeWire 默认输出）；
         #   开 = 下面的「DSD 输出模式」「输出设备」才生效。
         dsd_enable_row = Adw.SwitchRow()
-        dsd_enable_row.set_title(_("DSD 输出"))
+        dsd_enable_row.set_title(_("DSD 直通"))
         dsd_enable_row.set_subtitle(
             _("开启后，「DSD 输出模式」与「输出设备」生效；关闭则 DSD 走软解、输出走系统默认"))
         dsd_enable_row.set_active(cfg.get_bool("dsd_output_enabled", False))
@@ -556,7 +556,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         dsd_row.set_subtitle(_("DSD 文件的输出方式；自动模式按 DAC 能力选择"))
         self._dsd_mode_values = ["auto", "native", "dop", "pcm"]
         dsd_model = Gtk.StringList()
-        for label in (_("自动"), _("DSD 直通 (Native)"), _("DoP"), _("转 PCM (软解)")):
+        for label in (_("自动"), _("DSD (Native)"), _("DoP"), _("PCM")):
             dsd_model.append(label)
         dsd_row.set_model(dsd_model)
         try:
