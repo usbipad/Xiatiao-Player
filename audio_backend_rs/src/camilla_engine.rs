@@ -116,6 +116,11 @@ pub struct CamillaEngine {
     // 染色参数（-1 表示关闭）
     tube_drive: f32,
     bbe_amount: f32,
+    /// 重建 pipeline 后的剩余淡入样本数（交错样本数）。
+    /// 结构变化重建时，输出从 0 淡入到 1，避免硬切产生爆音/咔哒。
+    rebuild_fade: usize,
+    /// 淡入总长度（交错样本数，≈5ms @48k）。
+    fade_len: usize,
 }
 
 impl CamillaEngine {
@@ -134,6 +139,9 @@ impl CamillaEngine {
             oversample: crate::oversample::Oversample2x::new(),
             tube_drive: 0.0,
             bbe_amount: 0.0,
+            rebuild_fade: 0,
+            // ~5ms 淡入（交错样本数）：48k × 0.005 × 2 声道
+            fade_len: (sample_rate.max(1) as usize * 5 / 1000) * 2,
         }
     }
 
@@ -214,9 +222,16 @@ impl CamillaEngine {
         self.pipeline = Some(pipeline);
         self.last_conf = Some(conf);
         self.last_yaml = yaml.to_string();
-        // 重建：清空缓冲，避免旧数据/长度不匹配
-        self.in_buf.clear();
+        // 重建：
+        // - out_buf 必须清（旧 pipeline 输出长度/结构不匹配）；
+        // - **in_buf 保留**：里面是「尚未处理」的输入样本，保留它下一块
+        //   就能立即继续处理，避免重建瞬间「无数据可输出」→ 输出 ring 欠载
+        //   → 音频空洞（听起来像爆豆/咔哒）。
+        //   （旧代码连 in_buf 一起清，导致重建后前若干块无输出，ring 被抽空。）
         self.out_buf.clear();
+        // 关键：重建可能造成短暂输出不连续 → 设淡入，让输出从 0 平滑升到 1
+        //（≈5ms），消除硬切咔哒。
+        self.rebuild_fade = self.fade_len;
         Ok(())
     }
 
@@ -320,6 +335,20 @@ impl CamillaEngine {
                 pcm[i] = 0.0;
             }
             self.out_buf.clear();
+        }
+
+        // 4) 重建后淡入：避免 pipeline 重建（清缓冲）造成的硬切爆音。
+        // 对样本从 0 渐升到 1（逐样本），fade 结束后恢复原样。
+        if self.rebuild_fade > 0 {
+            let total = self.fade_len.max(1) as f32;
+            for s in pcm.iter_mut() {
+                if self.rebuild_fade == 0 { break; }
+                // 剩余样本越少，增益越接近 1
+                let done = total - self.rebuild_fade as f32;
+                let g = (done / total).clamp(0.0, 1.0);
+                *s *= g;
+                self.rebuild_fade -= 1;
+            }
         }
 
         // ---- 音色染色（过采样 → 电子管 → BBE → 降采样）----
@@ -555,6 +584,77 @@ mod tests {
         }
         let rms = (diff_lr/(frames/2) as f32).sqrt();
         println!("[Camilla Matrix swap] 新左 vs 原右 RMS差 = {rms:.5}（应≈0=已交换）");
+    }
+
+    /// 真实音频分析：读 FLAC → 中途切 Camilla YAML（结构变化）→ 检测爆点。
+    /// 需 XIATIAO_TEST_FLAC。
+    #[test]
+    fn analyze_camilla_switch_pop() {
+        let path = match std::env::var("XIATIAO_TEST_FLAC") {
+            Ok(p) => p, Err(_) => { println!("[Cam分析] 未设 XIATIAO_TEST_FLAC，跳过"); return; }
+        };
+        use symphonia::core::audio::SampleBuffer;
+        use symphonia::core::codecs::DecoderOptions;
+        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::MetadataOptions;
+        use symphonia::core::probe::Hint;
+        let file = match std::fs::File::open(&path) { Ok(f) => f, Err(e) => { println!("打开失败: {e}"); return; } };
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut hint = Hint::new(); hint.with_extension("flac");
+        let probed = match symphonia::default::get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default()) { Ok(p) => p, Err(e) => { println!("probe: {e}"); return; } };
+        let mut format = probed.format;
+        let track = match format.default_track() { Some(t) => t, None => { println!("无音轨"); return; } };
+        let tid = track.id;
+        let mut decoder = match symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()) { Ok(d) => d, Err(e) => { println!("解码器: {e}"); return; } };
+
+        let pass = "devices:\n  samplerate: 44100\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters:\n  pass:\n    type: Gain\n    parameters:\n      gain: 0.0\n      scale: dB\nprocessors: {}\nmixers: {}\npipeline:\n- type: Filter\n  channels:\n  - 0\n  - 1\n  names:\n  - pass\n";
+        // 结构变化：加 EQ 段（触发重建）
+        let eqy = "devices:\n  samplerate: 44100\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters:\n  eq_8:\n    type: Biquad\n    parameters:\n      type: Peaking\n      freq: 8000.0\n      gain: 6.0\n      q: 1.0\nprocessors: {}\nmixers: {}\npipeline:\n- type: Filter\n  channels:\n  - 0\n  - 1\n  names:\n  - eq_8\n";
+
+        let mut eng = CamillaEngine::new(44100);
+        eng.set_yaml(pass).ok();
+        let mut sample_buf: Option<SampleBuffer<f32>> = None;
+        let mut block = 0usize;
+        let switch_block = 40usize;
+        let mut all_out: Vec<f32> = Vec::new();
+        let mut switch_pos = 0usize;
+        loop {
+            let packet = match format.next_packet() { Ok(p) => p, Err(_) => break };
+            if packet.track_id() != tid { continue; }
+            let ab = match decoder.decode(&packet) { Ok(b) => b, Err(_) => continue };
+            if sample_buf.is_none() {
+                let spec = *ab.spec();
+                sample_buf = Some(SampleBuffer::<f32>::new(ab.capacity() as u64, spec));
+            }
+            let buf = sample_buf.as_mut().unwrap();
+            buf.copy_interleaved_ref(ab);
+            let mut pcm: Vec<f32> = buf.samples().to_vec();
+            if block == switch_block {
+                switch_pos = all_out.len();
+                eng.set_yaml(eqy).ok();
+            }
+            eng.process_interleaved(&mut pcm, 2);
+            all_out.extend_from_slice(&pcm);
+            block += 1;
+            if block > 120 { break; }
+        }
+        // 相邻样本跳变（左声道）
+        let mut max_jump = 0.0f32; let mut max_at = 0usize;
+        for i in (2..all_out.len()).step_by(2) {
+            let d = (all_out[i] - all_out[i-2]).abs();
+            if d > max_jump { max_jump = d; max_at = i; }
+        }
+        let sw = switch_pos;
+        let lo = sw.saturating_sub(4096);
+        let hi = (sw + 4096).min(all_out.len());
+        let mut local = 0.0f32;
+        for i in ((lo+2)..hi).step_by(2) { let d=(all_out[i]-all_out[i-2]).abs(); if d>local {local=d;} }
+        let mut norm = 0.0f32;
+        for i in (2..lo.min(all_out.len())).step_by(2) { let d=(all_out[i]-all_out[i-2]).abs(); if d>norm {norm=d;} }
+        println!("[Cam分析] 切换点样本={sw} 全程最大跳变={max_jump:.5}@{max_at}");
+        println!("[Cam分析] 切换±4096 跳变={local:.5}  正常段跳变={norm:.5}  比值={:.1}x", local/norm.max(1e-9));
+        println!("[Cam分析] 全程最大跳变是否在切换点附近={}", (max_at as isize - sw as isize).abs() < 4096);
     }
 
     /// 同一引擎：先直通，再平滑更新为低架，输出应变化。

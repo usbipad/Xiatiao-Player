@@ -238,42 +238,73 @@ impl DspChain {
             self.peq_l.push(bq_l);
             self.peq_r.push(bq_r);
         }
-        // EQ：为每段重建滤波器（保留状态，只更新系数）
+        // 关键：检测「滤波器系数是否实际变化」。系数变化时若保留旧滤波器状态，
+        // 会因「旧状态与新系数不匹配」产生瞬态爆音（切音效时常见）。
+        // 故系数变化时重置对应滤波器状态（重置是安全的，最多损失一个块尾）。
+        let eq_changed = self.params.eq_gains != p.eq_gains
+            || self.params.eq_enabled != p.eq_enabled;
+        let peq_changed = self.params.peq_enabled != p.peq_enabled
+            || serde_json::to_string(&self.params.peq_bands).unwrap_or_default()
+                != serde_json::to_string(&p.peq_bands).unwrap_or_default();
+        let bass_changed = self.params.bass_enabled != p.bass_enabled
+            || self.params.bass_gain_db != p.bass_gain_db
+            || self.params.bass_freq != p.bass_freq;
+        let treble_changed = self.params.treble_gain_db != p.treble_gain_db
+            || self.params.treble_freq != p.treble_freq
+            || self.params.bass_enabled != p.bass_enabled;
+        let loud_changed = self.params.loudness_enabled != p.loudness_enabled
+            || self.params.loudness_amount != p.loudness_amount;
+
+        // EQ：为每段重建滤波器（系数变化时重置状态）
         for i in 0..EQ_BANDS {
             let g = p.eq_gains.get(i).copied().unwrap_or(0.0);
             let f = EQ_FREQS[i];
-            let (x1, x2, y1, y2) = (self.eq_l[i].x1, self.eq_l[i].x2, self.eq_l[i].y1, self.eq_l[i].y2);
             let mut bq = Biquad::peaking(f, g, 1.0, self.in_rate);
-            bq.x1 = x1; bq.x2 = x2; bq.y1 = y1; bq.y2 = y2;
+            if !eq_changed {
+                bq.x1 = self.eq_l[i].x1; bq.x2 = self.eq_l[i].x2;
+                bq.y1 = self.eq_l[i].y1; bq.y2 = self.eq_l[i].y2;
+            }
             self.eq_l[i] = bq;
-            let (x1, x2, y1, y2) = (self.eq_r[i].x1, self.eq_r[i].x2, self.eq_r[i].y1, self.eq_r[i].y2);
             let mut bq = Biquad::peaking(f, g, 1.0, self.in_rate);
-            bq.x1 = x1; bq.x2 = x2; bq.y1 = y1; bq.y2 = y2;
+            if !eq_changed {
+                bq.x1 = self.eq_r[i].x1; bq.x2 = self.eq_r[i].x2;
+                bq.y1 = self.eq_r[i].y1; bq.y2 = self.eq_r[i].y2;
+            }
             self.eq_r[i] = bq;
         }
         // 低音（lowshelf）
-        let (x1, x2, y1, y2) = (self.bass_l.x1, self.bass_l.x2, self.bass_l.y1, self.bass_l.y2);
         let mut bl = Biquad::lowshelf(p.bass_freq, p.bass_gain_db, self.in_rate);
-        bl.x1 = x1; bl.x2 = x2; bl.y1 = y1; bl.y2 = y2;
+        if !bass_changed {
+            bl.x1 = self.bass_l.x1; bl.x2 = self.bass_l.x2;
+            bl.y1 = self.bass_l.y1; bl.y2 = self.bass_l.y2;
+        }
         self.bass_l = bl;
-        let (x1, x2, y1, y2) = (self.bass_r.x1, self.bass_r.x2, self.bass_r.y1, self.bass_r.y2);
         let mut br = Biquad::lowshelf(p.bass_freq, p.bass_gain_db, self.in_rate);
-        br.x1 = x1; br.x2 = x2; br.y1 = y1; br.y2 = y2;
+        if !bass_changed {
+            br.x1 = self.bass_r.x1; br.x2 = self.bass_r.x2;
+            br.y1 = self.bass_r.y1; br.y2 = self.bass_r.y2;
+        }
         self.bass_r = br;
         // 高音（highshelf）
-        let (x1, x2, y1, y2) = (self.treble_l.x1, self.treble_l.x2, self.treble_l.y1, self.treble_l.y2);
         let mut tl = Biquad::highshelf(p.treble_freq, p.treble_gain_db, self.in_rate);
-        tl.x1 = x1; tl.x2 = x2; tl.y1 = y1; tl.y2 = y2;
+        if !treble_changed {
+            tl.x1 = self.treble_l.x1; tl.x2 = self.treble_l.x2;
+            tl.y1 = self.treble_l.y1; tl.y2 = self.treble_l.y2;
+        }
         self.treble_l = tl;
-        let (x1, x2, y1, y2) = (self.treble_r.x1, self.treble_r.x2, self.treble_r.y1, self.treble_r.y2);
         let mut tr = Biquad::highshelf(p.treble_freq, p.treble_gain_db, self.in_rate);
-        tr.x1 = x1; tr.x2 = x2; tr.y1 = y1; tr.y2 = y2;
+        if !treble_changed {
+            tr.x1 = self.treble_r.x1; tr.x2 = self.treble_r.x2;
+            tr.y1 = self.treble_r.y1; tr.y2 = self.treble_r.y2;
+        }
         self.treble_r = tr;
         self.params = p;
-        // 总开关切换（开↔关）：重置全部运行时状态。
-        // 关闭期间 process_post 直接 return，状态被冻结；重开时若沿用旧状态
-        // （滤波器延迟、压缩/限幅包络、平滑器），会与当前信号不连续 → 炒豆声。
-        if was_enabled != now_enabled {
+        // 总开关切换（开↔关）或关键滤波器系数变化：重置全部运行时状态。
+        // - 总开关切换：关闭期间 process_post 直接 return，状态被冻结；
+        //   重开时沿用旧状态会与当前信号不连续 → 炒豆声。
+        // - 滤波器系数大变（切音效）：旧状态与新系数不匹配 → 瞬态爆音。
+        if was_enabled != now_enabled || eq_changed || peq_changed
+            || bass_changed || treble_changed || loud_changed {
             self.reset_state();
         }
         // 参数更新后：按当前音量重建等响度（算法见 loudness 模块）。
@@ -1077,6 +1108,102 @@ mod tests {
         let out_rms = { let mut s=0.0f32; for i in (frames/2)..frames { s+=buf[i*2]*buf[i*2]; } (s/(frames/2) as f32).sqrt() };
         let g = 20.0*(out_rms/in_rms).log10();
         println!("[ReplayGain] +6dB 设置 → 实测 {g:+.2}dB（应≈+6）");
+    }
+
+    /// 真实音频分析：读 FLAC → 中途切音效 → 检测输出爆点（相邻样本跳变）。
+    ///
+    /// 复现主界面切音效爆音：对同一段真实音乐，在固定块处切换
+    /// 滤波器参数（模拟换预设），扫描输出的「相邻样本最大跳变」。
+    /// 正常情况下音乐相邻样本差很小（连续信号）；爆音处会出现尖峰。
+    ///
+    /// 需设置环境变量 XIATIAO_TEST_FLAC 指向测试音频；未设置则跳过。
+    #[test]
+    fn analyze_switch_pop_real_audio() {
+        let path = match std::env::var("XIATIAO_TEST_FLAC") {
+            Ok(p) => p,
+            Err(_) => { println!("[分析] 未设置 XIATIAO_TEST_FLAC，跳过"); return; }
+        };
+        use symphonia::core::audio::SampleBuffer;
+        use symphonia::core::codecs::DecoderOptions;
+        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::MetadataOptions;
+        use symphonia::core::probe::Hint;
+        let file = match std::fs::File::open(&path) { Ok(f) => f, Err(e) => { println!("打开失败: {e}"); return; } };
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut hint = Hint::new(); hint.with_extension("flac");
+        let probed = match symphonia::default::get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default()) { Ok(p) => p, Err(e) => { println!("probe 失败: {e}"); return; } };
+        let mut format = probed.format;
+        let track = match format.default_track() { Some(t) => t, None => { println!("无音轨"); return; } };
+        let track_id = track.id;
+        let sr = track.codec_params.sample_rate.unwrap_or(44100);
+        let mut decoder = match symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()) { Ok(d) => d, Err(e) => { println!("解码器失败: {e}"); return; } };
+
+        let mut chain = DspChain::new(sr);
+        let mut p1 = DspParams::default();
+        p1.enabled = true;
+        chain.set_params(p1);
+        // 切换目标：开 EQ（系数变化，模拟换预设）
+        let mut p2 = DspParams::default();
+        p2.enabled = true;
+        p2.eq_enabled = true;
+        p2.eq_gains = vec![0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,6.0,6.0];
+        p2.bass_enabled = true;
+        p2.bass_gain_db = 6.0;
+
+        let switch_block = 40usize;
+        let mut sample_buf: Option<SampleBuffer<f32>> = None;
+        let mut block = 0usize;
+        // 记录全流程输出（用于跳变扫描）
+        let mut all_out: Vec<f32> = Vec::new();
+        let mut switch_pos = 0usize;
+        loop {
+            let packet = match format.next_packet() { Ok(p) => p, Err(_) => break };
+            if packet.track_id() != track_id { continue; }
+            let ab = match decoder.decode(&packet) { Ok(b) => b, Err(_) => continue };
+            if sample_buf.is_none() {
+                let spec = *ab.spec();
+                sample_buf = Some(SampleBuffer::<f32>::new(ab.capacity() as u64, spec));
+            }
+            let buf = sample_buf.as_mut().unwrap();
+            buf.copy_interleaved_ref(ab);
+            let mut pcm: Vec<f32> = buf.samples().to_vec();
+            if block == switch_block {
+                switch_pos = all_out.len();
+                chain.set_params(p2.clone());
+            }
+            chain.process_interleaved(&mut pcm, 2);
+            all_out.extend_from_slice(&pcm);
+            block += 1;
+            if block > 120 { break; }
+        }
+        // 扫描相邻样本最大跳变（左声道），定位爆点
+        let mut max_jump = 0.0f32;
+        let mut max_at = 0usize;
+        for i in (2..all_out.len()).step_by(2) {
+            let d = (all_out[i] - all_out[i-2]).abs();
+            if d > max_jump { max_jump = d; max_at = i; }
+        }
+        let switch_samp = switch_pos;
+        println!("[分析] 样本数={} 切换点样本={} ", all_out.len(), switch_samp);
+        println!("[分析] 全程相邻样本最大跳变 = {max_jump:.5} @样本{max_at}（切换点附近={})", (max_at as isize - switch_samp as isize).abs() < 4096);
+        // 切换点附近的局部跳变
+        let lo = switch_samp.saturating_sub(4096);
+        let hi = (switch_samp + 4096).min(all_out.len());
+        let mut local_jump = 0.0f32;
+        for i in ((lo+2)..hi).step_by(2) {
+            let d = (all_out[i] - all_out[i-2]).abs();
+            if d > local_jump { local_jump = d; }
+        }
+        println!("[分析] 切换点±4096 样本内最大跳变 = {local_jump:.5}");
+        // 对比：远离切换点的正常段落跳变
+        let mut norm_jump = 0.0f32;
+        for i in (2..lo.min(all_out.len())).step_by(2) {
+            let d = (all_out[i] - all_out[i-2]).abs();
+            if d > norm_jump { norm_jump = d; }
+        }
+        println!("[分析] 切换前正常段最大跳变 = {norm_jump:.5}");
+        println!("[分析] 切换处跳变 / 正常跳变 = {:.1}x（>3x 说明切换处有爆点）", local_jump / norm_jump.max(1e-9));
     }
 
     /// 诊断：过采样器本身的失真（染色前的抗混叠质量）。
