@@ -66,11 +66,11 @@ class PlayerCore(GObject.Object):
         self._backend.connect("error-occur", self._fwd_error)
         self._backend.connect("audio-info", self._fwd_audio_info)
         self._backend.connect("effect-changed", self._fwd_effect)
-        # backend-lost 是可选信号（老后端可能没有），用 getattr 兼容。
+        # backend-lost 是可选信号（老后端可能没有），失败属预期，仅记录。
         try:
             self._backend.connect("backend-lost", self._fwd_backend_lost)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("后端不支持 backend-lost 信号（可忽略）: %s", exc)
 
     # ---- 信号转发 ----
     def _fwd_position(self, _b, seconds: float) -> None:

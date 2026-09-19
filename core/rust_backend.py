@@ -127,8 +127,9 @@ class RustBackend(AudioBackend):
                     self._sock = s
                     self._alive = True
                     break
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # 连接失败（socket 刚出现可能尚未 ready）：记录原因便于诊断。
+                    log.debug("连接后端 socket 失败（将重试）: %s", exc)
             time.sleep(0.1)
 
         if not self._alive:
@@ -192,16 +193,17 @@ class RustBackend(AudioBackend):
                 try:
                     os.kill(int(pid), 9)    # SIGKILL：与原行为一致，确保残留必被清除
                     log.info("清理残留后端进程 pid=%s", pid)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    # 权限不足或进程已退出：记录，不阻断后续清理。
+                    log.debug("清理残留进程 pid=%s 失败: %s", pid, exc)
         except Exception as exc:
             log.debug("清理残留进程失败: %s", exc)
         # 删旧 socket
         try:
             if os.path.exists(self._socket_path):
                 os.remove(self._socket_path)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.debug("删除旧 socket 失败: %s", exc)
         time.sleep(0.1)
 
     def _read_loop(self) -> None:
@@ -268,14 +270,14 @@ class RustBackend(AudioBackend):
             try:
                 if self._sock is not None:
                     self._sock.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("重启前关闭旧 socket 失败: %s", exc)
             self._sock = None
             try:
                 if self._proc is not None:
                     self._proc.kill()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("重启前终止旧进程失败: %s", exc)
             self._proc = None
             # 重启 + 重连
             self._start_backend()
@@ -289,24 +291,26 @@ class RustBackend(AudioBackend):
 
     def _restore_state_after_restart(self) -> None:
         """重启后恢复关键状态到新后端进程。"""
+        # 恢复失败 = 重启后状态丢失（音量/DSP/DSD/设备），属重要问题，
+        # 用 warning 而非静默，便于排查自愈后的异常行为。
         try:
             if self._volume is not None:
                 self._send({"cmd": "set_volume", "value": float(self._volume)})
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("自愈后恢复音量失败: %s", exc)
         try:
             if self._dsp:
                 self._send({"cmd": "set_dsp", "params": dict(self._dsp)})
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("自愈后恢复 DSP 失败: %s", exc)
         try:
             self._send({"cmd": "set_dsd_mode", "mode": self._dsd_mode or "auto"})
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("自愈后恢复 DSD 模式失败: %s", exc)
         try:
             self._send({"cmd": "set_output_device", "name": self._output_device or ""})
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("自愈后恢复输出设备失败: %s", exc)
 
     def _dispatch(self, evt: dict) -> bool:
         """主线程：把后端事件转为信号。"""
