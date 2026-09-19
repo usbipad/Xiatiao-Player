@@ -87,6 +87,9 @@ pub struct DsdReader {
     pub channels: u32,
     /// 每声道样本数（DSD bit 数）。
     pub frames: u64,
+    /// 每声道块大小（字节），用于块交错布局（DSF，来自头部，通常 4096）。
+    /// 0 表示按字节交错（DFF 约定）。
+    pub block_size: usize,
     /// data 区剩余可读字节数。
     remaining: u64,
     /// data 区起始文件偏移（seek 用）。
@@ -110,37 +113,94 @@ impl DsdReader {
         }
     }
 
-    /// 读取下一块原始 DSD 字节，返回读到的字节数（0 = 结束）。
-    pub fn read_chunk(&mut self, buf: &mut [u8]) -> DsdResult<usize> {
-        if self.remaining == 0 {
+    /// 读取一组数据，按声道解交错到 `out`（out[c] 为声道 c 的连续 DSD 字节，
+    /// MSB-first）。每个 `out[c]` 需能容纳 `max_per_ch` 字节。
+    /// 返回每声道实际填充的字节数（各声道相同；0 = 结束）。
+    ///
+    /// - 块交错（block_size > 0，DSF）：一次读入若干「块组」
+    ///   `[ch0 block][ch1 block]...`，拆成各声道连续字节；
+    /// - 字节交错（block_size == 0，DFF）：一次读入 `max_per_ch*channels` 字节，
+    ///   按字节轮转拆到各声道。
+    pub fn read_group(&mut self, out: &mut [Vec<u8>], max_per_ch: usize) -> DsdResult<usize> {
+        let ch = self.channels.max(1) as usize;
+        if self.remaining == 0 || max_per_ch == 0 || out.len() < ch {
             return Ok(0);
         }
-        let want = buf.len().min(self.remaining as usize);
-        let n = self
-            .reader
-            .read(&mut buf[..want])
-            .map_err(|e| format!("read dsd chunk: {e}"))?;
-        self.remaining -= n as u64;
-        Ok(n)
+        if self.block_size > 0 {
+            let bs = self.block_size;
+            let group = bs * ch;
+            let want = group.min(self.remaining as usize);
+            let mut raw = vec![0u8; want];
+            let n = self.read_full(&mut raw)?;
+            self.remaining -= n as u64;
+            let nblocks = n / group;
+            let per = nblocks * bs;
+            for c in 0..ch {
+                out[c].clear();
+                out[c].reserve(per);
+                for b in 0..nblocks {
+                    let off = (b * ch + c) * bs;
+                    out[c].extend_from_slice(&raw[off..off + bs]);
+                }
+            }
+            Ok(per)
+        } else {
+            let want = (max_per_ch * ch).min(self.remaining as usize);
+            let mut raw = vec![0u8; want];
+            let n = self.read_full(&mut raw)?;
+            self.remaining -= n as u64;
+            let per = n / ch;
+            for c in 0..ch {
+                out[c].clear();
+                out[c].reserve(per);
+                let mut i = c;
+                while i < per * ch {
+                    out[c].push(raw[i]);
+                    i += ch;
+                }
+            }
+            Ok(per)
+        }
     }
 
-    /// 按目标帧（每声道 DSD bit 数）定位到 data 区。
+    /// 读满 `buf`（循环 read，处理短读），返回实际读到的字节数。
+    fn read_full(&mut self, buf: &mut [u8]) -> DsdResult<usize> {
+        let mut filled = 0usize;
+        while filled < buf.len() {
+            let n = self
+                .reader
+                .read(&mut buf[filled..])
+                .map_err(|e| format!("read dsd chunk: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        Ok(filled)
+    }
+
+    /// 按目标帧（每声道 DSD bit 数）定位。
     ///
-    /// DSD 字节率固定：每声道每帧 1 bit，所以目标字节偏移 =
-    /// frame / 8 * channels。返回实际定位到的帧（对齐到字节）。
+    /// - 块交错（DSF）：对齐到「块」边界（块大小通常 4096 字节 ≈ 11.6ms@DSD64），
+    ///   返回对齐后的帧；
+    /// - 字节交错（DFF）：对齐到整字节。
     pub fn seek_to_frame(&mut self, frame: u64) -> DsdResult<u64> {
         let ch = self.channels.max(1) as u64;
-        // 每帧（每声道 1 bit）对应的总字节数 = frame * ch / 8。
-        // 对齐到整字节（每声道 8 帧 = 1 字节）。
-        let byte_off = (frame / 8) * ch;
-        let byte_off = byte_off.min(self.data_total);
+        let byte_in_ch = frame / 8;
+        let (file_off, actual_frame) = if self.block_size > 0 {
+            let bs = self.block_size as u64;
+            let block = byte_in_ch / bs;
+            (block * bs * ch, block * bs * 8)
+        } else {
+            (byte_in_ch * ch, byte_in_ch * 8)
+        };
+        let file_off = file_off.min(self.data_total);
         use std::io::Seek;
         self.reader
-            .seek(SeekFrom::Start(self.data_start + byte_off))
+            .seek(SeekFrom::Start(self.data_start + file_off))
             .map_err(|e| format!("dsd seek: {e}"))?;
-        self.remaining = self.data_total - byte_off;
-        // 返回对齐后的帧。
-        Ok((byte_off / ch) * 8)
+        self.remaining = self.data_total - file_off;
+        Ok(actual_frame)
     }
 
     fn open_dsf(path: &str) -> DsdResult<Self> {
@@ -171,6 +231,14 @@ impl DsdReader {
         let channels = read_u32_le(&fmt[12..16]).max(1);
         let dsd_rate = read_u32_le(&fmt[16..20]);
         let sample_count = read_u64_le(&fmt[24..32]);
+        // block_size（每声道，字节）：DSF 数据按「每声道 N 字节一块」交错存放。
+        // 头部偏移 32（fmt body）。为 0 时兜底为 4096（规范典型值）。
+        let block_size = if fmt.len() >= 36 {
+            let bs = read_u32_le(&fmt[32..36]) as usize;
+            if bs > 0 { bs } else { 4096 }
+        } else {
+            4096
+        };
         if dsd_rate == 0 {
             return Err("非法 DSF：采样率为 0".into());
         }
@@ -189,6 +257,7 @@ impl DsdReader {
             dsd_rate,
             channels,
             frames: sample_count,
+            block_size,
             remaining: data_size,
             data_start,
             data_total: data_size,
@@ -259,6 +328,8 @@ impl DsdReader {
             dsd_rate,
             channels,
             frames,
+            // DFF：按字节交错处理（block_size = 0）。
+            block_size: 0,
             remaining: data_size,
             data_start,
             data_total: data_size,
@@ -468,66 +539,100 @@ fn parse_dff_prop<R: Read>(r: &mut R, size: usize) -> DsdResult<(u32, u32)> {
 // DoP 封装（DSD over PCM，标准 v1.0）
 // ============================================================
 
-/// 将原始 DSD 字节按 DoP 规范打包为 24-bit PCM 样本（以小端 i32 输出）。
-///
-/// DoP 规则（每个声道独立）：
-///   - 每 16 个 DSD bit 组成一组，装入一个 24-bit 样本的高 16 位；
-///   - 低 8 位为 marker：交替 0x05 / 0xFA 标识 DSD 数据流；
-///   - 输出的 PCM 采样率 = DSD 率 / 16。
-///
-/// 输入 `src` 为交错 DSD 字节（每字节 8 bit）。
-/// 返回交错 i32（低 24 位有效）样本。
-pub fn pack_dop(src: &[u8], channels: usize) -> Vec<i32> {
-    let ch = channels.max(1);
-    let total_bits = src.len() * 8;
-    let bits_per_ch = total_bits / ch;
-    // 每声道可用的 16-bit 组数
-    let groups_per_ch = bits_per_ch / 16;
-    let mut out: Vec<i32> = Vec::with_capacity(groups_per_ch * ch);
+// ============================================================
+// 输出打包（纯函数，便于单测）
+// ============================================================
 
-    for g in 0..groups_per_ch {
-        for c in 0..ch {
-            // 该声道第 g 组的起始 bit 位置
-            let bit_index = g * 16 * ch + c * 16;
-            let word = read_dsd_bits(src, bit_index, 16);
-            // marker：偶数帧 0x05，奇数帧 0xFA（按每个 PCM 样本帧交替）
-            let marker: i32 = if g % 2 == 0 { 0x05 } else { 0xFA };
-            let sample = ((word as i32) << 8) | marker;
-            out.push(sample);
+/// 将各声道连续 DSD 字节按 DoP v1.0 打包为交错的 24-bit 样本。
+///
+/// - `ch_bytes[c]` 为声道 c 的连续 DSD 字节（MSB-first）；
+/// - 每声道每 2 字节（16 个 DSD bit）→ 1 个 24-bit 样本：高 16 位为 DSD，
+///   低 8 位为 marker（帧间在 0x05 / 0xFA 交替，所有声道同帧同 marker）；
+/// - 返回交错样本的「左对齐 32 位」值（低 8 位补 0），供 S32_LE / S24_3LE 承载；
+/// - `marker_phase` 跨块传入返回（0/1），保证 marker 连续。
+///
+/// 按 DoP 规范，每个 PCM 样本帧的 marker 必须交替；一帧含所有声道样本，
+/// 同帧各声道 marker 相同。
+pub fn pack_dop_group(ch_bytes: &[Vec<u8>], marker_phase: &mut usize) -> Vec<u32> {
+    let ch = ch_bytes.len().max(1);
+    let frames = ch_bytes.iter().map(|b| b.len() / 2).min().unwrap_or(0);
+    let mut out: Vec<u32> = Vec::with_capacity(frames * ch);
+    for f in 0..frames {
+        let marker: u32 = if *marker_phase == 0 { 0x05 } else { 0xFA };
+        for b in ch_bytes.iter().take(ch) {
+            let o = f * 2;
+            let word = ((b[o] as u32) << 8) | (b[o + 1] as u32);
+            let sample24 = (word << 8) | marker;
+            out.push((sample24 & 0x00FF_FFFF) << 8); // 左对齐到 32 位高 24 位
+        }
+        *marker_phase ^= 1;
+    }
+    out
+}
+
+/// 将各声道连续 DSD 字节按 Native（DSD_U32_LE）打包为交错的 32-bit 字。
+///
+/// - `ch_bytes[c]` 为声道 c 的连续 DSD 字节（MSB-first）；
+/// - 每声道每 4 个 DSD 字节 → 1 个 32-bit 采样（按字节流顺序，小端）；
+/// - 返回交错 32-bit 字；ALSA 设备采样率 = DSD bit 率 / 32。
+pub fn pack_native_group(ch_bytes: &[Vec<u8>]) -> Vec<u32> {
+    let ch = ch_bytes.len().max(1);
+    let frames = ch_bytes.iter().map(|b| b.len() / 4).min().unwrap_or(0);
+    let mut out: Vec<u32> = Vec::with_capacity(frames * ch);
+    for f in 0..frames {
+        for b in ch_bytes.iter().take(ch) {
+            let o = f * 4;
+            out.push(u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]));
         }
     }
     out
 }
 
-/// 从交错 DSD 字节中读取从 `start_bit` 开始的 `n` 个 bit，返回右对齐整数。
-/// DSD 位序：每个字节从 MSB 到 LSB。
-fn read_dsd_bits(src: &[u8], start_bit: usize, n: usize) -> u32 {
-    let mut v: u32 = 0;
-    for i in 0..n {
-        let bit_index = start_bit + i;
-        let byte = bit_index / 8;
-        let bit_in_byte = bit_index % 8;
-        let bit = if byte < src.len() {
-            (src[byte] >> (7 - bit_in_byte)) & 1
-        } else {
-            0
-        };
-        v = (v << 1) | bit as u32;
-    }
-    v
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// 将原始 DSD 字节按 Native 方式打包为 32-bit 样本（每 4 个 DSD 字节一组）。
-///
-/// 说明：USB DAC 的 native DSD 常见承载是 DSD_U32_LE——每 32-bit 字含 4 个 DSD 字节，
-/// 但按字节流顺序排列（非位重排）。此处按最常见约定：直接取 4 个连续 DSD 字节写入。
-/// 若具体 DAC 约定不同，可在此调整。
-pub fn pack_native_u32(src: &[u8]) -> Vec<u32> {
-    let mut out: Vec<u32> = Vec::with_capacity(src.len() / 4 + 1);
-    let mut i = 0;
-    while i + 4 <= src.len() {
-        out.push(u32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]]));
-        i += 4;
+    #[test]
+    fn dop_marker_alternates_and_bits_high() {
+        // 单声道，2 帧（每帧 2 字节）。
+        let ch = vec![vec![0x12u8, 0x34, 0xAB, 0xCD]];
+        let mut phase = 0usize;
+        let out = pack_dop_group(&ch, &mut phase);
+        assert_eq!(out.len(), 2);
+        // 帧 0：word=0x1234，marker=0x05 → 24-bit=0x123405，左对齐 32 位 = 0x12340500
+        assert_eq!(out[0], 0x1234_0500);
+        // 帧 1：word=0xABCD，marker=0xFA → 0xABCDFA00
+        assert_eq!(out[1], 0xABCD_FA00);
     }
-    out
+
+    #[test]
+    fn dop_stereo_shares_marker_per_frame() {
+        let ch = vec![vec![0x11u8, 0x22], vec![0x33u8, 0x44]];
+        let mut phase = 0usize;
+        let out = pack_dop_group(&ch, &mut phase);
+        assert_eq!(out.len(), 2); // 1 帧 × 2 声道
+        // 同帧两声道 marker 相同（0x05）
+        assert_eq!(out[0], 0x1122_0500);
+        assert_eq!(out[1], 0x3344_0500);
+    }
+
+    #[test]
+    fn dop_marker_continues_across_blocks() {
+        let ch = vec![vec![0x00u8, 0x00]];
+        let mut phase = 0usize;
+        let a = pack_dop_group(&ch, &mut phase);
+        let b = pack_dop_group(&ch, &mut phase);
+        assert_eq!(a[0] & 0xFF, 0x00); // 左对齐后低 8 位为 0
+        assert_eq!((a[0] >> 8) & 0xFF, 0x05); // marker 在高 24 位的低字节
+        assert_eq!((b[0] >> 8) & 0xFF, 0xFA); // 下一块翻转
+    }
+
+    #[test]
+    fn native_group_interleaves_channels() {
+        let ch = vec![vec![0x01u8, 0x02, 0x03, 0x04], vec![0x11, 0x12, 0x13, 0x14]];
+        let out = pack_native_group(&ch);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], 0x0403_0201); // 声道 0 小端
+        assert_eq!(out[1], 0x1413_1211); // 声道 1 小端
+    }
 }

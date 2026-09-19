@@ -791,15 +791,6 @@ impl AudioOut {
         }
     }
 
-    /// 以 DSD 模式写入原始 DSD 数据（仅 ALSA 独占后端支持）。
-    pub fn write_dsd(&self, data: &crate::dsd::DsdData, mode: crate::output_alsa::DsdOutputMode) {
-        match self {
-            AudioOut::Alsa(a) => a.write_dsd(data, mode),
-            AudioOut::Pipewire(_) => {
-                eprintln!("[output] PipeWire 后端不支持 DSD 直通，已忽略（应由解码层走 pcm 软解）");
-            }
-        }
-    }
 }
 
 #[cfg(test)]

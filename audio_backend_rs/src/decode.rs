@@ -379,13 +379,18 @@ fn run_playback_dsd(path: &str, shared: Arc<Shared>,
     }
 
     // 更新共享元信息（进度 / 时长基准）。
-    // 关键：in_rate 存**输出层实际帧率**，供 engine.position 计算
-    // （played_frames / in_rate = 秒）。
-    //   - DoP：输出是 PCM，帧率 = pcm_rate（DSD/16）；
-    //   - Native：输出是 DSD 帧，帧率 = dsd_rate。
+    // 关键：in_rate 存 **ALSA 输出层实际帧率**，供 engine.position 计算
+    // （played_frames / in_rate = 秒）。played_frames 由写线程按「ALSA 采样
+    // 帧」累加，故此处必须是 ALSA 设备采样率：
+    //   - Native（DSD_U32_LE）：1 采样 = 32 个 DSD bit，率 = dsd_rate / 32；
+    //   - DoP：1 采样 = 16 个 DSD bit，率 = pcm_rate = dsd_rate / 16。
     // 时长单独按 dsd_rate 算（见下），不受影响。
-    let out_rate = if use_native { dsd_rate } else { pcm_rate };
-    shared.in_rate.store(out_rate as u64, Ordering::SeqCst);
+    let alsa_rate = if use_native {
+        (dsd_rate / 32).max(1)
+    } else {
+        pcm_rate
+    };
+    shared.in_rate.store(alsa_rate as u64, Ordering::SeqCst);
     shared.in_channels.store(channels as u64, Ordering::SeqCst);
     let dur_ms = if dsd_rate > 0 {
         (reader.frames as f64 / dsd_rate as f64 * 1000.0) as u64
@@ -394,15 +399,12 @@ fn run_playback_dsd(path: &str, shared: Arc<Shared>,
     };
     shared.duration_ms.store(dur_ms, Ordering::SeqCst);
 
-    // 块大小：native 用 4 字节对齐（DSD_U32），dop 用 2*channels 对齐。
-    let unit = if use_native {
-        4
-    } else {
-        channels as usize * 2
-    };
-    let mut chunk_size = 1 << 20;
-    chunk_size -= chunk_size % unit;
-    let mut buf = vec![0u8; chunk_size];
+    // 按声道解交错的缓冲：ch_bytes[c] 保存声道 c 的连续 DSD 字节。
+    // native 每样本 4 字节、dop 每样本 2 字节，取 max_per_ch 为对齐的大块。
+    let align = if use_native { 4usize } else { 2usize };
+    let max_per_ch = (1usize << 18) - (1usize << 18) % align; // 256KB/声道
+    let ch_usize = channels.max(1) as usize;
+    let mut ch_bytes: Vec<Vec<u8>> = (0..ch_usize).map(|_| Vec::with_capacity(max_per_ch)).collect();
     let mut marker_phase: usize = 0;
 
     let mut frames_out: u64 = 0;
@@ -427,9 +429,9 @@ fn run_playback_dsd(path: &str, shared: Arc<Shared>,
             // 关键：先立即把进度基准设到目标（基于请求的 target_frame），
             // 让 UI 立刻反映目标位置，避免 seek 文件 IO 期间显示旧位置
             // （表现为“先跳回旧位置再跳回目标”）。
-            let out_rate = if use_native { dsd_rate } else { pcm_rate };
+            // out_frames 换算到 ALSA 采样帧：native=dscale/32，dop=/16。
             let out_frames_req = if dsd_rate > 0 {
-                (target_frame as f64 / dsd_rate as f64 * out_rate as f64) as u64
+                (target_frame as f64 / dsd_rate as f64 * alsa_rate as f64) as u64
             } else {
                 0
             };
@@ -444,7 +446,7 @@ fn run_playback_dsd(path: &str, shared: Arc<Shared>,
                     alsa.flush();
                     // seek 完成后再校正一次（实际帧可能因字节对齐略有出入）。
                     let out_frames = if dsd_rate > 0 {
-                        (actual_frame as f64 / dsd_rate as f64 * out_rate as f64) as u64
+                        (actual_frame as f64 / dsd_rate as f64 * alsa_rate as f64) as u64
                     } else {
                         0
                     };
@@ -466,20 +468,26 @@ fn run_playback_dsd(path: &str, shared: Arc<Shared>,
             }
         }
 
-        let n = reader.read_chunk(&mut buf)?;
-        if n == 0 {
+        // 读一组并按声道解交错（自动处理 DSF 块交错 / DFF 字节交错）。
+        let per_ch = reader.read_group(&mut ch_bytes, max_per_ch)?;
+        if per_ch == 0 {
             break;
         }
-        let usable = n - (n % unit);
-        if usable == 0 {
+        // 对齐到整样本（native 4 字节 / dop 2 字节）。
+        let per = per_ch - (per_ch % align);
+        if per == 0 {
             break;
+        }
+        for b in ch_bytes.iter_mut() {
+            b.truncate(per);
         }
         if use_native {
-            alsa.write_native_chunk(&buf[..usable], channels, dsd_rate);
+            alsa.write_native_group(&ch_bytes, dsd_rate);
         } else {
-            alsa.write_dop_chunk(&buf[..usable], channels, pcm_rate, &mut marker_phase);
+            alsa.write_dop_group(&ch_bytes, pcm_rate, &mut marker_phase);
         }
-        frames_out += (usable as u64 * 8) / channels as u64;
+        // per 为每声道字节数，×8 = 每声道 DSD bit 数 = DSD 帧数。
+        frames_out += per as u64 * 8;
         shared.frames_out.store(frames_out, Ordering::SeqCst);
 
         // 检测写线程是否已失败退出（如设备占用、格式不支持）。

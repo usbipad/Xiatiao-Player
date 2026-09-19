@@ -12,8 +12,11 @@
 //!   / stop() / played_frames() / reset_played_frames(v) / latency()
 //!
 //! DSD 支持：
-//!   - 通过 `write_dsd` 接收原始 DSD 字节，按 mode（native/dop）在写线程内转换；
-//!   - Native 需要设备支持相应 DSD 格式，否则返回错误由上层回退。
+//!   - 通过 `write_native_group` / `write_dop_group` 接收**已按声道解交错**的
+//!     DSD 字节（调用方负责处理 DSF 块交错 / DFF 字节交错），写线程内打包；
+//!   - Native（DSD_U32_LE）：每 4 字节 → 1 个 32-bit 采样，设备率 = DSD 率/32；
+//!   - DoP：每 2 字节 → 1 个 24-bit 采样（S32_LE 或 S24_3LE 承载），率 = DSD 率/16；
+//!   - Native 需要设备支持 DSD_U32_LE，否则返回错误由上层回退。
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,7 +26,6 @@ use std::time::Duration;
 use alsa::pcm::{Access, Format, HwParams, PCM};
 use alsa::{Direction, ValueOr};
 
-use crate::dsd::DsdData;
 
 /// ALSA 缓冲周期（微秒）。标准低延迟取值。
 const PERIOD_US: u32 = 20_000;
@@ -496,105 +498,33 @@ impl AlsaOutput {
         }
     }
 
-    /// 以 DSD 模式写入原始 DSD 数据（native / dop）。
+    /// 以 Native（DSD_U32_LE）模式写入一组**已按声道解交错**的 DSD 字节。
     ///
-    /// 内部在写线程中按 mode 转换：
-    ///   - Native：调用 pack_native_u32 转 32-bit 后以 DSD 格式写；
-    ///   - DoP：调用 pack_dop 转 24-bit PCM（F32 承载）后以 PCM 写。
-    pub fn write_dsd(&self, data: &DsdData, mode: DsdOutputMode) {
-        let channels = data.channels.max(1);
-        match mode {
-            DsdOutputMode::Dop => {
-                // DoP：DSD 率 / 16 作为 PCM 采样率，用 f32 写。
-                let pcm_rate = data.dop_pcm_rate();
-                let packed = crate::dsd::pack_dop(&data.bytes, channels as usize);
-                // 将 24-bit DoP 样本转为 f32 归一化（保留 marker 位）。
-                let mut pcm: Vec<f32> = Vec::with_capacity(packed.len());
-                for s in packed {
-                    // 取低 24 位，归一化到 [-1,1)。
-                    let v = (s & 0x00FF_FFFF) as f32 / 8_388_608.0;
-                    pcm.push(v);
-                }
-                *self.dsd_mode.lock().unwrap_or_else(|e| e.into_inner()) = Some(DsdOutputMode::Dop);
-                self.write(&pcm, pcm_rate, channels);
-            }
-            DsdOutputMode::Native => {
-                // Native：需设备支持 DSD 格式。此处先按 DSD_U32 打包，
-                // 由 rebuild 时尝试用 DSD 格式打开设备；失败则上层回退。
-                *self.dsd_mode.lock().unwrap_or_else(|e| e.into_inner()) = Some(DsdOutputMode::Native);
-                let packed = crate::dsd::pack_native_u32(&data.bytes);
-                // 将 u32 重解释为 f32 承载（位传输，保持原始位模式）。
-                let mut pcm: Vec<f32> = Vec::with_capacity(packed.len());
-                for w in packed {
-                    pcm.push(f32::from_bits(w));
-                }
-                self.write(&pcm, data.dsd_rate, channels);
-            }
-        }
+    /// - `ch_bytes[c]` 为声道 c 的连续 DSD 字节（MSB-first），长度需一致且为 4 的倍数；
+    /// - 每个 32-bit ALSA 采样承载 4 个连续 DSD 字节（DSD_U32_LE，按字节流顺序）；
+    /// - ALSA 设备采样率 = `dsd_rate / 32`（一个采样 = 32 个 DSD bit）。
+    pub fn write_native_group(&self, ch_bytes: &[Vec<u8>], dsd_rate: u32) {
+        let ch = ch_bytes.len().max(1);
+        // 复用 dsd.rs 中经单测的纯打包逻辑。
+        let words = crate::dsd::pack_native_group(ch_bytes);
+        let pcm: Vec<f32> = words.into_iter().map(f32::from_bits).collect();
+        let alsa_rate = (dsd_rate / 32).max(1);
+        self.write_inner(&pcm, alsa_rate, ch as u32, Some(DsdOutputMode::Native));
     }
 
-    /// 以 Native 模式写入一块原始 DSD 字节（流式）。
+    /// 以 DoP v1.0 模式写入一组**已按声道解交错**的 DSD 字节。
     ///
-    /// 把 DSD 字节按 4 字节（32-bit）一组打包为 DSD_U32 承载；
-    /// 由写线程按 DSD 格式写入设备。
-    ///
-    /// 要求 `src.len()` 是 4 的整数倍（DSD_U32 组对齐）。
-    /// `dsd_rate` 为 DSD bit 率。
-    pub fn write_native_chunk(&self, src: &[u8], channels: u32, dsd_rate: u32) {
-        // 按 4 字节一组打包为 u32（小端），再以位模式承载为 f32。
-        let groups = src.len() / 4;
-        let mut pcm: Vec<f32> = Vec::with_capacity(groups);
-        for i in 0..groups {
-            let w = u32::from_le_bytes([
-                src[i * 4],
-                src[i * 4 + 1],
-                src[i * 4 + 2],
-                src[i * 4 + 3],
-            ]);
-            pcm.push(f32::from_bits(w));
-        }
-        // Native DSD 的"采样率"按 DSD bit 率传入（写线程据此用 DSD 格式）。
-        self.write_inner(&pcm, dsd_rate, channels, Some(DsdOutputMode::Native));
-    }
-
-    /// 以 DoP 模式写入一块原始 DSD 字节（流式，大文件用）。
-    ///
-    /// 要求 `src.len()` 是 `channels * 2` 的整数倍（每声道 2 字节 = 16 DSD bit），
-    /// 以保证 DoP 的 16-bit 组边界对齐。
-    ///
-    /// `pcm_rate` = DSD 率 / 16（DoP 的 PCM 采样率）。
-    /// `marker_phase` 传入并返回 DoP marker 的相位（0/1 交替），跨块保持连续。
-    pub fn write_dop_chunk(
-        &self,
-        src: &[u8],
-        channels: u32,
-        pcm_rate: u32,
-        marker_phase: &mut usize,
-    ) {
-        let ch = channels.max(1) as usize;
-        // 每声道按 2 字节（16 bit）成组。
-        let groups_per_ch = src.len() / (2 * ch);
-        let mut pcm: Vec<f32> = Vec::with_capacity(groups_per_ch * ch);
-        for g in 0..groups_per_ch {
-            for c in 0..ch {
-                // 该声道第 g 组的 16 bit 起始字节。
-                let byte_off = (g * ch + c) * 2;
-                let hi = src[byte_off] as i32;
-                let lo = src[byte_off + 1] as i32;
-                let word = (hi << 8) | lo; // 16 个 DSD bit
-                let marker = if *marker_phase == 0 { 0x05 } else { 0xFA };
-                // 24-bit DoP 样本：高 16 位为 DSD，低 8 位 marker。
-                let sample = ((word & 0xFFFF) << 8) | marker; // 24-bit 有效
-                // 关键：位精确。把 24-bit 值左移到 32-bit 的高 24 位
-                // （低 8 位补 0），以 f32 位模式承载；写入层原样取位给 S32。
-                // 绝不归一化（f32 尾数不足 24 位会丢 marker）。
-                let v = f32::from_bits(((sample & 0x00FF_FFFF) as u32) << 8);
-                pcm.push(v);
-            }
-            // 每帧（一次 16-bit 组）翻转 marker 相位。
-            *marker_phase ^= 1;
-        }
-        self.write_inner(&pcm, pcm_rate, channels, Some(DsdOutputMode::Dop));
+    /// - `ch_bytes[c]` 为声道 c 的连续 DSD 字节，长度需一致且为 2 的倍数；
+    /// - 每 16 个 DSD bit（2 字节）打包为 1 个 24-bit PCM 样本的高 16 位，
+    ///   低 8 位为 marker（每帧在 0x05 / 0xFA 间交替，所有声道同帧同 marker）；
+    /// - 承载格式由写线程选择（S32_LE 或 S24_3LE）；样本按高 24 位左对齐存储；
+    /// - ALSA 设备采样率 = `pcm_rate`（= DSD 率 / 16）。
+    pub fn write_dop_group(&self, ch_bytes: &[Vec<u8>], pcm_rate: u32, marker_phase: &mut usize) {
+        let ch = ch_bytes.len().max(1);
+        // 复用 dsd.rs 中经单测的纯打包逻辑（位精确 + marker 交替）。
+        let samples = crate::dsd::pack_dop_group(ch_bytes, marker_phase);
+        let pcm: Vec<f32> = samples.into_iter().map(f32::from_bits).collect();
+        self.write_inner(&pcm, pcm_rate, ch as u32, Some(DsdOutputMode::Dop));
     }
 
     /// 清空输出缓冲（切歌 / 播放开始）。
@@ -763,33 +693,30 @@ fn run_alsa(
         // Native DSD 模式：优先用原生 DSD 格式打开设备。
         // 依次尝试 DSD_U32_LE / DSD_U16_LE / DSD_U8，任一成功即用。
         if matches!(dsd, Some(DsdOutputMode::Native)) {
-            let mut dsd_fmt = None;
-            for fmt in [Format::DSDU32LE, Format::DSDU16LE, Format::DSDU8] {
-                if hwp.set_format(fmt).is_ok() {
-                    dsd_fmt = Some(fmt);
-                    break;
-                }
+            // Native 直通统一采用 DSD_U32_LE：每个 32-bit 采样承载 4 个 DSD 字节，
+            // 设备采样率 = DSD bit 率 / 32（见 write_native_group）。
+            if hwp.set_format(Format::DSDU32LE).is_err() {
+                return Err(
+                    "设备不支持原生 DSD 格式（DSD_U32_LE），无法 Native 直通。\n\
+                     请改用“DoP”或“转 PCM（软解）”模式播放。"
+                        .into(),
+                );
             }
-            match dsd_fmt {
-                Some(f) => chosen = f,
-                None => {
-                    return Err(
-                        "设备不支持原生 DSD 格式（DSD_U32/U16/U8），无法 Native 直通。".into(),
-                    );
-                }
-            }
+            chosen = Format::DSDU32LE;
         } else if matches!(dsd, Some(DsdOutputMode::Dop)) {
-            // DoP：用 S32_LE 承载（24-bit DoP 样本放高 24 位），这是最常见的
-            // DoP over PCM 承载格式，兼容多数 DoP DAC。
-            // 注：S24_3LE 承载暂未实现（较少见）；若设备仅支持 S24_3LE，
-            // 会明确报错而非静默失败。
-            hwp.set_format(Format::S32LE).map_err(|_| {
-                "设备不支持 DoP 承载格式（S32_LE）。\n\
-                 该设备可能仅支持 S24_3LE 或完全不支持 DoP；\n\
-                 请改用“转 PCM（软解）”模式播放。"
-                    .to_string()
-            })?;
-            chosen = Format::S32LE;
+            // DoP 承载：优先 S32_LE（24-bit 样本放高 24 位），
+            // 回退 S24_3LE（紧凑 3 字节容器，部分 DoP DAC 只支持它）。
+            if hwp.set_format(Format::S32LE).is_ok() {
+                chosen = Format::S32LE;
+            } else if hwp.set_format(Format::S243LE).is_ok() {
+                chosen = Format::S243LE;
+            } else {
+                return Err(
+                    "设备不支持 DoP 承载格式（S32_LE / S24_3LE）。\n\
+                     该设备可能不支持 DoP；请改用“转 PCM（软解）”模式播放。"
+                        .to_string(),
+                );
+            }
         } else if hwp.set_format(Format::FloatLE).is_ok() {
             chosen = Format::FloatLE;
         } else {
@@ -825,6 +752,12 @@ fn run_alsa(
     let use_i32_io = chosen == Format::S32LE || chosen == Format::DSDU32LE;
     let io_i32 = if use_i32_io {
         Some(pcm.io_i32().map_err(|e| format!("io_i32: {e}"))?)
+    } else {
+        None
+    };
+    // S24_3LE：紧凑 3 字节容器（DoP 回退承载），用字节 IO 写入。
+    let io_bytes = if chosen == Format::S243LE {
+        Some(pcm.io_bytes())
     } else {
         None
     };
@@ -879,7 +812,7 @@ fn run_alsa(
                     if ch > 1 { scratch[i + 1] = last_r; }
                 }
             }
-            let _ = write_alsa(&io_f32, &io_i32, &scratch, &mut conv, 0, is_dsd);
+            let _ = write_alsa(&io_f32, &io_i32, &io_bytes, &scratch, &mut conv, 0, is_dsd);
             std::thread::sleep(Duration::from_millis(2));
             continue;
         }
@@ -898,7 +831,7 @@ fn run_alsa(
         if ch > 1 { last_r = scratch[last + 1]; }
 
         let n_samples = got * ch;
-        match write_alsa(&io_f32, &io_i32, &scratch[..n_samples], &mut conv, n_samples, is_dsd) {
+        match write_alsa(&io_f32, &io_i32, &io_bytes, &scratch[..n_samples], &mut conv, n_samples, is_dsd) {
             Ok(()) => {
                 shared.played_frames.fetch_add(got as u64, Ordering::Relaxed);
             }
@@ -927,6 +860,7 @@ fn run_alsa(
 fn write_alsa(
     io_f32: &Option<alsa::pcm::IO<f32>>,
     io_i32: &Option<alsa::pcm::IO<i32>>,
+    io_bytes: &Option<alsa::pcm::IO<u8>>,
     src: &[f32],
     conv: &mut [i32],
     n: usize,
@@ -954,7 +888,20 @@ fn write_alsa(
         io.writei(&conv[..s.len()])?;
         return Ok(());
     }
-    // 理论上不会发生（chosen 必为 F32 / S32 / DSD）。
+    if let Some(io) = io_bytes {
+        // S24_3LE：每样本 3 字节小端。样本值存于 f32 位模式的高 24 位。
+        let s = if n == 0 { src } else { &src[..n] };
+        let mut bbuf: Vec<u8> = Vec::with_capacity(s.len() * 3);
+        for &v in s {
+            let v24 = (v.to_bits() >> 8) & 0x00FF_FFFF;
+            bbuf.push((v24 & 0xFF) as u8);
+            bbuf.push(((v24 >> 8) & 0xFF) as u8);
+            bbuf.push(((v24 >> 16) & 0xFF) as u8);
+        }
+        io.writei(&bbuf)?;
+        return Ok(());
+    }
+    // 理论上不会发生（chosen 必为 F32 / S32 / S24_3 / DSD）。
     eprintln!("[alsa] 无可用的 ALSA IO 句柄（不应发生）");
     Ok(())
 }
@@ -973,13 +920,10 @@ pub fn device_max_rate(device: &str) -> Option<u32> {
 ///
 /// 依次尝试各 DSD 格式，任一支持即返回 true。失败返回 false。
 pub fn device_supports_dsd(device: &str, dsd_rate: u32, channels: u32) -> bool {
-    // 常见原生 DSD 承载格式，按优先级。
-    for fmt in [Format::DSDU32LE, Format::DSDU16LE, Format::DSDU8] {
-        if device_supports_format(device, fmt, dsd_rate, channels) {
-            return true;
-        }
-    }
-    false
+    // Native 直通统一采用 DSD_U32_LE，设备采样率 = DSD bit 率 / 32。
+    // （DSD_U16/U8 承载未实现，不再宣称支持，避免"探测通过却写不出"。）
+    let rate = (dsd_rate / 32).max(1);
+    device_supports_format(device, Format::DSDU32LE, rate, channels)
 }
 
 /// 测试指定 ALSA 设备是否支持某种格式 / 采样率（用于 Native DSD 能力探测）。
