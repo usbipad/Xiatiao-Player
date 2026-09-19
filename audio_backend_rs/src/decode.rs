@@ -180,6 +180,12 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
                 output.reset_played_frames(frames_written);
                 shared.frames_out.store(frames_written, Ordering::SeqCst);
                 shared.eof.store(false, Ordering::SeqCst);
+                // 关键：seek 后重置 DSP 运行时状态（滤波器延迟/包络/平滑器），
+                // 否则新位置的信号会与旧位置的滤波器状态不连续 → 衔接不自然
+                // / 爆音。
+                dsp.reset_state();
+                // Camilla 也触发短淡入，避免跳转硬切。
+                camilla_engine.trigger_fade();
             }
         }
 

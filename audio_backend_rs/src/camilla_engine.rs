@@ -264,6 +264,12 @@ impl CamillaEngine {
         self.out_buf.clear();
     }
 
+    /// 触发一次短淡入（供 seek 后调用）：避免跳转后信号与旧滤波器状态
+    /// 不连续产生的瞬态/爆音。
+    pub fn trigger_fade(&mut self) {
+        self.rebuild_fade = self.fade_len;
+    }
+
     /// 处理一块交错 PCM（原地）。channels 目前支持 2。
     ///
     /// camillalib 要求每块恰好 chunksize 帧；而解码流是任意块大小。
