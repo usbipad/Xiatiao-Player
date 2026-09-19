@@ -540,6 +540,16 @@ class SettingsWindow(Adw.PreferencesWindow):
         out_group.set_title(_("输出"))
         page.add(out_group)
 
+        # DSD 输出总开关：
+        #   关（默认）= 走老逻辑（DSD 经 ffmpeg 软解为 PCM + PipeWire 默认输出）；
+        #   开 = 下面的「DSD 输出模式」「输出设备」才生效。
+        dsd_enable_row = Adw.SwitchRow()
+        dsd_enable_row.set_title(_("DSD 输出"))
+        dsd_enable_row.set_subtitle(
+            _("开启后，「DSD 输出模式」与「输出设备」生效；关闭则 DSD 走软解、输出走系统默认"))
+        dsd_enable_row.set_active(cfg.get_bool("dsd_output_enabled", False))
+        out_group.add(dsd_enable_row)
+
         # DSD 输出模式
         dsd_row = Adw.ComboRow()
         dsd_row.set_title(_("DSD 输出模式"))
@@ -558,7 +568,9 @@ class SettingsWindow(Adw.PreferencesWindow):
             idx = r.get_selected()
             if 0 <= idx < len(self._dsd_mode_values):
                 cfg.set_str("dsd_output_mode", self._dsd_mode_values[idx])
-                # 下发到后端
+                # 仅在开关开启时下发（关=老逻辑：DSD 走 ffmpeg 软解）。
+                if not dsd_enable_row.get_active():
+                    return
                 try:
                     win = self._get_window()
                     if win is not None and hasattr(win, "apply_dsd_mode"):
@@ -594,10 +606,51 @@ class SettingsWindow(Adw.PreferencesWindow):
         except ValueError:
             dev_row.set_selected(0)
 
+        # 开关联动：关时置灰下面两项；并统一下发（关=老逻辑）。
+        def _apply_enabled_state():
+            enabled = dsd_enable_row.get_active()
+            dsd_row.set_sensitive(enabled)
+            dev_row.set_sensitive(enabled)
+
+        def _push_effective():
+            """按开关状态下发到后端：
+            关 = dsd_mode=pcm + device=''（老逻辑：ffmpeg 软解 + PipeWire 默认）；
+            开 = 下发实际选择的模式与设备。"""
+            try:
+                win = self._get_window()
+                if win is None:
+                    return
+                if dsd_enable_row.get_active():
+                    mode = self._dsd_mode_values[dsd_row.get_selected()] \
+                        if 0 <= dsd_row.get_selected() < len(self._dsd_mode_values) else "auto"
+                    dev = self._dev_values[dev_row.get_selected()] \
+                        if 0 <= dev_row.get_selected() < len(self._dev_values) else ""
+                else:
+                    mode = "pcm"
+                    dev = ""
+                if hasattr(win, "apply_dsd_mode"):
+                    win.apply_dsd_mode(mode)
+                if hasattr(win, "apply_output_device"):
+                    win.apply_output_device(dev)
+            except Exception:
+                pass
+
+        def _on_enable_toggled(r, _p):
+            cfg.set_bool("dsd_output_enabled", r.get_active())
+            _apply_enabled_state()
+            _push_effective()
+
+        dsd_enable_row.connect("notify::active", _on_enable_toggled)
+        # 初始状态：按开关置灰下面两项，并下发一次（应用启动由主窗口负责，这里只更新控件）。
+        _apply_enabled_state()
+
         def _on_dev_changed(r, _p):
             idx = r.get_selected()
             if 0 <= idx < len(self._dev_values):
                 cfg.set_str("output_device", self._dev_values[idx])
+                # 仅在开关开启时下发（关=老逻辑：PipeWire 默认）。
+                if not dsd_enable_row.get_active():
+                    return
                 try:
                     win = self._get_window()
                     if win is not None and hasattr(win, "apply_output_device"):

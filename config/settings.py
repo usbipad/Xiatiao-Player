@@ -20,9 +20,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "default_play_mode": 0,
     "remember_volume": True,
     # ---- DSD 输出 ----
+    # DSD 输出总开关：关=走老逻辑（DSD 经 ffmpeg 软解为 PCM + PipeWire 默认输出）；
+    #                开=下面的 DSD 输出模式与输出设备才生效。
+    "dsd_output_enabled": False,
     # DSD 输出模式：auto（自动按 DAC 能力）/ native（原生直通）/ dop / pcm（软解）
     "dsd_output_mode": "auto",
-    # 输出设备名（PipeWire sink 名）；空=系统默认
+    # 输出设备名（ALSA hw 设备名）；空=系统默认（PipeWire）
     "output_device": "",
     # ---- 音效 ----
     "audio_effect": "off",

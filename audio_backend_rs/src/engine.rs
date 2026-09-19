@@ -18,6 +18,14 @@ use crate::shared::{State, Shared};
 // 注：常量 / viz_fifo_path / State / Shared 已抽到 crate::shared；
 // symphonia / ffmpeg 解码循环已抽到 crate::decode / crate::decode_ffmpeg。
 
+/// 判断输出设备是否发生实际变化（`apply_output_backend` 的幂等判据）。
+///
+/// 规则：忽略首尾空白后比较；相同（含都为空）视为无变化。
+/// 抽出为纯函数，便于单元测试（不依赖音频后端/线程）。
+fn output_device_changed(current: &str, new: &str) -> bool {
+    current.trim() != new.trim()
+}
+
 pub struct Engine {
     shared: Arc<Shared>,
     state: State,
@@ -64,6 +72,20 @@ impl Engine {
     ///   - name 为空 → 默认走 PipeWire（系统默认音频接口）；
     ///   - name 非空 → 切换到 ALSA 独占直连该 hw 设备。
     fn apply_output_backend(&mut self, name: &str) {
+        // 幂等：设备值未变化时直接返回，不重建后端。
+        // 否则重复下发（如切换 DSD 开关时）会导致无谓的「停→重建→续播」卡顿，
+        // 尤其对正在播放的普通 PCM 流毫无必要。
+        let cur = self
+            .shared
+            .output_device
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        if !output_device_changed(&cur, name) {
+            eprintln!("[engine] 输出设备未变化（'{name}'），跳过后端重建");
+            return;
+        }
+
         // 记录切换前的播放状态，用于切换后自动续播。
         let was_playing = self.state == State::Playing;
         let resume_pos = self.position();
@@ -78,6 +100,10 @@ impl Engine {
         } else {
             self.output = Arc::new(AudioOut::Alsa(crate::output_alsa::AlsaOutput::new(name)));
             eprintln!("[engine] 输出后端切换为 ALSA 独占：{name}");
+        }
+        // 切换成功后更新当前设备记录（供幂等判断）。
+        if let Ok(mut d) = self.shared.output_device.lock() {
+            *d = name.to_string();
         }
 
         // 若切换前正在播放，则从原位置自动续播（避免切设备后静默停止）。
@@ -233,10 +259,9 @@ impl Engine {
                 Event::Ack { cmd: "set_dsd_mode".into() }
             }
             Request::SetOutputDevice { name } => {
-                if let Ok(mut d) = self.shared.output_device.lock() {
-                    *d = name.clone();
-                }
                 // 真正应用：空=默认走 PipeWire；非空=切换到 ALSA 独占设备。
+                // 注意：output_device 的更新在 apply_output_backend 内部完成
+                // （先比较是否变化，变化才重建后端并更新），避免重复下发误触发重建。
                 self.apply_output_backend(&name);
                 eprintln!("[engine] 输出设备设为 '{name}'");
                 Event::Ack { cmd: "set_output_device".into() }
@@ -302,5 +327,50 @@ impl Engine {
         });
         self.decode_thread = Some(handle);
         self.state = State::Playing;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::output_device_changed;
+
+    /// 都为空：无变化（幂等——避免重复下发空设备触发后端重建）。
+    #[test]
+    fn no_change_when_both_empty() {
+        assert!(!output_device_changed("", ""));
+    }
+
+    /// 相同非空设备：无变化。
+    #[test]
+    fn no_change_when_same_nonempty() {
+        assert!(!output_device_changed("hw:CARD=Amplif,DEV=0", "hw:CARD=Amplif,DEV=0"));
+    }
+
+    /// 从空切到具体设备：有变化。
+    #[test]
+    fn change_from_empty_to_device() {
+        assert!(output_device_changed("", "hw:CARD=Amplif,DEV=0"));
+    }
+
+    /// 从具体设备切回空（PipeWire 默认）：有变化。
+    #[test]
+    fn change_from_device_to_empty() {
+        assert!(output_device_changed("hw:CARD=Amplif,DEV=0", ""));
+    }
+
+    /// 切换到不同设备：有变化。
+    #[test]
+    fn change_between_different_devices() {
+        assert!(output_device_changed(
+            "hw:CARD=Amplif,DEV=0",
+            "hw:CARD=sofhdadsp,DEV=0"
+        ));
+    }
+
+    /// 首尾空白差异：视为无变化（避免因空格误判触发重建）。
+    #[test]
+    fn whitespace_is_ignored() {
+        assert!(!output_device_changed("  hw:CARD=Amplif,DEV=0 ", "hw:CARD=Amplif,DEV=0"));
+        assert!(!output_device_changed("  ", ""));
     }
 }

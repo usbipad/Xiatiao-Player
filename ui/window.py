@@ -1988,12 +1988,20 @@ class MainWindow(Adw.ApplicationWindow):
         """
         try:
             cfg = get_config()
-            dev = cfg.get_str("output_device", "")
-            mode = cfg.get_str("dsd_output_mode", "auto")
+            enabled = cfg.get_bool("dsd_output_enabled", False)
+            if enabled:
+                # 开关开：下发用户选择的 DSD 模式与输出设备。
+                mode = cfg.get_str("dsd_output_mode", "auto")
+                dev = cfg.get_str("output_device", "")
+            else:
+                # 开关关（默认）：走老逻辑——DSD 经 ffmpeg 软解 + PipeWire 默认输出。
+                mode = "pcm"
+                dev = ""
             # 先设 DSD 模式，再设输出设备（避免切设备后续播时用错模式）。
             self.apply_dsd_mode(mode)
             self.apply_output_device(dev)
-            log.info("启动应用音频输出设置: device=%r dsd_mode=%r", dev, mode)
+            log.info("启动应用音频输出设置: enabled=%s device=%r dsd_mode=%r",
+                     enabled, dev, mode)
         except Exception as exc:
             log.info("应用启动音频输出设置失败: %s", exc)
 
