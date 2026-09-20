@@ -129,6 +129,34 @@ def lighten_for_background(rgb: tuple[int, int, int],
         return rgb
 
 
+def tint_for_background(rgb: tuple[int, int, int],
+                        target_lum: float = 0.80,
+                        sat_scale: float = 0.55,
+                        sat_cap: float = 0.32) -> tuple[int, int, int]:
+    """把封面主色转成背景色：保留色相，**保留原始饱和度**（按比例压制）。
+
+    与 lighten_for_background 的区别：
+      后者把饱和度强制设为固定值，导致「封面上很淡的偏色」被拉成鲜艳纯色；
+      本函数保留原始饱和度并按 sat_scale 缩小、以 sat_cap 封顶，
+      使输出浓度贴合封面本身：淡封面→淡背景，艳封面→柔和背景。
+
+    rgb:        封面主色 (r,g,b)。
+    target_lum: 目标亮度 L（0..1）。
+    sat_scale:  饱和度缩放系数（0..1）。
+    sat_cap:    饱和度上限（0..1），防止过艳。
+    返回: 背景色 (r,g,b)。
+    """
+    try:
+        import colorsys
+        r, g, b = rgb
+        h, _l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+        s2 = min(s * sat_scale, sat_cap)
+        r2, g2, b2 = colorsys.hls_to_rgb(h, target_lum, s2)
+        return (int(r2 * 255), int(g2 * 255), int(b2 * 255))
+    except Exception:
+        return rgb
+
+
 def _lighten_hsl(r: int, g: int, b: int, amount: float) -> tuple[int, int, int]:
     """在 HSL 空间提升亮度：保持色相/饱和，仅抬高 L。
 
