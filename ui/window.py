@@ -2118,14 +2118,21 @@ class MainWindow(Adw.ApplicationWindow):
             if enabled and bg_rgb:
                 r, g, b = bg_rgb
                 col = f"rgb({r}, {g}, {b})"
-                # 给窗口加类，统一覆盖主界面所有背景层：
-                #   窗口根 / 左侧播放面板 / 右侧内容区 / 顶部 headerbar。
+                # 给窗口加类，统一覆盖主界面所有背景层。
+                # 必须显式覆盖 listview/columnview 等：libadwaita 默认给
+                # `listview, list` 设了不透明的 --view-bg-color，会盖住底层色。
                 self.add_css_class("main-bg-follow")
                 css = (
                     "window.main-bg-follow,"
                     ".main-bg-follow .player-panel,"
                     ".main-bg-follow .content-area,"
-                    ".main-bg-follow headerbar {"
+                    ".main-bg-follow headerbar,"
+                    ".main-bg-follow scrolledwindow,"
+                    ".main-bg-follow scrolledwindow > viewport,"
+                    ".main-bg-follow columnview,"
+                    ".main-bg-follow listview,"
+                    ".main-bg-follow gridview,"
+                    ".main-bg-follow flowbox {"
                     f"background-color: {col};"
                     "}"
                 )
