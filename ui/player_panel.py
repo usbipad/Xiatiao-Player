@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
 from core.i18n import _
 
@@ -23,7 +23,22 @@ def _fmt_seconds(seconds: float) -> str:
 
 
 class PlayerPanel(Gtk.Box):
-    """左侧固定面板。"""
+    """左侧播放器面板（宽度随窗口自适应时，内部控件按 ui-scale 缩放）。"""
+
+    __gtype_name__ = "PlayerPanel"
+
+    def _get_ui_scale(self) -> float:
+        return getattr(self, "_base_scale", 1.0)
+
+    def _set_ui_scale(self, value: float) -> None:
+        try:
+            self.set_scale(float(value))
+        except Exception:
+            pass
+
+    #: 控件缩放系数（由 window 通过 Adw.Breakpoint setter 驱动）。
+    ui_scale = GObject.Property(
+        type=float, default=1.0, getter=_get_ui_scale, setter=_set_ui_scale)
 
     def __init__(
         self,
@@ -1023,12 +1038,45 @@ class PlayerPanel(Gtk.Box):
             self._tab_box.set_spacing(int(6 * s))
         except Exception:
             pass
-        # 图标尺寸固定（不随面板缩放，避免不同按钮大小不一）
-        # 保持 CSS/主题默认图标尺寸即可，不手动 set_pixel_size。
-        # 字号：固定用最大档（不随缩放变）
+        # 图标尺寸：随缩放调整（封面放大时控件同步放大，视觉协调）。
+        # 以 16px 为基准。
+        _icon_px = max(12, int(round(16 * s)))
+        try:
+            for btn in (getattr(self, "btn_shuffle", None),
+                        getattr(self, "_btn_prev", None),
+                        getattr(self, "btn_play", None),
+                        getattr(self, "_btn_next", None),
+                        getattr(self, "btn_repeat", None),
+                        getattr(self, "_vol_btn", None),
+                        getattr(self, "btn_like", None),
+                        getattr(self, "_effect_btn", None),
+                        getattr(self, "_add_queue_btn", None)):
+                if btn is None:
+                    continue
+                child = btn.get_child()
+                if isinstance(child, Gtk.Image):
+                    child.set_pixel_size(_icon_px)
+                elif isinstance(btn, Gtk.Button) and child is None:
+                    # 用 icon_name 的按钮：图标是内部 Image，无法直接拿；用 CSS 类调。
+                    pass
+        except Exception:
+            pass
+        # 播放主按钮略大
+        try:
+            _pc = self.btn_play.get_child() if getattr(self, "btn_play", None) else None
+            if isinstance(_pc, Gtk.Image):
+                _pc.set_pixel_size(max(16, int(round(22 * s))))
+        except Exception:
+            pass
+        # 字号三档（sm/md/lg 对应 小/中/大）
         try:
             for c in ("scale-sm", "scale-md", "scale-lg"):
                 self.remove_css_class(c)
-            self.add_css_class("scale-lg")
+            if s <= 0.98:
+                self.add_css_class("scale-sm")
+            elif s <= 1.15:
+                self.add_css_class("scale-md")
+            else:
+                self.add_css_class("scale-lg")
         except Exception:
             pass

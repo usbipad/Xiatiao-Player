@@ -225,12 +225,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._split_view = Adw.OverlaySplitView()
         self._split_view.set_sidebar(self.player_panel)
         self._split_view.set_content(right_box)
-        self._split_view.set_min_sidebar_width(260)
+        self._split_view.set_min_sidebar_width(240)
+        # 基准宽度 360px；更大窗口由断点放宽 max（见下）→ 封面/控件随之放大。
         self._split_view.set_max_sidebar_width(360)
-        # 固定侧栏宽度（未折叠时）为 360px。
         try:
             self._split_view.set_sidebar_width_unit(Adw.LengthUnit.PX)
-            self._split_view.set_sidebar_width_fraction(360)
+            # fraction=1.0 且由 max-sidebar-width 钳制，得到「固定宽度 + 分档放宽」。
+            self._split_view.set_sidebar_width_fraction(1.0)
         except Exception:
             log.debug("设置侧栏宽度失败", exc_info=True)
         self._main_stack.add_named(self._split_view, "main")
@@ -245,13 +246,32 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             log.debug("绑定侧栏切换失败", exc_info=True)
 
-        # 断点：窗口宽度 ≤ 760px → 侧栏折叠（浮层模式），窗口可继续收窄。
-        try:
-            _bp = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 760px"))
-            _bp.add_setter(self._split_view, "collapsed", True)
-            self.add_breakpoint(_bp)
-        except Exception:
-            log.debug("添加响应式断点失败", exc_info=True)
+        # ---- 响应式断点 ----
+        # 分档策略（侧栏宽度 + 控件缩放联动）：
+        #   ≤ 760px ：折叠为浮层（窗口可继续收窄）
+        #   ≥ 1200px：侧栏放宽到 440px，控件缩放 1.1
+        #   ≥ 1600px：侧栏放宽到 520px，控件缩放 1.25
+        # 这样大窗口时封面（正方形）随之变大、底部控件同步放大，减少留白。
+        def _add_bp(cond: str, entries) -> None:
+            try:
+                _bp = Adw.Breakpoint.new(Adw.BreakpointCondition.parse(cond))
+                for obj, prop, val in entries:
+                    _bp.add_setter(obj, prop, val)
+                self.add_breakpoint(_bp)
+            except Exception:
+                log.debug("添加断点失败: %s", cond, exc_info=True)
+
+        _add_bp("max-width: 760px", [
+            (self._split_view, "collapsed", True),
+        ])
+        _add_bp("min-width: 1200px", [
+            (self._split_view, "max-sidebar-width", 440),
+            (self.player_panel, "ui-scale", 1.1),
+        ])
+        _add_bp("min-width: 1600px", [
+            (self._split_view, "max-sidebar-width", 520),
+            (self.player_panel, "ui-scale", 1.25),
+        ])
 
         # 沉浸式播放页
         self.now_playing = NowPlayingPage(
