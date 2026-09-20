@@ -25,7 +25,8 @@ Recommends: python3-mutagen,
          gir1.2-gst-plugins-base-1.0,
          ffmpeg,
          pipewire,
-         pipewire-bin
+         pipewire-bin,
+         pulseaudio-utils
 Description: Xiatiao Player - GTK4 local music player with Rust audio backend
  Xiatiao Player (虾条播放器) is a local music player with a GTK4 interface
  and a Rust audio backend. It supports a wide range of formats, keeps the
