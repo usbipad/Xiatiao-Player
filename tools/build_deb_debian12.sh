@@ -57,9 +57,16 @@ sbuild \
     "$PARENT/xiatiao-player_1.0.0.dsc"
 
 # 3b) 把产物收拢到 release/
+#     注意：脚本已 cd 到 $PROJ（仓库根），sbuild 把产物输出到 CWD = $PROJ，
+#     不是 $PARENT（上级）。此处从 $PROJ 取，并清理构建中间产物。
 mkdir -p "$RELEASE"
-mv "$PARENT"/xiatiao-player_1.0.0_amd64.deb "$RELEASE"/ 2>/dev/null || true
-mv "$PARENT"/xiatiao-player-dbgsym_1.0.0_amd64.deb "$RELEASE"/ 2>/dev/null || true
+mv -f "$PROJ"/xiatiao-player_1.0.0_amd64.deb "$RELEASE"/ 2>/dev/null || true
+mv -f "$PROJ"/xiatiao-player-dbgsym_1.0.0_amd64.deb "$RELEASE"/ 2>/dev/null || true
+# 清理仓库根的构建中间产物（buildinfo/changes/build 日志/.dsc）
+rm -f "$PROJ"/xiatiao-player_1.0.0_amd64.build* \
+      "$PROJ"/xiatiao-player_1.0.0_amd64.changes \
+      "$PROJ"/xiatiao-player_1.0.0.dsc \
+      "$PROJ"/xiatiao-player_1.0.0.tar.* 2>/dev/null || true
 
 echo "==> 完成。产物："
 ls -lh "$RELEASE"/xiatiao-player_1.0.0_amd64.deb
