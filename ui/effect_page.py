@@ -221,17 +221,44 @@ class EffectPage(Adw.PreferencesPage):
             pass
 
     def _reload_preset_dropdown(self) -> None:
+        """刷新下拉框的预设列表与「上次选中」高亮。
+
+        【关键】这里只更新**显示**，绝不触发「加载预设」副作用。
+        原因：本方法在 EffectPage 构建时（设置页/高级窗口初始化）会被调用，
+        若 set_model/set_selected 触发 notify::selected → _on_preset_selected
+        → _emit() → DspState.replace()，就会用 dsp_presets.json 里可能过期的
+        current 预设覆盖用户真实的当前状态（如用户选了「关闭」，重启后却被
+        历史预设的参数把音效打开）。
+
+        用 handler_block 阻断信号：只有用户**主动**在下拉里选择时才加载预设。
+        """
         names = self._preset_store.names()
         model = Gtk.StringList()
         for n in names:
             model.append(n)
         self._preset_names = names
-        self._preset_dropdown.set_model(model)
-        cur = self._preset_store.current()
-        if cur in names:
-            self._preset_dropdown.set_selected(names.index(cur))
-        elif names:
-            self._preset_dropdown.set_selected(0)
+        # 阻断 notify::selected，避免刷新显示触发加载
+        cb = getattr(self, "_on_preset_selected", None)
+        blocked = False
+        try:
+            if cb is not None:
+                self._preset_dropdown.handler_block_by_func(cb)
+                blocked = True
+        except Exception:
+            blocked = False
+        try:
+            self._preset_dropdown.set_model(model)
+            cur = self._preset_store.current()
+            if cur in names:
+                self._preset_dropdown.set_selected(names.index(cur))
+            elif names:
+                self._preset_dropdown.set_selected(0)
+        finally:
+            if blocked:
+                try:
+                    self._preset_dropdown.handler_unblock_by_func(cb)
+                except Exception:
+                    pass
 
     def _on_preset_selected(self, dropdown, _pspec) -> None:
         """下拉选中预设 → 立即加载。"""
