@@ -38,7 +38,9 @@ class SplashController:
 
     MIN_MS = 400        # 最短显示时长（避免一闪而过）
     FADE_MS = 400       # 淡出时长
-    MAX_MS = 5000       # 兜底：最长等待，超时强制淡出
+    # 兜底：最长等待。首屏封面多时加载可能数秒，但不该让启动画面一直转——
+    # 超时即淡出，封面在后台继续加载（主界面先出来，封面渐进出现）。
+    MAX_MS = 1500
     COVER_POLL_MS = 200  # 轮询封面是否空闲的间隔
     COVER_IDLE_TICKS = 3  # 连续多少次空闲才认为稳定（3×200=600ms 静默）
 
@@ -178,13 +180,24 @@ class SplashController:
     # 内部
     # ------------------------------------------------------------
     def _on_timeout(self) -> bool:
-        """兜底超时：强制淡出。"""
+        """兜底超时：**强制**淡出。
+
+        必须取消可能的封面轮询定时器（否则旧实现的 `if self._fade_id: return`
+        会被它挡住，导致超时兜底失效 → splash 一直等到封面加载完）。
+        """
         self._timeout_id = 0
         self._want_fade = True
         if self._fade_id:
-            return False
+            try:
+                GLib.source_remove(self._fade_id)
+            except Exception:
+                pass
+            self._fade_id = 0
         delay = self._delay_to_min()
-        self._fade_id = GLib.timeout_add(delay, self._start_fade)
+        if delay > 0:
+            self._fade_id = GLib.timeout_add(delay, self._start_fade)
+        else:
+            self._start_fade()
         return False
 
     def _poll_ready(self) -> bool:
