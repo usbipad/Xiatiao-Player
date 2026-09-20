@@ -2124,24 +2124,24 @@ class MainWindow(Adw.ApplicationWindow):
                 # 必须显式覆盖 listview/columnview 等：libadwaita 默认给
                 # `listview, list` 设了不透明的 --view-bg-color，会盖住底层色。
                 self.add_css_class("main-bg-follow")
+                # 精确限定在 .content-area 内。
+                # 关键：不覆盖 --view-bg-color/--window-bg-color 全局变量——
+                # 它们会被所有后代（含沉浸页、菜单、按钮）继承，导致
+                # 沉浸页歌词/右键菜单/设置按钮出现异常白边或染色。
+                # 沉浸页 .now-playing-root 是 _main_stack 的兄弟，不在
+                # .content-area 内，因此下列选择器天然不会命中它。
                 css = (
-                    # 覆盖 libadwaita 背景变量：listview/list 等默认用
-                    # var(--view-bg-color)，改这个变量可让它们一并变色。
-                    ".main-bg-follow {"
-                    f"--view-bg-color: {col};"
-                    f"--window-bg-color: {col};"
-                    "}"
-                    # 直接覆盖各背景层的 background-color（压过主题规则）。
-                    ".main-bg-follow,"
-                    ".main-bg-follow .player-panel,"
-                    ".main-bg-follow .content-area,"
-                    ".main-bg-follow headerbar,"
-                    ".main-bg-follow scrolledwindow,"
-                    ".main-bg-follow scrolledwindow > viewport,"
-                    ".main-bg-follow columnview,"
-                    ".main-bg-follow listview,"
-                    ".main-bg-follow gridview,"
-                    ".main-bg-follow flowbox {"
+                    "window.main-bg-follow,"
+                    "window.main-bg-follow .player-panel,"
+                    "window.main-bg-follow .content-area,"
+                    "window.main-bg-follow .content-area headerbar,"
+                    "window.main-bg-follow .content-area scrolledwindow,"
+                    "window.main-bg-follow .content-area scrolledwindow > viewport,"
+                    "window.main-bg-follow .content-area columnview,"
+                    "window.main-bg-follow .content-area columnview > header,"
+                    "window.main-bg-follow .content-area listview,"
+                    "window.main-bg-follow .content-area gridview,"
+                    "window.main-bg-follow .content-area flowbox {"
                     f"background-color: {col};"
                     "}"
                 )
