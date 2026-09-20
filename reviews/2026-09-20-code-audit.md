@@ -68,6 +68,8 @@
 
 建议：保留。若要零警告，需逐个确认是否真为死代码，收益低。
 
+**逐项清单见 2026-09-20-rust-dead-code.md**（含精确行号、性质分类、处理优先级）。
+
 ### 2. 个别可能未使用的 Python 导入
 
 粗检发现若干（如 core/tasks.py 的 threading、ui/settings_dialog.py 的 Gio 等），但检测脚本对类型注解有误报，未逐一改动。
