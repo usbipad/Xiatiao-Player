@@ -120,7 +120,7 @@ class PlayerPanel(Gtk.Box):
 
         # ---- 封面 / 歌词 切换区（底部 Tab：Player 显示封面，Lyrics 显示歌词）----
         self._cover_area = Gtk.Stack()
-        self._cover_area.set_size_request(300, -1)   # 封面区最小宽度，避免顶大窗口最小宽度
+        self._cover_area.set_size_request(240, -1)   # 封面区最小宽度（放宽以支持窄窗口）
         self._cover_area.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         # 非均匀高度：Stack 高度取当前可见页（封面页=正方形），
         # 否则会被较高的歌词/队列页撑高，封面上下留白。
@@ -342,7 +342,7 @@ class PlayerPanel(Gtk.Box):
         列表上下边缘加渐隐遮罩：滚动时内容淡出到背景，视觉更柔和。
         """
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        box.set_size_request(300, -1)
+        box.set_size_request(240, -1)
         self._queue_list = Gtk.ListBox()
         self._queue_list.set_selection_mode(Gtk.SelectionMode.NONE)
         self._queue_list.add_css_class("queue-list")

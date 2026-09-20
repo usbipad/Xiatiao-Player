@@ -10,7 +10,7 @@ import logging
 import os
 from typing import Dict, Optional
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
 from core.i18n import _
 
@@ -168,9 +168,9 @@ class MainWindow(Adw.ApplicationWindow):
             self._dsp_state = None
 
         # ---- 布局 ----
-        # 布局：普通 Gtk.Box + 左栏固定宽度，
-        # 不做自适应、不重写 do_size_allocate（避免布局循环与窗口最大化卡顿）。
-        root_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        # 响应式侧栏（Adw.OverlaySplitView）：
+        #   · 宽窗口：侧栏固定并排（与旧观感一致）。
+        #   · 窄窗口：断点触发 collapsed，侧栏折叠成浮层，窗口可继续收窄。
         self._main_stack = Gtk.Stack()
         self._main_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
 
@@ -190,8 +190,6 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self._root_overlay.add_overlay(self._splash_ctrl.build())
         self.set_content(self._root_overlay)
-
-        self._main_stack.add_named(root_box, "main")
 
         # 左侧面板
         self.player_panel = PlayerPanel(
@@ -215,10 +213,6 @@ class MainWindow(Adw.ApplicationWindow):
         )
         # 主页音效按钮改为弹出模态对话框（6 个内置预设 + DSP 设置入口）
         self.player_panel.use_effect_dialog = True
-        # 左侧面板固定宽度（不做随窗口自适应；自适应会触发布局循环）。
-        self.player_panel.set_size_request(360, -1)
-        root_box.append(self.player_panel)
-
 
         # 右侧：顶部栏 + 内容
         right_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -226,7 +220,38 @@ class MainWindow(Adw.ApplicationWindow):
         right_box.add_css_class("content-area")
         right_box.append(self._build_headerbar())
         right_box.append(self._build_right_area())
-        root_box.append(right_box)
+
+        # 可折叠侧栏：宽窗口固定并排，窄窗口折叠为浮层。
+        self._split_view = Adw.OverlaySplitView()
+        self._split_view.set_sidebar(self.player_panel)
+        self._split_view.set_content(right_box)
+        self._split_view.set_min_sidebar_width(260)
+        self._split_view.set_max_sidebar_width(360)
+        # 固定侧栏宽度（未折叠时）为 360px。
+        try:
+            self._split_view.set_sidebar_width_unit(Adw.LengthUnit.PX)
+            self._split_view.set_sidebar_width_fraction(360)
+        except Exception:
+            log.debug("设置侧栏宽度失败", exc_info=True)
+        self._main_stack.add_named(self._split_view, "main")
+
+        # 侧栏显隐：headerbar 切换按钮 ↔ show-sidebar 双向绑定。
+        try:
+            _btn = getattr(self, "_sidebar_toggle_btn", None)
+            if _btn is not None:
+                _btn.bind_property(
+                    "active", self._split_view, "show-sidebar",
+                    GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
+        except Exception:
+            log.debug("绑定侧栏切换失败", exc_info=True)
+
+        # 断点：窗口宽度 ≤ 760px → 侧栏折叠（浮层模式），窗口可继续收窄。
+        try:
+            _bp = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 760px"))
+            _bp.add_setter(self._split_view, "collapsed", True)
+            self.add_breakpoint(_bp)
+        except Exception:
+            log.debug("添加响应式断点失败", exc_info=True)
 
         # 沉浸式播放页
         self.now_playing = NowPlayingPage(
@@ -454,6 +479,12 @@ class MainWindow(Adw.ApplicationWindow):
 
         left_box = Gtk.Box(spacing=12)
         left_box.set_valign(Gtk.Align.CENTER)
+        # 侧栏显隐切换（窄窗口折叠时用于唤出浮层面板）
+        self._sidebar_toggle_btn = Gtk.ToggleButton(icon_name="sidebar-show-symbolic")
+        self._sidebar_toggle_btn.add_css_class("flat")
+        self._sidebar_toggle_btn.set_tooltip_text(_("显示 / 隐藏播放器面板"))
+        self._sidebar_toggle_btn.set_active(True)
+        left_box.append(self._sidebar_toggle_btn)
         self._nav_buttons: Dict[str, Gtk.Button] = {}
         for label, key in NAV_ITEMS:
             btn = Gtk.Button(label=_(label))
@@ -466,7 +497,7 @@ class MainWindow(Adw.ApplicationWindow):
         left_box.append(Gtk.Box(spacing=8))
         self._search_entry = Gtk.SearchEntry()
         self._search_entry.set_placeholder_text(_("搜索歌曲 / 歌手 / 专辑"))
-        self._search_entry.set_size_request(260, -1)
+        self._search_entry.set_size_request(150, -1)
         self._search_entry.set_valign(Gtk.Align.CENTER)
         self._search_entry.connect("search-changed", self._on_global_search)
         left_box.append(self._search_entry)
