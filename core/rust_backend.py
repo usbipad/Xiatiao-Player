@@ -1,8 +1,7 @@
 """Rust 音频后端（IPC 客户端）。
 
 与独立进程 xiatiao-audio-backend 通过 Unix domain socket +
-JSON Lines 通信。本类实现 AudioBackend 接口，因此可被 PlayerCore
-无缝替换（方法/信号与 GstBackend 一致）。
+JSON Lines 通信。本类实现 AudioBackend 接口，可被 PlayerCore 持有。
 
 生命周期：
 - 首次构造时尝试启动 Rust 进程；

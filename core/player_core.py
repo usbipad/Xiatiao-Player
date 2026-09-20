@@ -20,9 +20,7 @@ from .audio_backend import PlayerState
 
 log = logging.getLogger(__name__)
 
-#: 当前使用的后端工厂。
-#  使用独立 Rust 进程（core/rust_backend.py）；
-#  如需回退到 GStreamer 后端，把下面改为 GstBackend 即可。
+#: 当前使用的后端工厂：独立 Rust 进程（core/rust_backend.py）。
 def _create_default_backend():
     from .rust_backend import RustBackend
     return RustBackend()

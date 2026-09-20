@@ -101,9 +101,7 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
                 self.add(page)
                 self._feature_pages.append(page)
             except Exception as exc:
-                import traceback as _tb
-                print(f"[adv-dsp] 构建功能页 {title} 失败: {exc}\n{_tb.format_exc()}", flush=True)
-                log.debug("构建功能页 %s 失败: %s", title, exc)
+                log.debug("构建功能页 %s 失败: %s", title, exc, exc_info=True)
         # 总开关在第一个功能页里；它只刷新本页各组，不会通知染色页。
         # 这里额外挂一个回调，让染色组随总开关一起置灰 / 取消灰。
         try:
