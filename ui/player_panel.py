@@ -416,6 +416,7 @@ class PlayerPanel(Gtk.Box):
             menu.append(_("提升到下一首"), "qrow.promote")
             menu.append(_("从列表丢弃"), "qrow.discard")
             popover = Gtk.PopoverMenu.new_from_model(menu)
+            popover.add_css_class("media-menu")
             popover.set_parent(row)
             popover.set_has_arrow(False)
             popover.set_halign(Gtk.Align.START)

@@ -92,6 +92,7 @@ def _attach_cell_right_click(_factory, list_item, menu_model, ctx) -> None:
             return
         ctx["track"] = item
         popover = Gtk.PopoverMenu.new_from_model(menu_model)
+        popover.add_css_class("media-menu")
         popover.set_parent(child)
         popover.set_has_arrow(False)
         popover.set_halign(Gtk.Align.START)

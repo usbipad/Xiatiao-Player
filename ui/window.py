@@ -2130,7 +2130,13 @@ class MainWindow(Adw.ApplicationWindow):
                 # 沉浸页歌词/右键菜单/设置按钮出现异常白边或染色。
                 # 沉浸页 .now-playing-root 是 _main_stack 的兄弟，不在
                 # .content-area 内，因此下列选择器天然不会命中它。
+                # 自定义属性：供 style.css 里的菜单等使用。
+                # 与 view-bg-color 不同，这个属性没有任何内置控件引用，
+                # 因此不会污染沉浸页/按钮等（仅显式引用它的规则受影响）。
                 css = (
+                    "window.main-bg-follow {"
+                    f"--xiatiao-cover-bg: {col};"
+                    "}"
                     "window.main-bg-follow,"
                     "window.main-bg-follow .player-panel,"
                     "window.main-bg-follow .content-area,"
