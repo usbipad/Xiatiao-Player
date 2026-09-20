@@ -165,10 +165,12 @@ class MainWindow(Adw.ApplicationWindow):
         w = cfg0.get_int("window_width", 1400) or 1400
         h = cfg0.get_int("window_height", 900) or 900
         self.set_default_size(max(340, w), max(480, h))
-        # 窗口最小尺寸下限（覆盖 libadwaita 默认的 360px 宽）。
-        # 低于此值窗口无法再缩，避免被拖得过小导致内容不可用。
+        # 窗口最小尺寸 = 左侧播放面板的完整宽度（含其 margin）。
+        # 缩到最窄时只剩播放面板，右侧内容区被完全挤出。
+        # 面板内容最小宽度见 PlayerPanel.set_size_request（当前 280），
+        # 加左右 margin 8+8 → 296。
         try:
-            self.set_size_request(328, 562)
+            self.set_size_request(296, 562)
         except Exception:
             log.debug("设置窗口最小尺寸失败", exc_info=True)
 
