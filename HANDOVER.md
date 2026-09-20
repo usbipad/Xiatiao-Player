@@ -358,12 +358,57 @@ Rust 后端要求 GLIBC_2.43，装到 Debian 12/Ubuntu 22.04 会因缺符号启�
 
 ### 9.4 依赖分级（control）
 
-- `Depends`（必需）：python3、python3-gi、python3-gi-cairo、gir1.2-gtk-4.0、
-  gir1.2-adw-1、gir1.2-gdkpixbuf-2.0、libasound2、libpipewire-0.3。
+- `Depends`（必需）：python3 (>=3.10)、python3-gi、python3-gi-cairo、gir1.2-gtk-4.0、
+  gir1.2-adw-1、gir1.2-gdkpixbuf-2.0、libasound2t64 | libasound2、
+  libpipewire-0.3-0t64 | libpipewire-0.3-0。
 - `Recommends`（增强，apt 默认也装）：python3-mutagen、python3-numpy、python3-yaml、
-  gir1.2-gstreamer-1.0、gir1.2-gst-plugins-base-1.0、ffmpeg、pipewire、pipewire-bin。
+  gir1.2-gstreamer-1.0、gir1.2-gst-plugins-base-1.0、ffmpeg、pipewire、pipewire-bin、
+  pulseaudio-utils、python3-setproctitle。
 - `Build-Depends`：debhelper-compat、cargo、rustc、pkg-config、libasound2-dev、
   libpipewire-0.3-dev、libclang-dev。
+
+#### 9.4.1 t64 命名差异（重要，勿改错）
+
+2024 年起 Debian/Ubuntu 做 **64 位 time_t 过渡**，同名库分两代命名：
+
+| 库 | 旧命名（≤2023） | 新命名（t64） |
+|---|---|---|
+| ALSA | `libasound2` | `libasound2t64` |
+| PipeWire | `libpipewire-0.3-0` | `libpipewire-0.3-0t64` |
+
+**是同一份库，ABI 从 32 位时间戳换 64 位，故包名加 t64 后缀。**
+
+各发行版实际命名：
+
+| 发行版 | ALSA | PipeWire |
+|---|---|---|
+| Debian 12 (bookworm) | libasound2 | libpipewire-0.3-0 |
+| Debian 13 (trixie) | libasound2t64 | libpipewire-0.3-0t64 |
+| Debian forky | libasound2t64 | libpipewire-0.3-0t64 |
+| Ubuntu 22.04 (jammy) | libasound2 | libpipewire-0.3-0 |
+| Ubuntu 24.04 (noble) | libasound2t64 | libpipewire-0.3-0t64 |
+
+`control` 用 **`A | B`（或）语法**同时声明两代，apt 会自动选存在的那个：
+
+    libasound2t64 | libasound2,
+    libpipewire-0.3-0t64 | libpipewire-0.3-0
+
+**勿改成单一命名**，否则另一半发行版装不上。
+
+#### 9.4.2 依赖存在性审计（2026-09-21）
+
+逐包核对 Debian 12/13/forky 与 Ubuntu 22.04/24.04 的仓库：
+
+- **全部依赖均存在，零缺口**（含 `python3-setproctitle`、`pulseaudio-utils`）。
+- 命名差异仅上表两个库，已由或语法覆盖。
+- 其余依赖（gtk/gi/mutagen/numpy/yaml/gstreamer/ffmpeg/pipewire/pactl）在各版本命名一致。
+
+#### 9.4.3 各依赖的用途
+
+- `pulseaudio-utils`（pactl）：切 ALSA 独占前释放被 PipeWire 占用的设备
+  （`output_alsa.rs`）。缺失不崩，但独占可能打不开。
+- `python3-setproctitle`：改 `/proc/PID/cmdline`，htop/top 显示应用名而非 python3。
+- `ffmpeg`：DSD/APE/WavPack 软解（子进程调用）。缺失则这些格式放不了。
 
 ### 9.5 跨发行版说明（AppImage 已放弃）
 
