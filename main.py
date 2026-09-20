@@ -90,17 +90,27 @@ def on_activate(app: Adw.Application) -> None:
 
 
 def _set_process_name(name: str) -> None:
-    """设置进程名（/proc/PID/comm），改善系统监视器 / htop 的显示。
+    """设置进程名，改善系统监视器 / htop / top 的显示。
 
-    Linux 下 Python 进程默认 comm 为 "python3"；用 prctl(PR_SET_NAME) 改为
-    应用名。失败静默（非关键）。
+    两层：
+      1. /proc/PID/comm —— prctl(PR_SET_NAME)（15 字符上限）；
+      2. /proc/PID/cmdline —— setproctitle（htop 默认显示的是这个）。
+    两者都失败也无妨（非关键）。
     """
+    # 1) comm（进程名）
     try:
         import ctypes
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
         libc.prctl(15, name.encode("utf-8"), 0, 0, 0)  # PR_SET_NAME = 15
     except Exception:
         logging.getLogger(__name__).debug("设置进程名失败", exc_info=True)
+    # 2) cmdline（命令行；htop 默认显示此项）。
+    #    setproctitle 为可选依赖，缺失则跳过（comm 已改，够用）。
+    try:
+        import setproctitle  # type: ignore
+        setproctitle.setproctitle(name)
+    except Exception:
+        logging.getLogger(__name__).debug("setproctitle 不可用，cmdline 保持原样", exc_info=True)
 
 
 def main() -> None:
