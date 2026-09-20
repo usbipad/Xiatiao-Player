@@ -471,11 +471,12 @@ class MainWindow(Adw.ApplicationWindow):
                 display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
             # 动态背景 provider：主界面「背景跟随封面」时注入封面主色。
-            # 用略高优先级，确保覆盖 style.css 里 .content-area 的 view_bg_color。
+            # 用 USER 级（最高）优先级，确保压过 libadwaita 主题里
+            # `listview { background-color: var(--view-bg-color) }` 等规则。
             self._dynamic_css = Gtk.CssProvider()
             Gtk.StyleContext.add_provider_for_display(
                 display, self._dynamic_css,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+                Gtk.STYLE_PROVIDER_PRIORITY_USER,
             )
 
     # ============================================================
@@ -2114,6 +2115,7 @@ class MainWindow(Adw.ApplicationWindow):
             enabled = get_config().get_bool("main_bg_follow_cover", False)
         except Exception:
             enabled = False
+        log.info("[主界面背景] enabled=%s bg_rgb=%s", enabled, bg_rgb)
         try:
             if enabled and bg_rgb:
                 r, g, b = bg_rgb
@@ -2123,7 +2125,14 @@ class MainWindow(Adw.ApplicationWindow):
                 # `listview, list` 设了不透明的 --view-bg-color，会盖住底层色。
                 self.add_css_class("main-bg-follow")
                 css = (
-                    "window.main-bg-follow,"
+                    # 覆盖 libadwaita 背景变量：listview/list 等默认用
+                    # var(--view-bg-color)，改这个变量可让它们一并变色。
+                    ".main-bg-follow {"
+                    f"--view-bg-color: {col};"
+                    f"--window-bg-color: {col};"
+                    "}"
+                    # 直接覆盖各背景层的 background-color（压过主题规则）。
+                    ".main-bg-follow,"
                     ".main-bg-follow .player-panel,"
                     ".main-bg-follow .content-area,"
                     ".main-bg-follow headerbar,"
@@ -2140,6 +2149,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self.remove_css_class("main-bg-follow")
                 css = ""
             provider.load_from_data(css.encode("utf-8"))
+            log.info("[主界面背景] 已注入 CSS: %s", css or "(清空)")
         except Exception:
             log.debug("应用主界面背景色失败", exc_info=True)
 

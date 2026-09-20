@@ -63,9 +63,9 @@ def load_cover_assets(cover_raw: bytes | None,
                 r, g, b = dom_raw
                 from models import lighten_for_background
                 out["bg_rgb"] = lighten_for_background((r, g, b))
-                # 主界面「背景跟随封面」用：独立于沉浸页模糊开关，
-                # 始终给出提亮后的主色（供 .content-area 着色）。
-                out["main_bg_rgb"] = lighten_for_background((r, g, b))
+                # 主界面「背景跟随封面」用：独立于沉浸页模糊开关。
+                # 参数比沉浸页更浓（0.75/0.62），否则亮色模式下与白色难区分。
+                out["main_bg_rgb"] = lighten_for_background((r, g, b), target_lum=0.75, target_sat=0.62)
                 f = 0.72
                 out["seekbar_rgb"] = (r / 255.0 * f, g / 255.0 * f, b / 255.0 * f)
             except Exception:
