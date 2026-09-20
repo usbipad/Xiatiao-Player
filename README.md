@@ -132,7 +132,9 @@ Debian 12 / 13 / 14 与 Ubuntu 22.04 / 24.04 及以上：
 bash tools/prepare_debian12_chroot.sh
 
 # 构建 .deb（产物输出到 release/）
-bash tools/build_deb_debian12.sh
+# 注意 TMPDIR：sbuild 用它解包 chroot，须为 world-executable 的大磁盘目录
+# （本机 /tmp 是 tmpfs 会满；$HOME 是 700 进不去）→ 用 /var/tmp
+TMPDIR=/var/tmp bash tools/build_deb_debian12.sh
 ```
 
 > 为何不在本机直接 dpkg-buildpackage：在较新系统（如 Debian sid，glibc 2.43）
