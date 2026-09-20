@@ -371,56 +371,6 @@ scale.np-progress > trough > highlight {
     background-color: @view_bg_color;
 }
 
-/* ============================================================
-   主界面「背景跟随封面」：消除各层默认白色表面与描边
-   （仅在窗口带 .main-bg-follow 类时生效）
-   ============================================================ */
-/* 顶部 headerbar：透明，去掉默认底边阴影/边框 */
-.main-bg-follow headerbar,
-.main-bg-follow headerbar:backdrop {
-    background-color: transparent;
-    box-shadow: none;
-    border: none;
-}
-
-/* 表头及其按钮：透明，hover 用低对比前景色，不用白色 */
-.main-bg-follow .content-area columnview > header,
-.main-bg-follow .content-area columnview > header > button {
-    background-color: transparent;
-    background-image: none;
-    box-shadow: none;
-    border: none;
-}
-.main-bg-follow .content-area columnview > header > button:hover,
-.main-bg-follow .content-area columnview > header > button:active,
-.main-bg-follow .content-area columnview > header > button:checked {
-    background-color: alpha(currentColor, 0.06);
-    box-shadow: none;
-}
-
-/* headerbar 上的扁平按钮（设置/侧栏/导航）：hover/active 用低对比前景色，
-   避免在彩色背景上出现白色高亮环。不动 .nav-active（保持强调色）。 */
-.main-bg-follow headerbar button.flat:hover,
-.main-bg-follow headerbar button.flat:active,
-.main-bg-follow headerbar button.flat:checked,
-.main-bg-follow headerbar menubutton > button.flat:hover,
-.main-bg-follow headerbar menubutton > button.flat:active,
-.main-bg-follow headerbar menubutton > button.flat:checked {
-    background-color: alpha(currentColor, 0.08);
-    box-shadow: none;
-}
-
-/* 右键/媒体菜单：用封面主色（--xiatiao-cover-bg 由窗口注入），
-   去掉默认白色底与描边，避免在彩色背景上"露白"。 */
-.main-bg-follow popover.media-menu > contents {
-    background-color: var(--xiatiao-cover-bg, @popover_bg_color);
-    border: none;
-    box-shadow: 0 2px 10px 2px alpha(black, 0.18);
-}
-.main-bg-follow popover.media-menu > arrow {
-    background-color: var(--xiatiao-cover-bg, @popover_bg_color);
-    border: none;
-}
 
 /* 曲库歌曲列表：整体透明、无外框。
    之前 ColumnView 带 .card 会在列表外画一层与内容区不同色的"框"，

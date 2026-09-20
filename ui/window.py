@@ -2134,21 +2134,46 @@ class MainWindow(Adw.ApplicationWindow):
                 # 与 view-bg-color 不同，这个属性没有任何内置控件引用，
                 # 因此不会污染沉浸页/按钮等（仅显式引用它的规则受影响）。
                 css = (
-                    "window.main-bg-follow {"
-                    f"--xiatiao-cover-bg: {col};"
-                    "}"
+                    # 主界面各层背景色
                     "window.main-bg-follow,"
                     "window.main-bg-follow .player-panel,"
                     "window.main-bg-follow .content-area,"
-                    "window.main-bg-follow .content-area headerbar,"
                     "window.main-bg-follow .content-area scrolledwindow,"
                     "window.main-bg-follow .content-area scrolledwindow > viewport,"
                     "window.main-bg-follow .content-area columnview,"
-                    "window.main-bg-follow .content-area columnview > header,"
                     "window.main-bg-follow .content-area listview,"
                     "window.main-bg-follow .content-area gridview,"
                     "window.main-bg-follow .content-area flowbox {"
                     f"background-color: {col};"
+                    "}"
+                    # headerbar 透明（去默认底边阴影/边框）
+                    "window.main-bg-follow headerbar,"
+                    "window.main-bg-follow headerbar:backdrop {"
+                    "background-color: transparent; box-shadow: none; border: none;"
+                    "}"
+                    # 表头及其内部：彻底透明，覆盖 hover/active/checked 等所有状态，
+                    # 消除在彩色背景上出现的白色高亮块。
+                    "window.main-bg-follow .content-area columnview > header,"
+                    "window.main-bg-follow .content-area columnview > header > button,"
+                    "window.main-bg-follow .content-area columnview > header > button > box,"
+                    "window.main-bg-follow .content-area columnview > header > button:hover,"
+                    "window.main-bg-follow .content-area columnview > header > button:active,"
+                    "window.main-bg-follow .content-area columnview > header > button:checked {"
+                    "background: none; background-image: none;"
+                    "box-shadow: none; border: none;"
+                    "}"
+                    # headerbar 扁平按钮（设置/侧栏/导航）hover/active 去白环
+                    "window.main-bg-follow headerbar button.flat:hover,"
+                    "window.main-bg-follow headerbar button.flat:active,"
+                    "window.main-bg-follow headerbar button.flat:checked {"
+                    "background-color: alpha(currentColor, 0.08); box-shadow: none;"
+                    "}"
+                    # 右键/媒体菜单：popover 是独立 CSS 根，不能用 window 祖先限定。
+                    # .media-menu 仅本项目菜单使用，故全局选择器安全；
+                    # 且仅在功能开启时注入，关闭即清空。
+                    "popover.media-menu > contents {"
+                    f"background-color: {col}; border: none;"
+                    "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
                     "}"
                 )
             else:
