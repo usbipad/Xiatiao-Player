@@ -168,9 +168,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._dsp_state = None
 
         # ---- 布局 ----
-        # 响应式侧栏（Adw.OverlaySplitView）：
-        #   · 宽窗口：侧栏固定并排（与旧观感一致）。
-        #   · 窄窗口：断点触发 collapsed，侧栏折叠成浮层，窗口可继续收窄。
+        # 侧栏（Adw.OverlaySplitView）：始终并排显示，宽度线性跟随窗口；
+        # 仅由 headerbar 按钮手动隐藏/显示（不随窗口宽度自动折叠）。
         self._main_stack = Gtk.Stack()
         self._main_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
 
@@ -246,16 +245,9 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             log.debug("绑定侧栏切换失败", exc_info=True)
 
-        # ---- 响应式断点 ----
-        # 只保留「窄屏折叠」：≤760px 时侧栏折叠为浮层，窗口可继续收窄。
-        # 侧栏宽度本身由上面的 fraction 线性跟随，无需分档断点
-        #（分档会在阈值处跳变 + 触发控件重排 → 拖动卡顿）。
-        try:
-            _bp = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 760px"))
-            _bp.add_setter(self._split_view, "collapsed", True)
-            self.add_breakpoint(_bp)
-        except Exception:
-            log.debug("添加折叠断点失败", exc_info=True)
+        # 侧栏显隐**只由按钮控制**（不随窗口宽度自动折叠）：
+        # 窗口缩窄时右侧区域收缩，播放器面板始终保留。
+        # （collapsed 保持默认 False = 并排显示。）
 
         # 沉浸式播放页
         self.now_playing = NowPlayingPage(
