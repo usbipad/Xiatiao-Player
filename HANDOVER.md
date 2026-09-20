@@ -121,7 +121,7 @@
 - providers/：音乐来源（base / local 本地曲库）
 - services/：系统集成（mpris / tray / shortcuts / track_assets）
 - ui/：GTK4 界面（window / player_panel / settings_dialog / advanced_dsp_window / effect_page / 各页面 / widgets）
-- data/：hrtf（空间音频 IR）/ icons（应用图标）/ desktop 文件
+- data/：icons（应用图标）/ desktop 文件
 - audio_backend_rs/：Rust 音频后端（见第 5 节）
 - debian/：Debian 打包配置
 - tests/：Python 测试

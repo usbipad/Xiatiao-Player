@@ -37,9 +37,9 @@ override_dh_auto_install:
 	install -d debian/xiatiao-player/usr/lib/xiatiao-player
 	cp -r main.py config core models providers services ui \
 		debian/xiatiao-player/usr/lib/xiatiao-player/
-	cp -r data/hrtf debian/xiatiao-player/usr/lib/xiatiao-player/data/ 2>/dev/null || \
-		(install -d debian/xiatiao-player/usr/lib/xiatiao-player/data && \
-		 cp -r data/hrtf debian/xiatiao-player/usr/lib/xiatiao-player/data/)
+	# data/：图标（hrtf 已随旧功能移除）
+	install -d debian/xiatiao-player/usr/lib/xiatiao-player/data
+	cp -r data/icons debian/xiatiao-player/usr/lib/xiatiao-player/data/
 	# Rust 后端二进制
 	install -m 755 audio_backend_rs/target/release/xiatiao-audio-backend \
 		debian/xiatiao-player/usr/lib/xiatiao-player/

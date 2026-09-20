@@ -168,7 +168,7 @@ providers/               音源提供者
 services/                MPRIS2 / 系统托盘 / 快捷键 / 资源加载
 ui/                      GTK4 界面
   ├─ window.py             主窗口
-data/                    运行时资源（图标 / HRTF / desktop）
+data/                    运行时资源（图标 / desktop）
 audio_backend_rs/        Rust 音频后端
 debian/                  Debian 打包配置
 docs/screenshots/        README 界面截图

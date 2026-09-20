@@ -10,7 +10,6 @@ exclude = [
     "__pycache__",
     "audio_backend_rs/target",
     "tools/camilladsp-src",
-    "tools/pwrs-check",
     "backups",
     "debian",
     "界面截图",
