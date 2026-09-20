@@ -49,6 +49,35 @@
 - 抽取 SQLite store 公共基类 `core/_base_store.py`。
 - 新增 `ruff.toml`、`audio_backend_rs/rustfmt.toml`、`requirements.txt`。
 - 新增 `tools/build_appimage.sh`（半自包含：打包代码+后端，GTK 依赖系统）。
+
+### UI：主界面背景跟随封面（新增功能）
+- 设置 → 外观新增开关 `main_bg_follow_cover`（默认关）。开启后整个主界面
+  （窗口根 / 左侧播放面板 / 右侧内容区 / 顶部 headerbar / 列表 / 网格）
+  统一用当前封面主色调着色。
+- **取色算法**：主界面用新增的 `models.coverart.tint_for_background` ——
+  **保留封面原始饱和度**（按比例压制 + 封顶），使淡封面→淡背景、艳封面→柔和背景。
+  区别于沉浸页的 `lighten_for_background`（强制固定饱和度，会把淡色拉成纯色）。
+- **实现要点（含多处踩坑修复）**：
+  - 背景色在切歌后台线程算好（`services/track_assets.py` 的 `main_bg_rgb`，
+    独立于沉浸页模糊开关），主线程只注入 CSS，零额外解码。
+  - 用**动态 CssProvider + `PRIORITY_USER`**（`ui/window.py` 的 `_apply_main_bg`）
+    注入，规则全部限定在 `.content-area` 内，避免污染沉浸页/菜单。
+  - **不要覆盖 `--view-bg-color` / `--window-bg-color` 全局变量**：它们被所有
+    后代继承，会导致沉浸页歌词、右键菜单、设置按钮异常变白。
+  - libadwaita 默认给 `listview/list` 设了不透明 `view-bg-color`，须显式覆盖
+    `columnview/listview/gridview/flowbox` 及 `columnview > header` 各状态
+    （含 `:hover/:active/:checked`）。
+  - **popover 是独立顶层窗口**，不受 `window .xxx` 祖先选择器影响，须用全局
+    `popover.media-menu > contents`（`.media-menu` 为本项目菜单专用类）。
+  - 左上歌词区 `.np-fade-top/.np-fade-bottom` 渐隐原用 `@window_bg_color`（白），
+    跟随模式下改用封面色渐变。
+
+### 工程化（续）
+- **死代码清理**：经全项目引用扫描后删除 `core/gst_backend.py`（GStreamer 后端）、
+  `core/dsp_presets.py`（旧 effects.json 存储）、`ui/dsp_page.py`、`tools/dev/`、
+  `tools/dump_preset_yamls.py`。清理过时注释与裸 print。
+- 保留：`core/audio_backend.py`（`RustBackend` 的基类，勿删）、`core/viz.py`、
+  `core/effect_state.py`。Rust 侧 dead_code 警告多为**预留扩展点**，保留。
 - 完整 `README.md`（含 5 张界面截图，存 `docs/screenshots/`）。
 
 
@@ -117,8 +146,9 @@
 
 对 UI 暴露统一接口，并转发后端 GTK 信号（position-update / duration-changed / state / error-occur / audio-info 等）。
 
-**注意**：文件头注释仍写着「当前为 GstBackend，后续可换成独立 Rust 进程」，但
-`_create_default_backend()` 实际返回的是 `RustBackend`（core/rust_backend.py）。注释为早期过渡期遗留，以后端实现为准。
+`_create_default_backend()` 返回 `RustBackend`（core/rust_backend.py）。
+`core/audio_backend.py` 提供 `AudioBackend` 抽象基类与 `PlayerState` 常量，
+`RustBackend` 继承它——**该文件勿删**。
 
 ### 4.3 配置与数据位置
 
@@ -424,8 +454,8 @@ DSP 参数（扁平 dict）在内存/磁盘中存在**多个副本**，改动时
 ### 12.3 文档/注释过时点（已按代码校对）
 
 - `shared.rs` 中 `output_device` 注释写「PipeWire sink 名」，实际为 ALSA hw 名。
-- `player_core.py` 头注释写「当前为 GstBackend」，实际用 RustBackend。
 - `protocol.rs` 中卷积 IR 相关空注释无对应 variant。
+- （`player_core.py` / `rust_backend.py` 的 GstBackend 过时注释已清理。）
 
 ### 12.4 图标缓存（GNOME Wayland）
 
