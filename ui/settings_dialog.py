@@ -812,7 +812,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         if 0 <= idx < len(getattr(self, "_lang_values", [])):
             set_language(self._lang_values[idx])
             try:
-                win = self.get_root()
+                win = self._get_window()
                 if win is not None and hasattr(win, "add_toast"):
                     win.add_toast(Adw.Toast.new(_("语言已切换，重启应用后生效")))
             except Exception:
@@ -824,7 +824,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         get_config().set_bool("nowplaying_blur_bg", enabled)
         # 即时生效：通知主窗口重新应用当前曲目的背景
         try:
-            win = self.get_root()
+            win = self._get_window()
             if win is not None and hasattr(win, "reapply_nowplaying_bg"):
                 win.reapply_nowplaying_bg()
         except Exception:
@@ -835,7 +835,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         enabled = bool(row.get_active())
         get_config().set_bool("main_bg_follow_cover", enabled)
         try:
-            win = self.get_root()
+            win = self._get_window()
             if win is not None and hasattr(win, "reapply_main_bg"):
                 win.reapply_main_bg()
         except Exception:
