@@ -2123,7 +2123,6 @@ class MainWindow(Adw.ApplicationWindow):
             enabled = get_config().get_bool("main_bg_follow_cover", False)
         except Exception:
             enabled = False
-        log.info("[主界面背景] enabled=%s bg_rgb=%s", enabled, bg_rgb)
         try:
             if enabled and bg_rgb:
                 r, g, b = bg_rgb
@@ -2196,7 +2195,6 @@ class MainWindow(Adw.ApplicationWindow):
                 self.remove_css_class("main-bg-follow")
                 css = ""
             provider.load_from_data(css.encode("utf-8"))
-            log.info("[主界面背景] 已注入 CSS: %s", css or "(清空)")
         except Exception:
             log.debug("应用主界面背景色失败", exc_info=True)
 
