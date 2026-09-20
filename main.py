@@ -89,7 +89,33 @@ def on_activate(app: Adw.Application) -> None:
     win.present()
 
 
+def _set_process_name(name: str) -> None:
+    """设置进程名（/proc/PID/comm），改善系统监视器 / htop 的显示。
+
+    Linux 下 Python 进程默认 comm 为 "python3"；用 prctl(PR_SET_NAME) 改为
+    应用名。失败静默（非关键）。
+    """
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.prctl(15, name.encode("utf-8"), 0, 0, 0)  # PR_SET_NAME = 15
+    except Exception:
+        logging.getLogger(__name__).debug("设置进程名失败", exc_info=True)
+
+
 def main() -> None:
+    # 显式设置程序名与应用名。
+    # Wayland 下 GTK4 用 GLib prgname 作为窗口 app_id 的 fallback；
+    # 桌面环境据此匹配 .desktop（图标 / 名称）。设成 APP_ID 与
+    # com.xiatiao.player.desktop 对上。
+    try:
+        GLib.set_prgname(APP_ID)
+        GLib.set_application_name("Xiatiao Player")
+    except Exception:
+        pass
+    # 改 /proc/PID/comm，让系统监视器 / htop 显示应用名而非 "python3"。
+    _set_process_name("xiatiao-player")
+
     app = Adw.Application(application_id=APP_ID)
     app.connect("activate", on_activate)
 
