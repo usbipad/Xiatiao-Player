@@ -316,21 +316,30 @@ class NowPlayingPage(Gtk.Overlay):
         key.connect("key-pressed", self._on_key)
         self.add_controller(key)
 
-        # 响应式：页面尺寸变化时按可用空间缩放封面/间距/歌词，
-        # 避免小屏或高显示缩放下内容撑出可视区。
+        # 响应式：按可用空间缩放封面/间距/歌词，避免小屏或高显示缩放下撑出。
+        # 实现说明：Gtk.Overlay 的 notify::width/height 与 do_size_allocate
+        # 在实测中均不可靠（不触发），故用 tick 回调轮询尺寸变化——
+        # 仅当 widget 可见并重绘时才跑，开销极小（每帧两次取值+比较）。
+        self._resp_last = None
+        self._resize_tick_id = None
         try:
-            self.connect("notify::width", self._on_np_resize)
-            self.connect("notify::height", self._on_np_resize)
+            self._resize_tick_id = self.add_tick_callback(self._on_resize_tick)
         except Exception:
             pass
 
-    def _on_np_resize(self, *_a) -> None:
+    def _on_resize_tick(self, _widget, _clock):
+        # 注意：Gtk.Widget.add_tick_callback 的回调签名是 (widget, clock)，
+        # 只 2 个参数（曾误加第三个 data 参数 → TypeError → 回调从未执行）。
         try:
-            self._apply_responsive()
+            w = self.get_width()
+            h = self.get_height()
+            if (w, h) != getattr(self, "_resp_last", None):
+                self._apply_responsive(w, h)
         except Exception:
             pass
+        return True   # 继续接收后续帧
 
-    def _apply_responsive(self) -> None:
+    def _apply_responsive(self, w: int | None = None, h: int | None = None) -> None:
         """按页面可用宽高动态缩放封面 / 间距 / 歌词宽度。
 
         背景：全屏页此前用固定像素（封面 420 + 间距 300 + 歌词 480 ≈ 1300px），
@@ -338,8 +347,10 @@ class NowPlayingPage(Gtk.Overlay):
         这里按可用空间等比缩放，最小保证可读（封面 >= 140）。
         """
         try:
-            w = self.get_width()
-            h = self.get_height()
+            if w is None:
+                w = self.get_width()
+            if h is None:
+                h = self.get_height()
         except Exception:
             return
         if w < 50 or h < 50:
