@@ -57,6 +57,7 @@
 - 解码：symphonia（原生）+ ffmpeg（高压缩格式与 DSD）
 - 播放列表、歌单、收藏（我喜欢）、播放历史
 - 沉浸式全屏页、滚动歌词、频谱可视化
+- **主界面背景跟随封面**：可选让整个界面用当前封面主色调着色
 - **MPRIS2** 媒体控制、系统托盘
 
 ---
@@ -123,12 +124,20 @@ python3 main.py
 
 ## 🔨 从源码打包 .deb
 
-```bash
-sudo apt install debhelper devscripts cargo rustc pkg-config libasound2-dev
+推荐用 **Debian 12 基线**构建。产物最高只需 GLIBC_2.34，一个包即可覆盖
+Debian 12 / 13 / 14 与 Ubuntu 22.04 / 24.04 及以上：
 
-dpkg-buildpackage -b -us -uc -tc
-# 产物在上级目录：xiatiao-player_1.0.0_amd64.deb
+```bash
+# 一次性：生成构建 chroot（含新版 Rust + libclang）
+bash tools/prepare_debian12_chroot.sh
+
+# 构建 .deb（产物输出到 release/）
+bash tools/build_deb_debian12.sh
 ```
+
+> 为何不在本机直接 dpkg-buildpackage：在较新系统（如 Debian sid，glibc 2.43）
+> 编译会产出要求 GLIBC_2.43 的二进制，无法在 Debian 12 / Ubuntu 22.04 运行。
+> 必须在目标最低版本的环境里构建，glibc 需求才会降下来。
 
 打包配置位于 `debian/`：
 - `control`：包元信息与依赖
@@ -173,7 +182,8 @@ audio_backend_rs/        Rust 音频后端
 debian/                  Debian 打包配置
 docs/screenshots/        README 界面截图
 tests/                   冒烟测试
-tools/                   开发工具（含 dev/ 调试脚本）
+release/                 发布产物（.deb，不入库）
+tools/                   构建脚本（打包 / 图标生成 / 内嵌 CamillaDSP 源码）
 ```
 
 ---
