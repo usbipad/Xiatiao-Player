@@ -1,10 +1,12 @@
 # 项目级 cargo 配置。
-# 当前使用官方 crates.io 源（VPN 环境下 USTC 镜像连不上）。
-# 无 VPN 时，可改回 USTC：
-#   [source.crates-io]
-#   replace-with = "ustc"
-#   [source.ustc]
-#   registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
+
+# 离线构建：使用 vendor/ 目录中的依赖副本（随源码包分发）。
+# 这些依赖由 `cargo vendor vendor` 生成，确保 Debian 打包时无需联网。
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
 
 [net]
 retry = 5

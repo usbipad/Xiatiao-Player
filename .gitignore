@@ -5,6 +5,9 @@ __pycache__/
 # Rust 构建产物
 audio_backend_rs/target/
 
+# cargo vendor 生成的依赖副本（可由 `cargo vendor` 重建，不纳入版本控制）
+audio_backend_rs/vendor/
+
 # Unix socket
 *.sock
 

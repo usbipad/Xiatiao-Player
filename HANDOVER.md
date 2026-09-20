@@ -40,6 +40,12 @@
 
 ### 工程化
 - 依赖分级：必需留 `Depends`，增强项（numpy/mutagen/yaml/ffmpeg/gstreamer）移到 `Recommends`。
+- **打包策略转向**：放弃 AppImage 跨发行版分发（半自包含，glibc/gi 问题无解），
+  改为**按 glibc 基线的原生 `.deb`**。新增 `tools/prepare_debian12_chroot.sh`
+  （建 Debian 12 chroot，含 rustup 新版 Rust + libclang-dev）与
+  `tools/build_deb_debian12.sh`（在 Debian 12 基线构建 .deb）。
+  产物最高只需 **GLIBC_2.34**，覆盖 Debian 12/13 + Ubuntu 22.04/24.04+。
+  详见第 9 节。
 - 抽取 SQLite store 公共基类 `core/_base_store.py`。
 - 新增 `ruff.toml`、`audio_backend_rs/rustfmt.toml`、`requirements.txt`。
 - 新增 `tools/build_appimage.sh`（半自包含：打包代码+后端，GTK 依赖系统）。
@@ -268,18 +274,51 @@ Rust 与内嵌 CamillaDSP 是**两条并行 DSP 路径**。某功能由谁处理
 
 ## 9. Debian 打包（.deb）
 
-### 9.1 构建
+> **跨发行版策略（2026-09-20 确立）**：放弃 AppImage 跨发行版分发，改为**按
+> glibc 基线构建原生 `.deb`**。用 Debian 12（glibc 2.36）作为最低基线，一个包即可
+> 覆盖 Debian 12/13 + Ubuntu 22.04/24.04 及更新的 Debian 系。
+> 原因：AppImage 内嵌的 ffmpeg/Rust 后端仍需宿主 glibc，无法真正自包含；而原生 `.deb`
+> 依赖交给 apt，包小且无 glibc 问题。
+
+### 9.1 构建（推荐：跨版本基线）
+
+    # 一次性准备：生成 Debian 12 chroot（含新版 Rust + libclang）
+    bash tools/prepare_debian12_chroot.sh
+
+    # 构建 .deb（在 Debian 12 基线里编，产物最高只需 GLIBC_2.34）
+    bash tools/build_deb_debian12.sh
+    # 产物：xiatiao-player_1.0.0_amd64.deb（覆盖 Debian 12+ / Ubuntu 22.04+）
+
+**为什么不能直接用 `dpkg-buildpackage`**：本机（Debian sid）glibc 2.43，直接编出的
+Rust 后端要求 GLIBC_2.43，装到 Debian 12/Ubuntu 22.04 会因缺符号启动失败。
+必须在**目标最低版本的环境**里编，glibc 需求才会降下来。
+
+**关键实现点**（`tools/` 脚本 + `debian/` 配置）：
+- 用 `sbuild --chroot-mode=unshare`（无需 root）+ `mmdebstrap` 建 chroot。
+- chroot 内用 **rustup** 装新版 Rust（Debian 12 自带的 1.63 无法解析 `Cargo.lock` v4，
+  且 `tools/camilladsp-src` 要求 rustc ≥ 1.90）。Rust 版本只影响能否编译，
+  **产物 glibc 由 chroot 的 libc 决定**。
+- `cargo vendor` 把依赖固化进 `audio_backend_rs/vendor/`，构建离线可复现。
+- chroot 需含 `libclang-dev`（`libspa-sys` 的 bindgen 依赖 libclang）。
+- `debian/rules` 三处关键改动：
+  - 注入 `PATH=/usr/local/cargo/bin:...` 使用 rustup 的 Rust；
+  - `override_dh_clean` 用 `dh_clean -d`，避免误删 vendor 的 `Cargo.toml.orig`；
+  - 声明 `binary-arch: build-arch` 依赖（否则 `dpkg-buildpackage` 只跑 binary，不编译）。
+- `debian/source/options` 用 `tar-ignore` 排除构建产物/AppImage，源码包约 30 MB（含 vendor）。
+
+### 9.1b 构建（本机快速，仅限本机/最新系统）
 
     cd xiatiao-player
     dpkg-buildpackage -us -uc -b
-    # 产物在上级目录：xiatiao-player_1.0.0_amd64.deb
+    # 产物要求 GLIBC_2.43，只能在 Debian sid / 最新系统运行
 
 ### 9.2 打包配置（debian/）
 
-- control：包元数据 + 依赖（含 t64 兼容）
-- rules：编译 Rust 后端 + 组装安装树
-- changelog / copyright / postinst / source-format
-- xiatiao-player.lintian-overrides：抑制 Rust 二进制固有提示
+- control：包元数据 + 依赖（含 t64 兼容）。`Build-Depends` 含 `libclang-dev`。
+- rules：编译 Rust 后端 + 组装安装树（含 rustup PATH、dh_clean -d、target 依赖）。
+- source/options：`tar-ignore` 排除规则（native 格式下 `.gitignore` 不生效）。
+- changelog / copyright / postinst。
+- xiatiao-player.lintian-overrides：抑制 Rust 二进制固有提示。
 
 ### 9.3 安装
 
@@ -293,17 +332,20 @@ Rust 与内嵌 CamillaDSP 是**两条并行 DSP 路径**。某功能由谁处理
   gir1.2-adw-1、gir1.2-gdkpixbuf-2.0、libasound2、libpipewire-0.3。
 - `Recommends`（增强，apt 默认也装）：python3-mutagen、python3-numpy、python3-yaml、
   gir1.2-gstreamer-1.0、gir1.2-gst-plugins-base-1.0、ffmpeg、pipewire、pipewire-bin。
+- `Build-Depends`：debhelper-compat、cargo、rustc、pkg-config、libasound2-dev、
+  libpipewire-0.3-dev、libclang-dev。
 
-### 9.5 AppImage（半自包含）
+### 9.5 跨发行版说明（AppImage 已放弃）
 
-    bash tools/build_appimage.sh
-    # 产物：Xiatiao-Player-x86_64.AppImage（含项目代码 + Rust 后端）
-
-- **不是完全自包含**：Python/GTK 依赖系统。原因：GTK4 + PyGObject 的 GI typelib
-  路径写死、依赖上百个库，强行内嵌极难且易碎。能跑 GTK4 的系统通常已有 python3-gi。
-- 构建坑：`appimagetool` 会尝试从 GitHub 下载 runtime，本环境网络不稳。
-  解决：`--runtime-file <本地runtime>` 指定离线 runtime。
-- 真正「完全自包含」应改用 **Flatpak**（GNOME runtime 已含 GTK4/Adw）。
+- **AppImage 方案已放弃**（`tools/build_appimage.sh` 保留但不再发布）：
+  - 内嵌的 ffmpeg / Rust 后端**仍需宿主 glibc**（实测内嵌 ffmpeg 要求 GLIBC_2.38、
+    后端 2.43），旧系统照样崩；
+  - gi/GTK 路径写死 Debian（`/usr/lib/python3/dist-packages`），Fedora/Arch 上 `import gi` 失败；
+  - 内嵌库闭包不全（169 个 vs 实际 171+，且 dlopen 插件 ldd 看不到）。
+- **非 Debian 系（Fedora/Arch/openSUSE）**：当前不提供原生包。若将来需要，
+  建议用 **Flatpak**（一套 runtime 通吃，且不碰驱动层），而非 AppImage。
+- **`.deb` 覆盖范围**：GLIBC_2.34 → Debian 12/13、Ubuntu 22.04/24.04 及更新。
+  若要覆盖更老（如 Ubuntu 20.04），需换更低基线（Debian 11，glibc 2.31）重建 chroot。
 
 ---
 

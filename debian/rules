@@ -3,12 +3,31 @@
 
 export DH_VERBOSE = 1
 
+# 使用 rustup 安装的 Rust 工具链（chroot 内 /usr/local/cargo/bin），
+# 覆盖 Debian 12 系统自带的旧版 cargo/rustc（1.63 无法解析 Cargo.lock v4）。
+export PATH := /usr/local/cargo/bin:$(PATH)
+export RUSTUP_HOME := /usr/local/rustup
+export CARGO_HOME := /usr/local/cargo
+
 %:
 	dh $@
+
+# 显式声明 target 依赖。
+# debhelper 的 binary-arch 序列不含 dh_auto_build（编译属 build-arch），
+# 若不加依赖，dpkg-buildpackage 只跑 binary-arch 会导致 Rust 后端不被编译。
+build: build-arch
+binary-arch: build-arch
+binary: build
 
 override_dh_auto_build:
 	# 编译 Rust 后端（release）。
 	cd audio_backend_rs && cargo build --release --offline || cargo build --release
+
+override_dh_clean:
+	# dh_clean 默认会删除 *.orig，而 cargo vendor 的每个 crate 都含
+	# Cargo.toml.orig（.cargo-checksum.json 校验必需），删除后 cargo 报错。
+	# 用 -d（--dirs-only）只清构建目录，保留 vendor 里的 .orig。
+	dh_clean -d
 
 override_dh_auto_clean:
 	-cd audio_backend_rs && cargo clean

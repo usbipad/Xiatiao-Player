@@ -1,0 +1,20 @@
+# dpkg-source 排除规则。
+# native 格式下 .gitignore 不生效，必须在此声明；用 tar-ignore（tar --exclude 语法）。
+tar-ignore = __pycache__
+tar-ignore = *.pyc
+tar-ignore = .git
+tar-ignore = .debhelper
+tar-ignore = backups
+tar-ignore = 界面截图
+tar-ignore = image.png
+tar-ignore = *.sock
+tar-ignore = *.AppImage
+tar-ignore = *.deb
+tar-ignore = *.buildinfo
+tar-ignore = *.changes
+tar-ignore = *.dsc
+tar-ignore = *.substvars
+tar-ignore = audio_backend_rs/target
+tar-ignore = tools/camilladsp/target
+tar-ignore = tools/camilladsp/camilladsp
+tar-ignore = tools/pwrs-check
