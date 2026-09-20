@@ -470,6 +470,13 @@ class MainWindow(Adw.ApplicationWindow):
             Gtk.StyleContext.add_provider_for_display(
                 display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
             )
+            # 动态背景 provider：主界面「背景跟随封面」时注入封面主色。
+            # 用略高优先级，确保覆盖 style.css 里 .content-area 的 view_bg_color。
+            self._dynamic_css = Gtk.CssProvider()
+            Gtk.StyleContext.add_provider_for_display(
+                display, self._dynamic_css,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+            )
 
     # ============================================================
     # 启动闪屏（Splash）—— 逻辑已抽到 ui/splash.py，此处仅做转发
@@ -1244,6 +1251,7 @@ class MainWindow(Adw.ApplicationWindow):
         bg_tex = assets["bg_tex"]
         bg_dark = assets["bg_dark"]
         bg_rgb = assets["bg_rgb"]
+        main_bg_rgb = assets.get("main_bg_rgb")
         seekbar_rgb = assets["seekbar_rgb"]
         try:
             self._pending_cover_raw = assets["pending_cover_raw"]
@@ -1268,11 +1276,11 @@ class MainWindow(Adw.ApplicationWindow):
         # 不能在后台线程落盘——快速切歌时旧线程晚到会覆盖新封面。
         GLib.idle_add(self._apply_track_assets, token, cover_panel_tex, cover_np_tex,
                       lyrics, rg_gain, bg_rgb, seekbar_rgb, bg_tex, bg_dark,
-                      cover_raw)
+                      cover_raw, main_bg_rgb)
 
     def _apply_track_assets(self, token: int, cover_panel_tex, cover_np_tex, lyrics, rg_gain,
                             bg_rgb=None, seekbar_rgb=None, bg_tex=None, bg_dark=None,
-                            mpris_cover_raw=None) -> bool:
+                            mpris_cover_raw=None, main_bg_rgb=None) -> bool:
         """主线程：应用后台已建好的 GdkTexture / 歌词 / ReplayGain。
 
         封面纹理在后台线程已解码完成，这里只 set_paintable，几乎零耗时。
@@ -1296,6 +1304,9 @@ class MainWindow(Adw.ApplicationWindow):
             self.now_playing.set_cover_texture(cover_np_tex, bg_rgb, seekbar_rgb)
             # 沉浸页背景：封面模糊图铺满（None 时清空 → 回退纯色背景）
             self.now_playing.set_bg_texture(bg_tex, bg_dark)
+            # 主界面背景跟随封面（独立开关，用 main_bg_rgb，不受沉浸页模糊开关影响）
+            self._current_bg_rgb = main_bg_rgb
+            self._apply_main_bg(main_bg_rgb)
             # 主界面左侧进度条也跟随封面主色
             self.player_panel.set_progress_color(seekbar_rgb)
             self.now_playing.set_lyrics(lyrics)
@@ -2090,6 +2101,32 @@ class MainWindow(Adw.ApplicationWindow):
             self.now_playing.set_bg_colors(bg_rgb, seek)
         except Exception:
             pass
+
+    def _apply_main_bg(self, bg_rgb) -> None:
+        """主界面「背景跟随封面」：把封面主色注入右侧内容区背景。
+
+        开关关闭或无颜色时清空动态 CSS，回退主题色（@view_bg_color）。
+        """
+        provider = getattr(self, "_dynamic_css", None)
+        if provider is None:
+            return
+        try:
+            enabled = get_config().get_bool("main_bg_follow_cover", False)
+        except Exception:
+            enabled = False
+        try:
+            if enabled and bg_rgb:
+                r, g, b = bg_rgb
+                css = f".content-area {{ background-color: rgb({r}, {g}, {b}); }}"
+            else:
+                css = ""
+            provider.load_from_data(css.encode("utf-8"))
+        except Exception:
+            log.debug("应用主界面背景色失败", exc_info=True)
+
+    def reapply_main_bg(self) -> None:
+        """设置页切换「主界面背景跟随封面」后即时应用当前封面主色。"""
+        self._apply_main_bg(getattr(self, "_current_bg_rgb", None))
 
     def reapply_nowplaying_bg(self) -> None:
         """设置页切换「背景模糊」后即时重应用当前曲目的背景。

@@ -769,6 +769,14 @@ class SettingsWindow(Adw.PreferencesWindow):
         blur_row.connect("notify::active", self._on_blur_bg_toggled)
         group.add(blur_row)
 
+        # 主界面背景跟随封面
+        main_bg_row = Adw.SwitchRow()
+        main_bg_row.set_title(_("主界面背景跟随封面"))
+        main_bg_row.set_subtitle(_("用当前封面的主色调着色主界面背景；关闭则使用主题色"))
+        main_bg_row.set_active(cfg.get_bool("main_bg_follow_cover", False))
+        main_bg_row.connect("notify::active", self._on_main_bg_toggled)
+        group.add(main_bg_row)
+
         # 行为分组
         behave = Adw.PreferencesGroup()
         behave.set_title(_("行为"))
@@ -819,6 +827,17 @@ class SettingsWindow(Adw.PreferencesWindow):
             win = self.get_root()
             if win is not None and hasattr(win, "reapply_nowplaying_bg"):
                 win.reapply_nowplaying_bg()
+        except Exception:
+            pass
+
+    def _on_main_bg_toggled(self, row, _pspec) -> None:
+        """切换主界面背景跟随封面，持久化并即时通知主窗口重应用。"""
+        enabled = bool(row.get_active())
+        get_config().set_bool("main_bg_follow_cover", enabled)
+        try:
+            win = self.get_root()
+            if win is not None and hasattr(win, "reapply_main_bg"):
+                win.reapply_main_bg()
         except Exception:
             pass
 

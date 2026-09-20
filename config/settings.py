@@ -56,6 +56,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "nowplaying_blur_px": 6,
     # 背景亮度自适应阈值（低于此亮度时前景切亮色）
     "nowplaying_dark_threshold": 0.65,
+    # 主界面背景是否跟随当前封面主色调（关闭则用主题色 @view_bg_color）
+    "main_bg_follow_cover": False,
     # ---- 行为 ----
     "auto_scan_on_start": True,
     "close_to_tray": False,
