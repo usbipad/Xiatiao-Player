@@ -8,5 +8,11 @@ xiatiao-player (1.0.0) unstable; urgency=medium
   * 曲库 / 歌单 / 收藏 / 历史，MPRIS2 与系统托盘。
   * seek 修复：PCM/DSD 软解与直通路径的定位、状态机与音效衔接。
   * 列表正在播放行高亮（与音效弹窗选中样式一致）。
+  * 主界面背景跟随封面主色调（设置 → 外观，独立开关）。
+  * 进程名/窗口 app_id 修正：系统监视器/htop 显示应用名而非 python3。
+  * 设置窗口开关即时生效（修正 PreferencesWindow 的 get_root 误用）。
+  * 打包：Debian 12 基线构建，产物 GLIBC_2.34，覆盖 Debian 12+ / Ubuntu 22.04+。
+  * 依赖：全部并入 Depends，一条 apt install 装齐。
+  * 清理历史遗留死代码（gst_backend/dsp_presets/dsp_page 等）。
 
  -- usbipad <1495941192+usbipad@users.noreply.github.com>  Sun, 20 Sep 2026 03:00:00 +0800

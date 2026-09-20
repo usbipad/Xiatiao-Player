@@ -15,6 +15,7 @@ tar-ignore = *.changes
 tar-ignore = *.dsc
 tar-ignore = *.substvars
 tar-ignore = audio_backend_rs/target
+tar-ignore = reviews
 # 注：不写 tar-ignore = release —— tar 的 --exclude 会匹配任意路径中
 # 名为 release 的目录，误伤 vendor/yaml_serde/util/release。
 # release/ 产物里的 *.deb 已由下方 tar-ignore = *.deb 排除。
