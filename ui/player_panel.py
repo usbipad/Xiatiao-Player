@@ -1038,36 +1038,9 @@ class PlayerPanel(Gtk.Box):
             self._tab_box.set_spacing(int(6 * s))
         except Exception:
             pass
-        # 图标尺寸：随缩放调整（封面放大时控件同步放大，视觉协调）。
-        # 以 16px 为基准。
-        _icon_px = max(12, int(round(16 * s)))
-        try:
-            for btn in (getattr(self, "btn_shuffle", None),
-                        getattr(self, "_btn_prev", None),
-                        getattr(self, "btn_play", None),
-                        getattr(self, "_btn_next", None),
-                        getattr(self, "btn_repeat", None),
-                        getattr(self, "_vol_btn", None),
-                        getattr(self, "btn_like", None),
-                        getattr(self, "_effect_btn", None),
-                        getattr(self, "_add_queue_btn", None)):
-                if btn is None:
-                    continue
-                child = btn.get_child()
-                if isinstance(child, Gtk.Image):
-                    child.set_pixel_size(_icon_px)
-                elif isinstance(btn, Gtk.Button) and child is None:
-                    # 用 icon_name 的按钮：图标是内部 Image，无法直接拿；用 CSS 类调。
-                    pass
-        except Exception:
-            pass
-        # 播放主按钮略大
-        try:
-            _pc = self.btn_play.get_child() if getattr(self, "btn_play", None) else None
-            if isinstance(_pc, Gtk.Image):
-                _pc.set_pixel_size(max(16, int(round(22 * s))))
-        except Exception:
-            pass
+        # 图标尺寸与按钮尺寸：改由 CSS 的 scale-sm/md/lg 类控制（见 style.css）。
+        # 不用 set_pixel_size——它会让 symbolic 图标在大尺寸下变形，且
+        # set_icon_name()（播放/暂停切换）重建内部 Image 后 pixel_size 丢失。
         # 字号三档（sm/md/lg 对应 小/中/大）
         try:
             for c in ("scale-sm", "scale-md", "scale-lg"):

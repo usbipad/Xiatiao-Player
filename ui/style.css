@@ -252,6 +252,7 @@ aspectframe,
     min-width: 34px;
     min-height: 34px;
     padding: 0;
+    -gtk-icon-size: 16px;
 }
 
 .np-skip-btn:hover {
@@ -263,6 +264,7 @@ aspectframe,
     min-width: 26px;
     min-height: 26px;
     color: alpha(@window_fg_color, 0.6);
+    -gtk-icon-size: 14px;
 }
 
 /* 播放 / 暂停：实心强调色大圆（Apple Music 风格，核心焦点）*/
@@ -274,6 +276,7 @@ aspectframe,
     min-width: 58px;
     min-height: 58px;
     border-radius: 999px;
+    -gtk-icon-size: 22px;
 }
 
 .np-play-btn:hover {
@@ -352,13 +355,28 @@ scale.np-progress > trough > highlight {
     border-radius: 12px;
 }
 
-/* 面板整体缩放：字号三档（图标/间距由代码按比例调）*/
+/* 面板整体缩放：三档（字号 + 图标 + 按钮尺寸）。
+   关键：图标尺寸统一用 CSS `-gtk-icon-size`（而非代码 set_pixel_size）——
+   1) symbolic 图标手动 set_pixel_size 在大尺寸下会变形（“歪”）；
+   2) set_icon_name() 重建内部 Image 后 pixel_size 丢失（播放/暂停图标不一致）。
+   CSS 方式声明式、渲染正确、切换图标后仍生效。 */
 .player-panel.scale-sm .heading { font-size: 15px; }
 .player-panel.scale-sm .caption { font-size: 10px; }
+.player-panel.scale-sm .np-skip-btn { -gtk-icon-size: 14px; min-width: 30px; min-height: 30px; }
+.player-panel.scale-sm .np-skip-btn.np-aux-btn { -gtk-icon-size: 12px; min-width: 24px; min-height: 24px; }
+.player-panel.scale-sm .np-play-btn { -gtk-icon-size: 20px; min-width: 50px; min-height: 50px; }
+
 .player-panel.scale-md .heading { font-size: 17px; }
 .player-panel.scale-md .caption { font-size: 11px; }
+.player-panel.scale-md .np-skip-btn { -gtk-icon-size: 16px; min-width: 34px; min-height: 34px; }
+.player-panel.scale-md .np-skip-btn.np-aux-btn { -gtk-icon-size: 14px; min-width: 26px; min-height: 26px; }
+.player-panel.scale-md .np-play-btn { -gtk-icon-size: 22px; min-width: 58px; min-height: 58px; }
+
 .player-panel.scale-lg .heading { font-size: 19px; }
 .player-panel.scale-lg .caption { font-size: 12px; }
+.player-panel.scale-lg .np-skip-btn { -gtk-icon-size: 19px; min-width: 40px; min-height: 40px; }
+.player-panel.scale-lg .np-skip-btn.np-aux-btn { -gtk-icon-size: 16px; min-width: 30px; min-height: 30px; }
+.player-panel.scale-lg .np-play-btn { -gtk-icon-size: 27px; min-width: 68px; min-height: 68px; }
 
 /* 右侧内容区：视图底色（更亮），与左侧侧栏区分（Tonearm 风格）*/
 .content-area {
