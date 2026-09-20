@@ -15,4 +15,4 @@ tar-ignore = *.changes
 tar-ignore = *.dsc
 tar-ignore = *.substvars
 tar-ignore = audio_backend_rs/target
-tar-ignore = tools/pwrs-check
+tar-ignore = release

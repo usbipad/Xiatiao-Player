@@ -23,6 +23,11 @@ PARENT="$(dirname "$PROJ")"
 RELEASE="$PROJ/release"
 CHROOT="${XIATIAO_DEBIAN12_CHROOT:-$HOME/.cache/sbuild/bookworm-rust-amd64.tar}"
 
+# 版本号：从 debian/changelog 首行解析（唯一真相，避免多处硬编码漂移）。
+VER="$(head -1 "$PROJ/debian/changelog" | sed -E 's/^[^(]+\(([^)]+)\).*/\1/')"
+[ -n "$VER" ] || { echo "错误：无法从 debian/changelog 解析版本号" >&2; exit 1; }
+SRC_BASE="xiatiao-player_${VER}"
+
 if [ ! -f "$CHROOT" ]; then
     echo "错误：找不到 Debian 12 chroot tarball：$CHROOT" >&2
     echo "请先运行：bash tools/prepare_debian12_chroot.sh" >&2
@@ -38,8 +43,8 @@ if [ ! -d audio_backend_rs/vendor ]; then
 fi
 
 # 2) 生成源码包（.dsc + .tar.xz）
-echo "==> 生成源码包"
-rm -f "$PARENT"/xiatiao-player_1.0.0.tar.xz "$PARENT"/xiatiao-player_1.0.0.dsc 2>/dev/null || true
+echo "==> 生成源码包（$VER）"
+rm -f "$PARENT"/${SRC_BASE}.tar.xz "$PARENT"/${SRC_BASE}.dsc 2>/dev/null || true
 dpkg-source -b . >/dev/null
 
 # 3) 用 sbuild 在 Debian 12 chroot 里构建
@@ -54,26 +59,26 @@ sbuild \
     --arch=amd64 \
     --arch-any --no-arch-all \
     --debbuildopts='-B' \
-    "$PARENT/xiatiao-player_1.0.0.dsc"
+    "$PARENT/${SRC_BASE}.dsc"
 
 # 3b) 把产物收拢到 release/
 #     注意：脚本已 cd 到 $PROJ（仓库根），sbuild 把产物输出到 CWD = $PROJ，
 #     不是 $PARENT（上级）。此处从 $PROJ 取，并清理构建中间产物。
 mkdir -p "$RELEASE"
-mv -f "$PROJ"/xiatiao-player_1.0.0_amd64.deb "$RELEASE"/ 2>/dev/null || true
-mv -f "$PROJ"/xiatiao-player-dbgsym_1.0.0_amd64.deb "$RELEASE"/ 2>/dev/null || true
+mv -f "$PROJ"/xiatiao-player_${VER}_amd64.deb "$RELEASE"/ 2>/dev/null || true
+mv -f "$PROJ"/xiatiao-player-dbgsym_${VER}_amd64.deb "$RELEASE"/ 2>/dev/null || true
 # 清理仓库根的构建中间产物（buildinfo/changes/build 日志/.dsc）
-rm -f "$PROJ"/xiatiao-player_1.0.0_amd64.build* \
-      "$PROJ"/xiatiao-player_1.0.0_amd64.changes \
-      "$PROJ"/xiatiao-player_1.0.0.dsc \
-      "$PROJ"/xiatiao-player_1.0.0.tar.* 2>/dev/null || true
+rm -f "$PROJ"/xiatiao-player_${VER}_amd64.build* \
+      "$PROJ"/xiatiao-player_${VER}_amd64.changes \
+      "$PROJ"/${SRC_BASE}.dsc \
+      "$PROJ"/${SRC_BASE}.tar.* 2>/dev/null || true
 
 echo "==> 完成。产物："
-ls -lh "$RELEASE"/xiatiao-player_1.0.0_amd64.deb
+ls -lh "$RELEASE"/xiatiao-player_${VER}_amd64.deb
 
 # 4) 校验 glibc 需求
 BACKEND=$(mktemp -d)/xiatiao-audio-backend
-dpkg-deb --fsys-tarfile "$RELEASE/xiatiao-player_1.0.0_amd64.deb" \
+dpkg-deb --fsys-tarfile "$RELEASE/xiatiao-player_${VER}_amd64.deb" \
     | tar -xO ./usr/lib/xiatiao-player/xiatiao-audio-backend > "$BACKEND" 2>/dev/null || true
 if [ -s "$BACKEND" ]; then
     echo "==> Rust 后端最高 glibc 需求："
