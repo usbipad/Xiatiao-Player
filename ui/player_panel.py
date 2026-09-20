@@ -23,7 +23,11 @@ def _fmt_seconds(seconds: float) -> str:
 
 
 class PlayerPanel(Gtk.Box):
-    """左侧播放器面板（宽度随窗口自适应时，内部控件按 ui-scale 缩放）。"""
+    """左侧播放器面板。
+
+    宽度由 OverlaySplitView 线性跟随窗口，封面（正方形）随之平滑缩放；
+    控件尺寸固定（见 style.css），不再随窗口分档缩放（避免拖动卡顿）。
+    """
 
     __gtype_name__ = "PlayerPanel"
 
