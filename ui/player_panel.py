@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from core.i18n import _
 
@@ -30,19 +30,6 @@ class PlayerPanel(Gtk.Box):
     """
 
     __gtype_name__ = "PlayerPanel"
-
-    def _get_ui_scale(self) -> float:
-        return getattr(self, "_base_scale", 1.0)
-
-    def _set_ui_scale(self, value: float) -> None:
-        try:
-            self.set_scale(float(value))
-        except Exception:
-            pass
-
-    #: 控件缩放系数（由 window 通过 Adw.Breakpoint setter 驱动）。
-    ui_scale = GObject.Property(
-        type=float, default=1.0, getter=_get_ui_scale, setter=_set_ui_scale)
 
     def __init__(
         self,
@@ -325,8 +312,6 @@ class PlayerPanel(Gtk.Box):
 
         self._func_box = func_box
         inner.append(func_box)
-        # 缩放基准（原始间距/字号）
-        self._base_scale = 1.0
 
         # ---- 底部 Tab（Tonearm 风格：Player / Lyrics / Queue）----
         tab_box = Gtk.Box(spacing=6)
@@ -1023,37 +1008,3 @@ class PlayerPanel(Gtk.Box):
         icon = "media-playback-pause-symbolic" if playing else "media-playback-start-symbolic"
         self.btn_play.set_icon_name(icon)
 
-    def set_scale(self, scale: float) -> None:
-        """按比例缩放面板内控件（间距 / 图标 / 字号）。
-
-        scale=1.0 为基准（面板约 400px）。由 window 在面板宽度变化时调用。
-        """
-        try:
-            s = max(0.85, min(1.6, float(scale)))
-        except Exception:
-            return
-        if abs(s - getattr(self, "_base_scale", 1.0)) < 0.03:
-            return
-        self._base_scale = s
-        # 间距
-        try:
-            self._ctrl_box.set_spacing(int(8 * s))
-            self._func_box.set_spacing(int(16 * s))
-            self._tab_box.set_spacing(int(6 * s))
-        except Exception:
-            pass
-        # 图标尺寸与按钮尺寸：改由 CSS 的 scale-sm/md/lg 类控制（见 style.css）。
-        # 不用 set_pixel_size——它会让 symbolic 图标在大尺寸下变形，且
-        # set_icon_name()（播放/暂停切换）重建内部 Image 后 pixel_size 丢失。
-        # 字号三档（sm/md/lg 对应 小/中/大）
-        try:
-            for c in ("scale-sm", "scale-md", "scale-lg"):
-                self.remove_css_class(c)
-            if s <= 0.98:
-                self.add_css_class("scale-sm")
-            elif s <= 1.15:
-                self.add_css_class("scale-md")
-            else:
-                self.add_css_class("scale-lg")
-        except Exception:
-            pass
