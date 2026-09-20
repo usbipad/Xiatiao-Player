@@ -595,6 +595,14 @@ class MainWindow(Adw.ApplicationWindow):
         section2.append(_("退出"), "app.quit")
         menu.append_section(None, section2)
         menu_btn.set_menu_model(menu)
+        # 应用菜单（⋯）的 popover 也归入 media-menu，
+        # 使其在「背景跟随封面」开启时用封面色、去白色描边。
+        try:
+            _pop = menu_btn.get_popover()
+            if _pop is not None:
+                _pop.add_css_class("media-menu")
+        except Exception:
+            log.debug("应用菜单 popover 加类失败", exc_info=True)
         act_settings = Gio.SimpleAction.new("settings", None)
         act_settings.connect("activate", lambda *_: self._on_open_settings())
         act_shortcuts = Gio.SimpleAction.new("shortcuts", None)
@@ -2174,6 +2182,14 @@ class MainWindow(Adw.ApplicationWindow):
                     "popover.media-menu > contents {"
                     f"background-color: {col}; border: none;"
                     "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
+                    "}"
+                    # 左侧面板歌词区顶/底渐隐：原用 @window_bg_color（白）
+                    # 在彩色面板上形成白色渐变块，改用封面色渐变。
+                    "window.main-bg-follow .np-lyrics-compact .np-fade-top {"
+                    f"background: linear-gradient(to bottom, {col}, alpha({col}, 0));"
+                    "}"
+                    "window.main-bg-follow .np-lyrics-compact .np-fade-bottom {"
+                    f"background: linear-gradient(to top, {col}, alpha({col}, 0));"
                     "}"
                 )
             else:
