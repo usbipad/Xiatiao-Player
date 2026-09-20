@@ -56,7 +56,7 @@ class PlayerPanel(Gtk.Box):
         self._on_queue_action = on_queue_action
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add_css_class("player-panel")  # 浅色背景，区分右侧内容区
-        self.set_size_request(240, -1)  # 最小宽度（避免拖太窄导致内容溢出）
+        self.set_size_request(280, -1)  # 最小宽度（避免拖太窄导致内容溢出）
         self.set_margin_start(8)
         self.set_margin_end(8)
         self.set_margin_top(16)
@@ -126,7 +126,7 @@ class PlayerPanel(Gtk.Box):
 
         # ---- 封面 / 歌词 切换区（底部 Tab：Player 显示封面，Lyrics 显示歌词）----
         self._cover_area = Gtk.Stack()
-        self._cover_area.set_size_request(240, -1)   # 封面区最小宽度（放宽以支持窄窗口）
+        self._cover_area.set_size_request(280, -1)   # 封面区最小宽度
         self._cover_area.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
         # 非均匀高度：Stack 高度取当前可见页（封面页=正方形），
         # 否则会被较高的歌词/队列页撑高，封面上下留白。
@@ -231,7 +231,7 @@ class PlayerPanel(Gtk.Box):
         inner.append(ctrl_box)
 
         # ---- 功能图标行（本地：音量；在线功能预留）----
-        func_box = Gtk.Box(spacing=16)
+        func_box = Gtk.Box(spacing=8)
         func_box.set_halign(Gtk.Align.CENTER)
         func_box.set_valign(Gtk.Align.CENTER)
 

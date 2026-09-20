@@ -139,14 +139,15 @@ aspectframe,
     background-color: alpha(#ffffff, 0.12);
 }
 
-/* 播放按钮：暗背景下用白色实心圆 + 深色图标，保证对比 */
+/* 播放按钮：暗背景下也保持扁平（去实心圆），仅图标用白色保证对比。
+   与全局 .np-play-btn 一致——不再用白色实心圆。 */
 .now-playing-root.np-dark-bg .np-play-btn {
-    background-color: #ffffff;
-    color: #1a1a1a;
+    background: none;
+    color: #ffffff;
 }
 
 .now-playing-root.np-dark-bg .np-play-btn:hover {
-    background-color: alpha(#ffffff, 0.9);
+    background-color: alpha(#ffffff, 0.12);
 }
 
 /* 播放模式激活态：暗背景用亮强调色。
@@ -267,20 +268,23 @@ aspectframe,
     -gtk-icon-size: 16px;
 }
 
-/* 播放 / 暂停：实心强调色大圆（Apple Music 风格，核心焦点）*/
+/* 播放 / 暂停：扁平按钮（去掉强调色大圆）。
+   注：此前是 68px 强调色实心圆，在实际 GTK/Adw 主题下显得过大且抢眼，
+   现改为无背景、常规尺寸的图标按钮，与上一曲/下一曲风格一致。 */
 .np-play-btn {
-    background-color: @accent_bg_color;
-    color: @accent_fg_color;
+    background: none;
     border: none;
     box-shadow: none;
-    min-width: 68px;
-    min-height: 68px;
+    color: @window_fg_color;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
     border-radius: 999px;
-    -gtk-icon-size: 27px;
+    -gtk-icon-size: 20px;
 }
 
 .np-play-btn:hover {
-    background-color: shade(@accent_bg_color, 1.1);
+    background-color: alpha(@window_fg_color, 0.08);
 }
 
 /* 进度条：Apple Music 风——细轨、圆头、用前景色深浅（不用蓝色）。
