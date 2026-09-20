@@ -15,6 +15,4 @@ tar-ignore = *.changes
 tar-ignore = *.dsc
 tar-ignore = *.substvars
 tar-ignore = audio_backend_rs/target
-tar-ignore = tools/camilladsp/target
-tar-ignore = tools/camilladsp/camilladsp
 tar-ignore = tools/pwrs-check

@@ -16,9 +16,6 @@ tools/camilladsp-src/target/
 tools/pwrs-check/target/
 tools/pwrs-check/Cargo.lock
 
-# CamillaDSP 预编译二进制（构建/下载产物，不入库）
-tools/camilladsp/camilladsp
-
 # 第三方源码中的非构建必需目录（CI / 编辑器配置）
 tools/camilladsp-src/.github/
 tools/camilladsp-src/.vscode/

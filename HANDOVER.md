@@ -96,7 +96,7 @@
 - audio_backend_rs/：Rust 音频后端（见第 5 节）
 - debian/：Debian 打包配置
 - tests/：Python 测试
-- tools/：gen_icons.py + 内嵌 CamillaDSP 源码
+- tools/：gen_icons.py + 打包脚本（build_deb_debian12.sh / prepare_debian12_chroot.sh / build_appimage.sh）+ camilladsp-src（内嵌 CamillaDSP 源码，编译进 Rust 后端）
 
 ---
 
