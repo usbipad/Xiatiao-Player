@@ -60,3 +60,11 @@ debian/tmp/
 # AppImage 构建产物（tools/build_appimage.sh 生成）
 *.AppImage
 squashfs-root/
+
+# 发布产物目录：产物不入库（可由构建脚本重建），仅保留目录本身
+release/*.deb
+release/*.AppImage
+release/*.rpm
+release/*.buildinfo
+release/*.changes
+release/*.dsc
