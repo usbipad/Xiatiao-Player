@@ -53,3 +53,7 @@ debian/tmp/
 *.buildinfo
 *.changes
 *.dsc
+
+# AppImage 构建产物（tools/build_appimage.sh 生成）
+*.AppImage
+squashfs-root/
