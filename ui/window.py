@@ -165,6 +165,13 @@ class MainWindow(Adw.ApplicationWindow):
         w = cfg0.get_int("window_width", 1400) or 1400
         h = cfg0.get_int("window_height", 900) or 900
         self.set_default_size(max(340, w), max(480, h))
+        # 覆盖 libadwaita 给 ApplicationWindow 的默认最小宽度（360px），
+        # 否则窗口无法缩到只剩左侧播放面板。设为一个足够小的值，
+        # 实际下限由内部控件（侧栏最小宽度）决定。
+        try:
+            self.set_size_request(200, -1)
+        except Exception:
+            log.debug("设置窗口最小宽度失败", exc_info=True)
 
         self._load_css()
 
