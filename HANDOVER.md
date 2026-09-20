@@ -1,11 +1,50 @@
 # 虾条播放器 Xiatiao Player — 交接文档
 
-最后更新：2026-09-19
+最后更新：2026-09-20
 
 本文档面向接手项目的开发者，覆盖架构、模块、构建、运行、测试、打包与已知问题。
 
 > 说明：本文档已按**当前代码实际状态**校对（不再依赖早期设计描述）。
 > 若与代码有出入，以代码为准。
+
+---
+
+## 0. 最近更新（2026-09-20）
+
+本轮聚焦 **DSD 直通/软解** 与 **UI 响应式** 两大块。要点：
+
+### DSD
+- **直通路径按标准重写**：
+  - DSF 数据区是「每声道 block_size（典型 4096）字节、块间交错」布局，
+    `DsdReader::read_group()` 按此解交错（旧代码当字节流直读 → 左右错乱/杂音）。
+  - Native（DSD_U32_LE）：每 4 字节→1 个 32-bit 采样，**ALSA 设备采样率 = dsd_rate/32**
+    （旧代码用 dsd_rate，导致能力探测恒失败）。
+  - DoP v1.0：每 2 字节→1 个 24-bit 样本（S32_LE / **S24_3LE** 承载），marker 每帧交替。
+  - 打包纯函数 `dsd::pack_native_group` / `pack_dop_group` 有单元测试。
+- **软解路径（ffmpeg）seek 修复**：清 carry / clear_abort / 重置 DSP+重建 Camilla /
+  EOF 有限重试；`just_seeked` 移到 loop 外（跨迭代保持）。
+- seek 换算统一到 ALSA 采样帧（native=/32, dop=/16），与 `played_frames` 单位一致。
+
+### UI / 响应式
+- 左侧面板改为 **`Adw.OverlaySplitView`**：宽度**线性**跟随窗口（fraction 0.28，
+  钳制 280~520），**不随窗口自动折叠**（仅 headerbar 按钮手动显隐）。
+- **窗口最小宽度 = 296**（= 左侧面板完整宽度 280 + margin 16），缩到最窄只剩播放面板。
+  关键：`Adw.ApplicationWindow` 自带 360px 默认最小宽度，需 `set_size_request` 覆盖。
+- **启动 splash 修复**：超时兜底强制生效（此前被封面轮询挡住），MAX_MS 5s→1.5s。
+- **全屏页响应式**：`_apply_responsive()` 按可用宽高缩放封面/间距/歌词。
+  注意：`Gtk.Widget.add_tick_callback` 回调签名是 **(widget, clock) 仅 2 参**
+  （曾误写 3 参 → TypeError 静默失败 → 响应式不生效）。
+- 播放/暂停按钮改**扁平**（去掉强调色实心圆），图标尺寸用 CSS `-gtk-icon-size`
+  （避免 `set_pixel_size` 使 symbolic 图标变形）。
+- 过滤 GTK 层 `GtkOverlay ... exceeds ... width` 噪音警告（`main.py`，保留其它警告）。
+
+### 工程化
+- 依赖分级：必需留 `Depends`，增强项（numpy/mutagen/yaml/ffmpeg/gstreamer）移到 `Recommends`。
+- 抽取 SQLite store 公共基类 `core/_base_store.py`。
+- 新增 `ruff.toml`、`audio_backend_rs/rustfmt.toml`、`requirements.txt`。
+- 新增 `tools/build_appimage.sh`（半自包含：打包代码+后端，GTK 依赖系统）。
+- 完整 `README.md`（含 5 张界面截图，存 `docs/screenshots/`）。
+
 
 ---
 
@@ -248,6 +287,24 @@ Rust 与内嵌 CamillaDSP 是**两条并行 DSP 路径**。某功能由谁处理
 
 安装后：程序在 /usr/lib/xiatiao-player/，图标在 /usr/share/icons/hicolor/，启动器在 /usr/share/applications/。
 
+### 9.4 依赖分级（control）
+
+- `Depends`（必需）：python3、python3-gi、python3-gi-cairo、gir1.2-gtk-4.0、
+  gir1.2-adw-1、gir1.2-gdkpixbuf-2.0、libasound2、libpipewire-0.3。
+- `Recommends`（增强，apt 默认也装）：python3-mutagen、python3-numpy、python3-yaml、
+  gir1.2-gstreamer-1.0、gir1.2-gst-plugins-base-1.0、ffmpeg、pipewire、pipewire-bin。
+
+### 9.5 AppImage（半自包含）
+
+    bash tools/build_appimage.sh
+    # 产物：Xiatiao-Player-x86_64.AppImage（含项目代码 + Rust 后端）
+
+- **不是完全自包含**：Python/GTK 依赖系统。原因：GTK4 + PyGObject 的 GI typelib
+  路径写死、依赖上百个库，强行内嵌极难且易碎。能跑 GTK4 的系统通常已有 python3-gi。
+- 构建坑：`appimagetool` 会尝试从 GitHub 下载 runtime，本环境网络不稳。
+  解决：`--runtime-file <本地runtime>` 指定离线 runtime。
+- 真正「完全自包含」应改用 **Flatpak**（GNOME runtime 已含 GTK4/Adw）。
+
 ---
 
 ## 10. 图标生成
@@ -332,9 +389,21 @@ DSP 参数（扁平 dict）在内存/磁盘中存在**多个副本**，改动时
 
 更换图标后 GNOME Shell 可能缓存旧图标。注销重登是 Wayland 下刷新图标缓存的可靠方法。
 
+### 12.6 GTK 噪音警告
+
+缩窗口时 GTK 会打印 `GtkOverlay ... exceeds MainWindow width` 警告（界面正常，
+仅日志噪音）。已在 `main.py` 用 `GLib.log_set_handler` 过滤该条，其它警告保留。
+
+### 12.7 主题差异
+
+界面用 libadwaita 变量（@accent_bg_color 等），实际观感随系统 GTK/Adw 主题变化。
+播放按钮已改为扁平（不依赖强调色），跟随主题前景色。
+
 ### 12.5 Rust 编译警告
 
-后端编译有若干 dead-code 警告（多为 dsd.rs 的非流式辅助函数、native 路径、旧 API 保留），不影响功能。
+后端编译有若干 dead-code 警告（多为预留 API：latency/is_failed/has_pipeline、
+DSP 分阶段处理、协议预留事件等）。已清理掉可清的（多余括号/未用 mut/未读赋值等），
+剩余为有意保留的扩展点。dsd.rs 的内存读取路径已标 `#[allow(dead_code)]` 并注释。
 
 ---
 
@@ -359,7 +428,8 @@ DSP 参数（扁平 dict）在内存/磁盘中存在**多个副本**，改动时
     # 4. 运行
     python3 main.py
     # 5. 打包（可选）
-    dpkg-buildpackage -us -uc -b
+    dpkg-buildpackage -b -us -uc            # deb
+    bash tools/build_appimage.sh            # AppImage（半自包含）
 
 ---
 
