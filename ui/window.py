@@ -127,6 +127,38 @@ NAV_ITEMS = [
 
 
 class MainWindow(Adw.ApplicationWindow):
+    """主窗口。"""
+
+    __gtype_name__ = "MainWindow"
+
+    def _get_narrow_mode(self) -> bool:
+        return getattr(self, "_narrow", False)
+
+    def _set_narrow_mode(self, value: bool) -> None:
+        self._narrow = bool(value)
+        try:
+            self._apply_narrow(bool(value))
+        except Exception:
+            pass
+
+    #: 窄屏模式（由 Adw.Breakpoint 驱动）：收缩 headerbar 控件。
+    narrow_mode = GObject.Property(
+        type=bool, default=False, getter=_get_narrow_mode, setter=_set_narrow_mode)
+
+    def _apply_narrow(self, on_narrow: bool) -> None:
+        """窄屏时隐藏导航文字、收缩搜索框，降低窗口最小宽度。"""
+        for _lbl in getattr(self, "_nav_labels", {}).values():
+            try:
+                _lbl.set_visible(not on_narrow)
+            except Exception:
+                pass
+        se = getattr(self, "_search_entry", None)
+        if se is not None:
+            try:
+                se.set_size_request(0 if on_narrow else 150, -1)
+            except Exception:
+                pass
+
     def __init__(self, app: Adw.Application) -> None:
         super().__init__(application=app, title=_("虾条播放器"))
         cfg0 = get_config()
@@ -248,6 +280,22 @@ class MainWindow(Adw.ApplicationWindow):
         # 侧栏显隐**只由按钮控制**（不随窗口宽度自动折叠）：
         # 窗口缩窄时右侧区域收缩，播放器面板始终保留。
         # （collapsed 保持默认 False = 并排显示。）
+
+        # ---- 窄屏响应式：收缩 headerbar 控件，降低窗口最小宽度 ----
+        # 宽屏（> 900px）：导航显示图标+文字，搜索框 150px。
+        # 窄屏（≤ 900px）：导航只留图标（隐藏文字），搜索框收窄到 0（可压缩）。
+        # 这样窗口最小宽度由「导航图标 + 设置/窗口按钮」决定，能缩到更窄。
+        try:
+            _bp_narrow = Adw.Breakpoint.new(
+                Adw.BreakpointCondition.parse("max-width: 900px"))
+            _bp_narrow.add_setter(self, "narrow-mode", True)
+            self.add_breakpoint(_bp_narrow)
+            _bp_wide = Adw.Breakpoint.new(
+                Adw.BreakpointCondition.parse("min-width: 901px"))
+            _bp_wide.add_setter(self, "narrow-mode", False)
+            self.add_breakpoint(_bp_wide)
+        except Exception:
+            log.debug("添加窄屏断点失败", exc_info=True)
 
         # 沉浸式播放页
         self.now_playing = NowPlayingPage(
@@ -481,18 +529,36 @@ class MainWindow(Adw.ApplicationWindow):
         self._sidebar_toggle_btn.set_tooltip_text(_("显示 / 隐藏播放器面板"))
         self._sidebar_toggle_btn.set_active(True)
         left_box.append(self._sidebar_toggle_btn)
+        # 导航项：显示名 → symbolic 图标（窄屏图标化用）。
+        _nav_icons = {
+            "home": "go-home-symbolic",
+            "playlists": "view-list-symbolic",
+            "local": "media-optical-symbolic",
+            "liked": "xiatiao-heart-outline-symbolic",
+        }
         self._nav_buttons: Dict[str, Gtk.Button] = {}
+        self._nav_labels: Dict[str, Gtk.Label] = {}
         for label, key in NAV_ITEMS:
-            btn = Gtk.Button(label=_(label))
+            btn = Gtk.Button()
             btn.add_css_class("flat")
             btn.add_css_class("nav-pill")
+            # 按钮内：图标 + 文字（窄屏时隐藏文字，只留图标）
+            _inner = Gtk.Box(spacing=6)
+            _icon = Gtk.Image.new_from_icon_name(_nav_icons.get(key, ""))
+            _inner.append(_icon)
+            _lbl = Gtk.Label(label=_(label))
+            _inner.append(_lbl)
+            btn.set_child(_inner)
+            btn.set_tooltip_text(_(label))
             btn.connect("clicked", self._on_nav_clicked, key)
             left_box.append(btn)
             self._nav_buttons[key] = btn
+            self._nav_labels[key] = _lbl
         # 导航按钮右侧：全局搜索框（搜当前页：本地曲库 / 我喜欢）
         left_box.append(Gtk.Box(spacing=8))
         self._search_entry = Gtk.SearchEntry()
         self._search_entry.set_placeholder_text(_("搜索歌曲 / 歌手 / 专辑"))
+        # 基准宽度 150；窄屏由断点收缩（见 _apply_responsive_breakpoints）。
         self._search_entry.set_size_request(150, -1)
         self._search_entry.set_valign(Gtk.Align.CENTER)
         self._search_entry.connect("search-changed", self._on_global_search)
