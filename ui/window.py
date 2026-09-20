@@ -2117,8 +2117,20 @@ class MainWindow(Adw.ApplicationWindow):
         try:
             if enabled and bg_rgb:
                 r, g, b = bg_rgb
-                css = f".content-area {{ background-color: rgb({r}, {g}, {b}); }}"
+                col = f"rgb({r}, {g}, {b})"
+                # 给窗口加类，统一覆盖主界面所有背景层：
+                #   窗口根 / 左侧播放面板 / 右侧内容区 / 顶部 headerbar。
+                self.add_css_class("main-bg-follow")
+                css = (
+                    "window.main-bg-follow,"
+                    ".main-bg-follow .player-panel,"
+                    ".main-bg-follow .content-area,"
+                    ".main-bg-follow headerbar {"
+                    f"background-color: {col};"
+                    "}"
+                )
             else:
+                self.remove_css_class("main-bg-follow")
                 css = ""
             provider.load_from_data(css.encode("utf-8"))
         except Exception:
