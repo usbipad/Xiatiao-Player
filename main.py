@@ -7,9 +7,43 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
 
 from ui import MainWindow  # noqa: E402
+
+
+# ---- 过滤 GTK 层噪音警告 ----
+# 窗口允许缩到很窄时，GtkOverlay 会周期性打印
+#   "GtkOverlay ... exceeds MainWindow width: requested N px, M px available"
+# 界面显示正常，仅属日志噪音，故在此静默，避免刷屏。
+# 只过滤这一类消息，其它 GTK/Adwaita 警告照常输出。
+_GTK_NOISE_MARKERS = (
+    "exceeds MainWindow width",
+    "exceeds ui+window+MainWindow width",
+)
+
+
+def _gtk_log_filter(domain, level, message, user_data):
+    try:
+        msg = str(message)
+        if any(marker in msg for marker in _GTK_NOISE_MARKERS):
+            return
+    except Exception:
+        pass
+    # 非噪音：交回默认处理器（输出到 stderr）。
+    if level & (GLib.LogLevelFlags.LEVEL_ERROR | GLib.LogLevelFlags.LEVEL_CRITICAL):
+        sys.stderr.write(f"{domain or 'Gtk'}: {message}\n")
+    elif level & GLib.LogLevelFlags.LEVEL_WARNING:
+        sys.stderr.write(f"{domain or 'Gtk'}-WARNING: {message}\n")
+    else:
+        sys.stderr.write(f"{domain or 'Gtk'}: {message}\n")
+
+
+try:
+    GLib.log_set_handler("Gtk", GLib.LogLevelFlags.LEVEL_WARNING, _gtk_log_filter, None)
+    GLib.log_set_handler("Adwaita", GLib.LogLevelFlags.LEVEL_WARNING, _gtk_log_filter, None)
+except Exception:
+    pass
 
 logging.basicConfig(
     level=logging.INFO,
