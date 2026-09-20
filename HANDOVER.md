@@ -334,7 +334,22 @@ Rust 后端要求 GLIBC_2.43，装到 Debian 12/Ubuntu 22.04 会因缺符号启�
   - 注入 `PATH=/usr/local/cargo/bin:...` 使用 rustup 的 Rust；
   - `override_dh_clean` 用 `dh_clean -d`，避免误删 vendor 的 `Cargo.toml.orig`；
   - 声明 `binary-arch: build-arch` 依赖（否则 `dpkg-buildpackage` 只跑 binary，不编译）。
-- `debian/source/options` 用 `tar-ignore` 排除构建产物/AppImage，源码包约 30 MB（含 vendor）。
+- `debian/source/options` 用 `tar-ignore` 排除构建产物/AppImage，源码包约 28 MB（含 vendor）。
+
+**sbuild 临时目录要求（踩过的坑）**：
+- sbuild 的 unshare 模式用 `$TMPDIR/tmp.sbuild.XXXXXXXXXX` 解包 chroot，
+  **必须在足够大的磁盘 + 路径各层 world-executable**。
+- 本机 `/tmp` 是 tmpfs（6.7G 内存盘），解 1.8G chroot 会满；
+  `$HOME` 是 700，unshared user（uid 100000）进不去 → session 创建失败。
+- **正解**：用 `/var/tmp`（根盘 + 1777 world-writable）：
+
+      TMPDIR=/var/tmp bash tools/build_deb_debian12.sh
+
+**tar-ignore 陷阱（务必注意）**：
+- 不要写裸的 `tar-ignore = release`——tar 的 `--exclude` 会匹配**任意路径中**
+  名为 `release` 的目录，误伤 `vendor/yaml_serde/util/release`（crate 自带的
+  发版脚本，在 `.cargo-checksum.json` 中登记，漏了会导致 cargo 校验失败）。
+- `release/` 产物里的 `*.deb` 已由 `tar-ignore = *.deb` 排除，无需额外规则。
 
 ### 9.1b 构建（本机快速，仅限本机/最新系统）
 
@@ -358,14 +373,49 @@ Rust 后端要求 GLIBC_2.43，装到 Debian 12/Ubuntu 22.04 会因缺符号启�
 
 ### 9.4 依赖分级（control）
 
-- `Depends`（必需）：python3 (>=3.10)、python3-gi、python3-gi-cairo、gir1.2-gtk-4.0、
-  gir1.2-adw-1、gir1.2-gdkpixbuf-2.0、libasound2t64 | libasound2、
-  libpipewire-0.3-0t64 | libpipewire-0.3-0。
-- `Recommends`（增强，apt 默认也装）：python3-mutagen、python3-numpy、python3-yaml、
-  gir1.2-gstreamer-1.0、gir1.2-gst-plugins-base-1.0、ffmpeg、pipewire、pipewire-bin、
-  pulseaudio-utils、python3-setproctitle。
+> **2026-09-21 起：全部依赖并入 `Depends`**（不再分 Recommends）。
+> 目的：一条 `apt install` 即装齐所有功能依赖，杜绝「装了主包但缺增强项
+> 导致功能不全」。代价：apt 列表略长，但保证开箱即用。
+
+- `Depends`（全部必需）：python3 (>=3.10)、python3-gi、python3-gi-cairo、
+  gir1.2-gtk-4.0、gir1.2-adw-1、gir1.2-gdkpixbuf-2.0、
+  libasound2t64 | libasound2、libpipewire-0.3-0t64 | libpipewire-0.3-0、
+  python3-mutagen、python3-numpy、python3-yaml、
+  gir1.2-gstreamer-1.0、gir1.2-gst-plugins-base-1.0、
+  ffmpeg、pipewire、pipewire-bin、pulseaudio-utils、python3-setproctitle。
 - `Build-Depends`：debhelper-compat、cargo、rustc、pkg-config、libasound2-dev、
   libpipewire-0.3-dev、libclang-dev。
+
+**各依赖用途**：
+
+| 依赖 | 用途 |
+|---|---|
+| python3 / -gi / -gi-cairo | 解释器 + PyGObject + cairo 绑定 |
+| gir1.2-gtk-4.0 / -adw-1 / -gdkpixbuf-2.0 | GTK4 / libadwaita / 图像 typelib |
+| libasound2 / libpipewire-0.3-0 | Rust 后端链接的系统库 |
+| python3-mutagen | 音频标签 + 内嵌封面 |
+| python3-numpy | 频谱 FFT 加速 |
+| python3-yaml | Camilla YAML 生成 |
+| gir1.2-gstreamer-1.0 / -gst-plugins-base-1.0 | 元数据补全 |
+| ffmpeg | DSD / APE / WavPack 软解 |
+| pipewire / pipewire-bin | 音频服务 + `pw-cat` 子进程输出 |
+| pulseaudio-utils | `pactl`（切 ALSA 独占前释放设备）|
+| python3-setproctitle | 改 cmdline（htop 显示应用名）|
+
+#### 9.4.0 图形栈自动展开（GTK 本体不单独声明）
+
+`control` 只声明直接依赖 `gir1.2-gtk-4.0`，GTK 本体由 apt 递归解析自动装：
+
+    我声明                  自动拉入
+    gir1.2-gtk-4.0      →   libgtk-4-1（GTK4 本体）→ libpango/libharfbuzz/
+                            libepoxy/libgdk-pixbuf… 一整套图形栈
+    gir1.2-adw-1        →   libadwaita-1-0
+    gir1.2-gdkpixbuf-2.0→   libgdk-pixbuf-2.0-0
+    python3-gi-cairo    →   libcairo2 / python3-cairo
+
+- **不写 `libgtk-4-1`**：Debian 规范要求声明直接依赖，本体由 apt 递归解析。
+- **不内嵌 GTK**：依赖图形驱动层（libGL/dri），与宿主内核死绑，内嵌会花屏/崩。
+- **Rust 后端不链接任何 GTK/图形库**（仅 libasound / libpipewire / libc）。
 
 #### 9.4.1 t64 命名差异（重要，勿改错）
 
