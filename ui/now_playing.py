@@ -42,6 +42,8 @@ class NowPlayingPage(Gtk.Overlay):
         # 复用的背景色 CSS provider（避免每次切歌新建导致累积泄漏）
         self._bg_provider = Gtk.CssProvider()
         self._bg_provider_installed = False
+        # 当前封面显示尺寸（响应式算出；切歌时用它，而非固定 _COVER_PX）。
+        self._current_cover_px = self._COVER_PX
 
         # ============ 背景：封面模糊图拉伸铺满（Apple Music 风格）============
         # 用 Picture 铺满整页；模糊+暗化在后台线程生成，主线程只设纹理。
@@ -110,6 +112,7 @@ class NowPlayingPage(Gtk.Overlay):
         left_col.set_hexpand(False)
         left_col.set_vexpand(False)
         body.append(left_col)
+        self._left_col = left_col
 
         # 封面固定为正方形，避免随图片大小变化导致布局跳动。
         # 用 AspectFrame(obey_child=False)：忽略图片 natural size，
@@ -150,6 +153,7 @@ class NowPlayingPage(Gtk.Overlay):
         cover_frame.set_valign(Gtk.Align.CENTER)
         cover_frame.set_overflow(Gtk.Overflow.HIDDEN)
         left_col.append(cover_frame)
+        self._cover_frame = cover_frame
 
         # 封面下方：歌名 / 歌手
         # 固定高度 + 顶部对齐：避免不同歌名换行数不同导致封面位置上下跳动。
@@ -157,6 +161,7 @@ class NowPlayingPage(Gtk.Overlay):
         info.set_halign(Gtk.Align.FILL)
         info.set_valign(Gtk.Align.START)
         info.set_size_request(self._COVER_PX, 120)
+        self._info = info
         self._track_label = Gtk.Label(label="")
         self._track_label.add_css_class("np-track-name")
         self._track_label.set_justify(Gtk.Justification.CENTER)
@@ -190,10 +195,11 @@ class NowPlayingPage(Gtk.Overlay):
         self.viz.set_soft(True)          # 柔和淡色（跟背景搭）
         left_col.append(self.viz)
 
-        # 封面与歌词之间固定间距
+        # 封面与歌词之间间距（响应式，见 _apply_responsive）
         gap = Gtk.Box()
         gap.set_size_request(300, -1)
         body.append(gap)
+        self._gap = gap
 
         # 右列：歌词（独立组件：高亮 + 缓动滚动 + 点击跳转 + 首尾渐隐）
         self.lyrics = LyricsView(on_seek=on_seek)
@@ -310,6 +316,73 @@ class NowPlayingPage(Gtk.Overlay):
         key.connect("key-pressed", self._on_key)
         self.add_controller(key)
 
+        # 响应式：页面尺寸变化时按可用空间缩放封面/间距/歌词，
+        # 避免小屏或高显示缩放下内容撑出可视区。
+        try:
+            self.connect("notify::width", self._on_np_resize)
+            self.connect("notify::height", self._on_np_resize)
+        except Exception:
+            pass
+
+    def _on_np_resize(self, *_a) -> None:
+        try:
+            self._apply_responsive()
+        except Exception:
+            pass
+
+    def _apply_responsive(self) -> None:
+        """按页面可用宽高动态缩放封面 / 间距 / 歌词宽度。
+
+        背景：全屏页此前用固定像素（封面 420 + 间距 300 + 歌词 480 ≈ 1300px），
+        在低分辨率或高显示缩放（如 1000p @ 200%）下会撑出可视区。
+        这里按可用空间等比缩放，最小保证可读（封面 >= 140）。
+        """
+        try:
+            w = self.get_width()
+            h = self.get_height()
+        except Exception:
+            return
+        if w < 50 or h < 50:
+            return
+        if getattr(self, "_resp_last", None) == (w, h):
+            return
+        self._resp_last = (w, h)
+
+        # 可用宽度：减去 body 左右 margin（48*2）
+        avail_w = max(160.0, w - 96.0)
+        # 可用高度：减去顶部栏(~64) + 底部控制区(~180) 估算
+        avail_h = max(160.0, h - 244.0)
+
+        # 宽度方向比例（基准：封面 420 + gap 300 + 歌词 480 = 1200）
+        sw = min(1.0, avail_w / 1200.0)
+        cover = 420.0 * sw
+        # 高度方向：左列 = 封面 + spacing28 + info120 + spacing28 + viz48
+        #          = 封面 + 224；封面为正方形，限制其边长
+        cover = min(cover, avail_h - 224.0)
+        cover = int(max(140.0, min(cover, 420.0)))
+
+        ratio = cover / 420.0
+        gap_w = int(max(16.0, 300.0 * ratio))
+        lyrics_w = int(max(140.0, 480.0 * ratio))
+        info_h = int(max(80.0, 120.0 * ratio))
+        # 记录当前封面尺寸，供切歌（set_cover_*）沿用，避免被重置回固定值。
+        self._current_cover_px = cover
+
+        for fn in (
+            lambda: self._cover_frame.set_size_request(cover, cover),
+            lambda: self._cover.set_size_request(cover, cover),
+            lambda: self._np_placeholder.set_size_request(cover, cover),
+            lambda: self._info.set_size_request(cover, info_h),
+            lambda: self.viz.set_size_request(cover, 48),
+            lambda: self._left_col.set_size_request(cover, -1),
+            lambda: self._gap.set_size_request(gap_w, -1),
+            lambda: self.lyrics.set_size_request(lyrics_w, -1),
+        ):
+            try:
+                fn()
+            except Exception:
+                pass
+
     # ------------------------------------------------------------
     # 外部接口
     # ------------------------------------------------------------
@@ -390,7 +463,8 @@ class NowPlayingPage(Gtk.Overlay):
         if texture is not None:
             try:
                 self._cover.set_paintable(texture)
-                self._cover.set_size_request(self._COVER_PX, self._COVER_PX)
+                _px = getattr(self, "_current_cover_px", self._COVER_PX)
+                self._cover.set_size_request(_px, _px)
                 self._cover_stack.set_visible_child_name("cover")
             except Exception:
                 pass
@@ -450,7 +524,8 @@ class NowPlayingPage(Gtk.Overlay):
             self._apply_bg_color(None)
             return
         self._cover.set_paintable(texture)
-        self._cover.set_size_request(self._COVER_PX, self._COVER_PX)
+        _px = getattr(self, "_current_cover_px", self._COVER_PX)
+        self._cover.set_size_request(_px, _px)
         try:
             self._cover_stack.set_visible_child_name("cover")
         except Exception:
