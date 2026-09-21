@@ -67,11 +67,18 @@ sbuild \
 mkdir -p "$RELEASE"
 mv -f "$PROJ"/xiatiao-player_${VER}_amd64.deb "$RELEASE"/ 2>/dev/null || true
 mv -f "$PROJ"/xiatiao-player-dbgsym_${VER}_amd64.deb "$RELEASE"/ 2>/dev/null || true
-# 清理仓库根的构建中间产物（buildinfo/changes/build 日志/.dsc）
-rm -f "$PROJ"/xiatiao-player_${VER}_amd64.build* \
+# 清理构建中间产物。
+# 注意：sbuild 的日志会在版本号后插入时间戳
+# （xiatiao-player_1.0.0_amd64-2026-09-21T04:22:10Z.build），
+# 所以 glob 必须是 _amd64*.build*，否则匹配不到、日志每次残留。
+rm -f "$PROJ"/xiatiao-player_${VER}_amd64*.build* \
       "$PROJ"/xiatiao-player_${VER}_amd64.changes \
+      "$PROJ"/xiatiao-player_${VER}_amd64.buildinfo \
       "$PROJ"/${SRC_BASE}.dsc \
       "$PROJ"/${SRC_BASE}.tar.* 2>/dev/null || true
+# 源码包由 dpkg-source -b 生成在仓库的上级目录，一并清理（28M+，留着没意义）
+rm -f "$PARENT"/${SRC_BASE}.dsc \
+      "$PARENT"/${SRC_BASE}.tar.* 2>/dev/null || true
 
 echo "==> 完成。产物："
 ls -lh "$RELEASE"/xiatiao-player_${VER}_amd64.deb

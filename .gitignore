@@ -48,6 +48,8 @@ debian/tmp/
 *.buildinfo
 *.changes
 *.dsc
+# sbuild 构建日志（形如 pkg_ver_arch-<时间戳>.build）
+*.build
 
 # AppImage 构建产物（tools/build_appimage.sh 生成）
 *.AppImage
@@ -63,3 +65,4 @@ release/*.rpm
 release/*.buildinfo
 release/*.changes
 release/*.dsc
+release/*.build
