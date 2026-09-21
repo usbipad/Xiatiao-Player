@@ -196,7 +196,9 @@ class LocalLibraryPage(Gtk.Box):
         self._collapsed = False
         self._grid_rotate_timers = []
         self._grid_groups = {}
-        #: 折叠视图（横向一排）的卡片是否已构建；懒构建避免与展开网格双份
+        #: 展开网格 / 折叠横排各自的卡片是否已构建。
+        #: 只构建当前可见的那一份，避免同一批封面被解码两次、控件翻倍。
+        self._grid_built = False
         self._hbox_built = False
         self._rotate_guard_id = None
         self._content_stack.add_named(grid_scroll, "grid")
@@ -236,7 +238,12 @@ class LocalLibraryPage(Gtk.Box):
         self._apply_filter()
 
     def set_filter_text(self, text: str) -> None:
-        self._filter_text = (text or "").strip()
+        text = (text or "").strip()
+        # 关键词未变则不重渲染：切页时 window 会把搜索框内容同步到各页，
+        # 无脑重渲染会让每次切回主页都白重建一遍网格。
+        if text == self._filter_text:
+            return
+        self._filter_text = text
         self._apply_filter()
 
     # ------------------------------------------------------------
@@ -383,6 +390,8 @@ class LocalLibraryPage(Gtk.Box):
                         flow.set_min_children_per_line(1)
                     except Exception:
                         pass
+                # 展开时按需构建网格卡片（折叠态下不再白建一份）
+                self._ensure_grid_cards()
                 try:
                     if self._view_mode in (VIEW_ALBUMS, VIEW_ARTISTS):
                         self._content_stack.set_visible_child_name("grid")
@@ -466,6 +475,9 @@ class LocalLibraryPage(Gtk.Box):
     # ------------------------------------------------------------
     def set_view_mode(self, mode: str) -> None:
         if mode not in (VIEW_SONGS, VIEW_ALBUMS, VIEW_ARTISTS):
+            return
+        # 模式未变且不在分组内：无需重渲染
+        if mode == self._view_mode and not self._group_filter:
             return
         self._view_mode = mode
         self._group_filter = ""
@@ -582,22 +594,39 @@ class LocalLibraryPage(Gtk.Box):
         self._empty_label.set_visible(len(groups) == 0)
         self._clear_grid_rotate_timers()
         self._grid_groups = dict(groups)
-        # 折叠视图的卡片改为懒构建（见 _ensure_hbox_cards）：
-        # 此前每组都建两份，封面被解码两次、控件数量翻倍，展开时内存翻倍。
+        # 只构建「当前可见」的那一份卡片：
+        #   折叠 → 横向一排（grid_h）；展开 → 网格（grid）。
+        # 此前无论展开还是折叠都建两份，封面被解码两次、控件数量翻倍，
+        # 既抬高内存峰值，也让每次重渲染慢一倍。
+        self._grid_built = False
         self._hbox_built = False
-        for name in sorted(groups.keys(), key=lambda s: s.lower()):
-            items = groups[name]
-            card = make_group_card(name, items, self._enter_group)
-            self._grid_flow.append(card)
+        if getattr(self, "_collapsed", False):
+            self._ensure_hbox_cards()
+        else:
+            self._ensure_grid_cards()
         try:
             self._grid_flow.set_visible(True)
             self._hbox.set_visible(True)
         except Exception:
             pass
-        # 当前是折叠态：立刻补建横向一排的卡片（否则折叠视图为空）
-        if getattr(self, "_collapsed", False):
-            self._ensure_hbox_cards()
         self._start_rotate_guard()
+
+    def _ensure_grid_cards(self) -> None:
+        """懒构建展开视图（网格）的卡片。与折叠视图互斥，只建可见的那份。"""
+        if getattr(self, "_grid_built", False):
+            return
+        self._grid_built = True
+        try:
+            groups = getattr(self, "_grid_groups", {}) or {}
+            for name in sorted(groups.keys(), key=lambda s: s.lower()):
+                items = groups[name]
+                try:
+                    card = make_group_card(name, items, self._enter_group)
+                    self._grid_flow.append(card)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _ensure_hbox_cards(self) -> None:
         """懒构建折叠视图（横向一排）的卡片。
@@ -613,7 +642,7 @@ class LocalLibraryPage(Gtk.Box):
             group_items = list(groups.items())
             if not group_items:
                 return
-            idx = 0
+            rotate_on = self._card_rotate_enabled()
             for name in sorted(groups.keys(), key=lambda s: s.lower()):
                 items = groups[name]
                 hcard = None
@@ -622,9 +651,10 @@ class LocalLibraryPage(Gtk.Box):
                     self._hbox.append(hcard)
                 except Exception:
                     hcard = None
-                if idx < 12 and hcard is not None and self._card_rotate_enabled():
+                # 全部卡片都参与轮播：此前只调度前 12 张，横向滚动到
+                # 中后段的卡片不会轮播。不可见卡片由 _rotate_card 内部节流跳过。
+                if hcard is not None and rotate_on:
                     self._schedule_card_rotate(hcard, group_items)
-                idx += 1
         except Exception:
             pass
 
@@ -654,6 +684,10 @@ class LocalLibraryPage(Gtk.Box):
             return
         self._guard_last_on = self._card_rotate_enabled()
         self._guard_last_speed = self._card_rotate_speed()
+        try:
+            self._guard_last_mapped = bool(self.get_mapped())
+        except Exception:
+            self._guard_last_mapped = True
 
         def _tick():
             try:
@@ -661,6 +695,12 @@ class LocalLibraryPage(Gtk.Box):
                 was = getattr(self, "_guard_last_on", on)
                 spd = self._card_rotate_speed()
                 spd_was = getattr(self, "_guard_last_speed", spd)
+                try:
+                    mapped = bool(self.get_mapped())
+                except Exception:
+                    mapped = True
+                was_mapped = getattr(self, "_guard_last_mapped", mapped)
+                self._guard_last_mapped = mapped
                 if not on and was:
                     self._clear_grid_rotate_timers()
                     self._rotate_guard_id = GLib.timeout_add(1000, _tick)
@@ -676,6 +716,10 @@ class LocalLibraryPage(Gtk.Box):
                     self._guard_last_on = True
                     self._guard_last_speed = spd
                     return False
+                elif on and mapped and not was_mapped:
+                    # 页面从不可见恢复：不可见期间各卡片的定时器已在 _rotate_card
+                    # 中提前返回且未重新调度，需要重新拉起，否则轮播永久失效。
+                    self._restart_card_rotate()
                 self._guard_last_on = on
                 self._guard_last_speed = spd
             except Exception:
@@ -692,14 +736,27 @@ class LocalLibraryPage(Gtk.Box):
             group_items = list(getattr(self, "_grid_groups", {}).items())
             if not group_items:
                 return
-            idx = 0
+            # 先清掉残留的卡片定时器，避免重复调度（guard 轮询不受影响）
+            self._cancel_card_timers()
+            # 与 _ensure_hbox_cards 一致：全部卡片都重新调度（此前限 12 张）
             c = self._hbox.get_first_child()
-            while c is not None and idx < 12:
+            while c is not None:
                 self._schedule_card_rotate(c, group_items)
                 c = c.get_next_sibling()
-                idx += 1
         except Exception:
             pass
+
+    def _cancel_card_timers(self) -> None:
+        """只取消卡片轮播定时器，保留 guard 轮询定时器。"""
+        try:
+            for tid in getattr(self, "_grid_rotate_timers", []):
+                try:
+                    GLib.source_remove(tid)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._grid_rotate_timers = []
 
     @staticmethod
     def _card_rotate_enabled() -> bool:
@@ -762,6 +819,15 @@ class LocalLibraryPage(Gtk.Box):
                 return
         except Exception:
             pass
+        # 滚出横向视口的卡片不切换：全部卡片都带定时器后，若不做这层节流，
+        # 几百张卡片会各自跑 600ms 转场 + 封面解码。仍重新调度自己，
+        # 滚回来即可继续轮播。
+        if not self._is_card_in_view(card):
+            try:
+                self._schedule_card_rotate(card, group_items)
+            except Exception:
+                pass
+            return
         try:
             import random as _r
             if not group_items:
@@ -778,6 +844,26 @@ class LocalLibraryPage(Gtk.Box):
             self._schedule_card_rotate(card, group_items)
         except Exception:
             pass
+
+    def _is_card_in_view(self, card) -> bool:
+        """卡片是否在折叠视图的横向视口内（轮播节流用）。
+
+        滚出视口的卡片仍处于 mapped 状态，轮播动画看不到、封面解码也是白费。
+        算不出边界时保守返回 True（宁可多轮播，不可漏轮播）。
+        """
+        try:
+            hs = getattr(self, "_h_scroll", None)
+            if hs is None:
+                return True
+            ok, rect = card.compute_bounds(hs)
+            if not ok:
+                return True
+            w = hs.get_width()
+            if w <= 0:
+                return True
+            return (rect.origin.x + rect.size.width) > 0 and rect.origin.x < w
+        except Exception:
+            return True
 
     # ------------------------------------------------------------
     # 杂项回调

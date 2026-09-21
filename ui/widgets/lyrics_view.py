@@ -50,6 +50,8 @@ class LyricsView(Gtk.Overlay):
 
         self._lyrics_scroll = Gtk.ScrolledWindow()
         self._lyrics_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # 隐藏滚动条：歌词自动滚动，右侧竖条纯属干扰（见 style.css）
+        self._lyrics_scroll.add_css_class("np-lyrics-scroll")
         self._lyrics_scroll.set_child(self._lyrics_box)
         self._lyrics_scroll.set_hexpand(True)
         self._lyrics_scroll.set_vexpand(True)
@@ -86,6 +88,7 @@ class LyricsView(Gtk.Overlay):
         self._lyrics = lyrics
         self._times = [t for t, _ in lyrics]
         self._current_line = -1
+        self._hl_idx = -1
         self._row_widgets.clear()
 
         # 只删除歌词行，保留首尾 spacer 和 empty_label
@@ -135,12 +138,21 @@ class LyricsView(Gtk.Overlay):
 
     # ---- 内部 ----
     def _apply_highlight(self, idx: int) -> None:
-        for i, label in enumerate(self._row_widgets):
-            if i == idx:
-                label.add_css_class("lyric-active")
-            else:
-                label.remove_css_class("lyric-active")
+        # 只改「上一行」和「当前行」两个控件。
+        # 此前遍历全部歌词行逐行 add/remove_css_class，长歌词（上百行）时
+        # 每次切行都会产生大量样式失效；而该方法在进入沉浸页的
+        # set_position 链路上也会被调用，直接拖慢首帧。
+        prev = getattr(self, "_hl_idx", -1)
+        if prev == idx:
+            return
+        self._hl_idx = idx
+        try:
+            if 0 <= prev < len(self._row_widgets):
+                self._row_widgets[prev].remove_css_class("lyric-active")
+        except Exception:
+            pass
         if 0 <= idx < len(self._row_widgets):
+            self._row_widgets[idx].add_css_class("lyric-active")
             GLib.idle_add(self._scroll_to, self._row_widgets[idx])
 
     def _scroll_to(self, widget: Gtk.Widget) -> bool:

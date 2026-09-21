@@ -212,6 +212,15 @@ class MainWindow(Adw.ApplicationWindow):
         # 仅由 headerbar 按钮手动隐藏/显示（不随窗口宽度自动折叠）。
         self._main_stack = Gtk.Stack()
         self._main_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        # 非均匀：尺寸变化时只测量「可见」那一页。
+        # 默认 homogeneous=True 会把主界面和沉浸页两棵子树都量一遍，
+        # 沉浸页含大封面/歌词/可视化，每次最大化或拖动窗口都要白量一整棵，
+        # 是窗口缩放明显「慢半拍」的主因。（右侧 stack 与 _content_stack 同此处理。）
+        try:
+            self._main_stack.set_hhomogeneous(False)
+            self._main_stack.set_vhomogeneous(False)
+        except Exception:
+            pass
 
         self._toast_overlay = Adw.ToastOverlay()
         self._toast_overlay.set_child(self._main_stack)
@@ -941,11 +950,23 @@ class MainWindow(Adw.ApplicationWindow):
                 except Exception:
                     continue
             self.home_page.set_history(hist)
+            # 同步指纹：否则下次切回主页时 _refresh_home_page 会判定「变了」
+            # 而再重建一次历史列表。
+            try:
+                self._home_hist_fp = tuple(
+                    (r.get("filepath") or "", r.get("source_id") or "") for r in rows
+                )
+            except Exception:
+                pass
         except Exception as exc:
             log.debug("刷新主页历史失败: %s", exc)
 
     def _refresh_home_page(self) -> None:
-        """主页数据：曲库喂专辑/艺术家，播放历史喂历史块。"""
+        """主页数据：曲库喂专辑/艺术家，播放历史喂历史块。
+
+        带指纹去重：曲库/历史没变时不重渲染。此前每次切回主页都无条件
+        重建专辑+艺术家两个网格（几百张卡片），是切页卡顿的主因。
+        """
         try:
             provider = self._get_provider(SOURCE_LOCAL)
             tracks = None
@@ -957,7 +978,15 @@ class MainWindow(Adw.ApplicationWindow):
                 if isinstance(loc, dict):
                     tracks = list_to_tracks(loc.get("tracks"))
             if tracks is not None:
-                self.home_page.set_library(tracks)
+                # 复用全局曲库指纹（扫描后由 _on_library_changed 更新），
+                # 避免每次切页都重算 O(n log n) 的 MD5。
+                fp = getattr(self, "_local_fingerprint", None)
+                if fp is None:
+                    fp = self._tracks_fingerprint(tracks)
+                    self._local_fingerprint = fp
+                if fp != getattr(self, "_home_lib_fp", None):
+                    self._home_lib_fp = fp
+                    self.home_page.set_library(tracks)
         except Exception as exc:
             log.debug("主页曲库填充失败: %s", exc)
         # 历史：优先用曲库里的同一对象（带格式/采样率等技术参数），
@@ -1008,7 +1037,11 @@ class MainWindow(Adw.ApplicationWindow):
                     ))
                 except Exception:
                     continue
-            self.home_page.set_history(hist)
+            # 历史同样去重：rows 未变时不重建历史列表
+            hfp = tuple((r.get("filepath") or "", r.get("source_id") or "") for r in rows)
+            if hfp != getattr(self, "_home_hist_fp", None):
+                self._home_hist_fp = hfp
+                self.home_page.set_history(hist)
         except Exception as exc:
             log.debug("主页历史填充失败: %s", exc)
 
@@ -2068,10 +2101,14 @@ class MainWindow(Adw.ApplicationWindow):
         if track is not None:
             self.now_playing.set_track(track.title, track.artist)
             self.now_playing.set_position(self.player.position())
-            # 沉浸页背景/进度条色：在主界面切歌时没算（省 70ms），
-            # 这里惰性补算一次，用到才花这个钱。
-            self._apply_cover_color_for_now_playing()
+        # 先切页：让切页动画立刻开始。
+        # 背景色补算（解码 + 可能触发 CSS 重解析）与可视化启动都放到切页之后，
+        # 否则这些同步开销会让「点击 → 动画开始」之间出现可感知的停顿。
         self._main_stack.set_visible_child_name("nowplaying")
+        if track is not None:
+            # 沉浸页背景/进度条色：切歌时已随封面设过；此处仅兜底补算，
+            # 颜色未变时内部会直接返回，不再解码、不再重解析 CSS。
+            self._apply_cover_color_for_now_playing()
         # 进入沉浸页：启动可视化采集 + 渲染（主界面期间不跑）
         try:
             if getattr(self, "_viz_pipeline", None) is not None and \
@@ -2094,6 +2131,11 @@ class MainWindow(Adw.ApplicationWindow):
         raw_cover = getattr(self, "_pending_cover_raw", None)
         if not raw_cover:
             return
+        # 同一份封面原图只算一次：切歌时已随封面设过颜色，
+        # 重复进出沉浸页不该再解码一遍原始封面字节。
+        if raw_cover is getattr(self, "_np_color_src", None):
+            return
+        self._np_color_src = raw_cover
         try:
             from models.coverart import extract_dominant_color
             raw = extract_dominant_color(raw_cover, lighten=0.0)

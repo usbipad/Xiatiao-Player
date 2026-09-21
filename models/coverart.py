@@ -182,17 +182,28 @@ def _dominant_via_pixbuf(image_bytes: bytes, lighten: float) -> tuple[int, int, 
     gi.require_version("GdkPixbuf", "2.0")
     from gi.repository import GdkPixbuf, Gio, GLib
 
+    # 取色只需 32px：让 GdkPixbuf 在「解码阶段」就缩到 32px。
+    # 本函数会在主线程被调用（进入沉浸页时补算封面主色），
+    # 若先全尺寸解码，一张 6000x6000 封面就要约 144MB / 上百 ms，
+    # 直接卡住进入沉浸页的动画。
+    target = 32
     stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(image_bytes))
-    pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
+    try:
+        pixbuf = GdkPixbuf.Pixbuf.new_from_stream_at_scale(
+            stream, target, target, True, None)
+    except Exception:
+        # 旧版 gdk-pixbuf 无 at_scale：退回全尺寸解码（行为同以前）
+        stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(image_bytes))
+        pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
     w, h = pixbuf.get_width(), pixbuf.get_height()
     if w <= 0 or h <= 0:
         return (240, 240, 240)
-    # 缩到 32x32（取色足够，越小越快）
-    target = 32
-    scale = max(target / w, target / h)
-    nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-    if (nw, nh) != (w, h):
-        pixbuf = pixbuf.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)
+    # 兜底：仍大于目标则再缩一次（at_scale 已缩到位则跳过，避免无谓放大）
+    if max(w, h) > target:
+        scale = max(target / w, target / h)
+        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+        if (nw, nh) != (w, h):
+            pixbuf = pixbuf.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)
     # 统一样式为 8bit RGB(A)
     if pixbuf.get_bits_per_sample() != 8 or pixbuf.get_colorspace() != GdkPixbuf.Colorspace.RGB:
         pixbuf = pixbuf.copy()

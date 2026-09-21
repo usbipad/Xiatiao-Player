@@ -577,6 +577,12 @@ class NowPlayingPage(Gtk.Overlay):
             bg_css = "@window_bg_color"
             self._set_dark_bg(False)
         css = f".now-playing-root {{ background-color: {bg_css}; }}"
+        # 颜色没变则跳过：load_from_data 会让 GTK 重新解析样式表并 restyle
+        # 整棵控件树，开销可观。进入沉浸页时会重设同一颜色，属于纯浪费。
+        if getattr(self, "_bg_provider_installed", False) and \
+                css == getattr(self, "_bg_css_last", None):
+            return
+        self._bg_css_last = css
         try:
             self._bg_provider.load_from_data(css.encode("utf-8"))
             if not self._bg_provider_installed:

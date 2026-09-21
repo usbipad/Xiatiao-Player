@@ -100,16 +100,14 @@ def make_group_card(name: str, items, on_enter_group) -> Gtk.Widget:
     stack = Gtk.Stack()
     stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
     stack.set_transition_duration(600)
-
-    def _mk_inner():
-        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        lbl = Gtk.Label(label=name)
-        lbl.set_ellipsize(3)
-        lbl.set_max_width_chars(18)
-        lbl.add_css_class("media-card-title")
-        sub = Gtk.Label(label=f"{len(items)} {_('首')}")
-        sub.add_css_class("media-card-subtitle")
-        return inner, lbl, sub
+    # 非均匀：只测量「可见」页。
+    # 默认 True 时每张卡片每次布局都要量两页；首页 FlowBox 必须测量全部子项
+    # 才能分行，几百张卡片就是上千棵子树，窗口 resize（最大化/拖拽）会明显变慢。
+    try:
+        stack.set_hhomogeneous(False)
+        stack.set_vhomogeneous(False)
+    except Exception:
+        pass
 
     inner_a = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
     inner_a.append(cover_frame)
@@ -122,34 +120,7 @@ def make_group_card(name: str, items, on_enter_group) -> Gtk.Widget:
     sub.add_css_class("media-card-subtitle")
     inner_a.append(sub)
 
-    inner_b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-    pic_b = Gtk.Picture()
-    pic_b.set_content_fit(Gtk.ContentFit.COVER)
-    pic_b.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
-    cover_b = Gtk.Frame()
-    cover_b.add_css_class("media-card-cover")
-    cover_b.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
-    cover_b.set_halign(Gtk.Align.START)
-    try:
-        cover_b.set_hexpand(False)
-    except Exception:
-        pass
-    ph_b = Gtk.Image.new_from_icon_name("audio-x-generic-symbolic")
-    ph_b.set_pixel_size(48)
-    ph_b.add_css_class("media-card-placeholder")
-    cover_b.set_child(ph_b)
-    inner_b.append(cover_b)
-    lbl_b = Gtk.Label(label=name)
-    lbl_b.set_ellipsize(3)
-    lbl_b.set_max_width_chars(18)
-    lbl_b.add_css_class("media-card-title")
-    inner_b.append(lbl_b)
-    sub_b = Gtk.Label(label=f"{len(items)} {_('首')}")
-    sub_b.add_css_class("media-card-subtitle")
-    inner_b.append(sub_b)
-
     stack.add_named(inner_a, "a")
-    stack.add_named(inner_b, "b")
     stack.set_visible_child_name("a")
     box.append(stack)
     box._stack = stack
@@ -157,9 +128,46 @@ def make_group_card(name: str, items, on_enter_group) -> Gtk.Widget:
     box._items = list(items)
     box._pages = {
         "a": {"cover": cover_frame, "pic": pic, "name": lbl, "sub": sub},
-        "b": {"cover": cover_b, "pic": pic_b, "name": lbl_b, "sub": sub_b},
     }
     box._cur_page = "a"
+    #: 轮播用的第二页是否已构建。轮播只调度前 12 张卡片，
+    #: 其余卡片不该白建一套永不显示的第二页控件。
+    box._second_built = False
+
+    def _ensure_page_b() -> None:
+        """懒构建轮播用的第二页（只有需要轮播的卡片才会走到这里）。"""
+        if box._second_built:
+            return
+        box._second_built = True
+        inner_b = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        pic_b = Gtk.Picture()
+        pic_b.set_content_fit(Gtk.ContentFit.COVER)
+        pic_b.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
+        cover_b = Gtk.Frame()
+        cover_b.add_css_class("media-card-cover")
+        cover_b.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
+        cover_b.set_halign(Gtk.Align.START)
+        try:
+            cover_b.set_hexpand(False)
+        except Exception:
+            pass
+        ph_b = Gtk.Image.new_from_icon_name("audio-x-generic-symbolic")
+        ph_b.set_pixel_size(48)
+        ph_b.add_css_class("media-card-placeholder")
+        cover_b.set_child(ph_b)
+        inner_b.append(cover_b)
+        lbl_b = Gtk.Label(label=name)
+        lbl_b.set_ellipsize(3)
+        lbl_b.set_max_width_chars(18)
+        lbl_b.add_css_class("media-card-title")
+        inner_b.append(lbl_b)
+        sub_b = Gtk.Label(label=f"{len(items)} {_('首')}")
+        sub_b.add_css_class("media-card-subtitle")
+        inner_b.append(sub_b)
+        stack.add_named(inner_b, "b")
+        box._pages["b"] = {
+            "cover": cover_b, "pic": pic_b, "name": lbl_b, "sub": sub_b,
+        }
 
     click = Gtk.GestureClick()
     click.connect("released", lambda *_a, b=box: on_enter_group(getattr(b, "_group_name", "")))
@@ -168,6 +176,8 @@ def make_group_card(name: str, items, on_enter_group) -> Gtk.Widget:
 
     def _fill_page(page_key: str, new_name: str, new_items) -> None:
         try:
+            # 第二页按需构建（只有轮播会填充它）
+            _ensure_page_b()
             page = box._pages.get(page_key)
             if page is None or not new_items:
                 return
