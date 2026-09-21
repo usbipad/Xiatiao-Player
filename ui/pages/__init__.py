@@ -196,6 +196,8 @@ class LocalLibraryPage(Gtk.Box):
         self._collapsed = False
         self._grid_rotate_timers = []
         self._grid_groups = {}
+        #: 折叠视图（横向一排）的卡片是否已构建；懒构建避免与展开网格双份
+        self._hbox_built = False
         self._rotate_guard_id = None
         self._content_stack.add_named(grid_scroll, "grid")
 
@@ -365,6 +367,8 @@ class LocalLibraryPage(Gtk.Box):
             flow = getattr(self, "_grid_flow", None)
             hs = getattr(self, "_h_scroll", None)
             if collapsed:
+                # 折叠视图的卡片按需构建（展开时不再白建一份）
+                self._ensure_hbox_cards()
                 try:
                     if self._view_mode in (VIEW_ALBUMS, VIEW_ARTISTS):
                         self._content_stack.set_visible_child_name("grid_h")
@@ -578,27 +582,51 @@ class LocalLibraryPage(Gtk.Box):
         self._empty_label.set_visible(len(groups) == 0)
         self._clear_grid_rotate_timers()
         self._grid_groups = dict(groups)
-        group_items = list(groups.items())
-        idx = 0
+        # 折叠视图的卡片改为懒构建（见 _ensure_hbox_cards）：
+        # 此前每组都建两份，封面被解码两次、控件数量翻倍，展开时内存翻倍。
+        self._hbox_built = False
         for name in sorted(groups.keys(), key=lambda s: s.lower()):
             items = groups[name]
             card = make_group_card(name, items, self._enter_group)
             self._grid_flow.append(card)
-            hcard = None
-            try:
-                hcard = make_group_card(name, items, self._enter_group)
-                self._hbox.append(hcard)
-            except Exception:
-                hcard = None
-            if idx < 12 and hcard is not None and self._card_rotate_enabled():
-                self._schedule_card_rotate(hcard, group_items)
-            idx += 1
         try:
             self._grid_flow.set_visible(True)
             self._hbox.set_visible(True)
         except Exception:
             pass
+        # 当前是折叠态：立刻补建横向一排的卡片（否则折叠视图为空）
+        if getattr(self, "_collapsed", False):
+            self._ensure_hbox_cards()
         self._start_rotate_guard()
+
+    def _ensure_hbox_cards(self) -> None:
+        """懒构建折叠视图（横向一排）的卡片。
+
+        折叠视图此前与展开网格各建一份卡片，每组封面被解码两次、
+        控件数量翻倍。改为仅在需要折叠时构建，展开时不产生这份开销。
+        """
+        if getattr(self, "_hbox_built", False):
+            return
+        self._hbox_built = True
+        try:
+            groups = getattr(self, "_grid_groups", {}) or {}
+            group_items = list(groups.items())
+            if not group_items:
+                return
+            idx = 0
+            for name in sorted(groups.keys(), key=lambda s: s.lower()):
+                items = groups[name]
+                hcard = None
+                try:
+                    hcard = make_group_card(name, items, self._enter_group)
+                    self._hbox.append(hcard)
+                except Exception:
+                    hcard = None
+                if idx < 12 and hcard is not None and self._card_rotate_enabled():
+                    self._schedule_card_rotate(hcard, group_items)
+                idx += 1
+        except Exception:
+            pass
 
     # ------------------------------------------------------------
     # 卡片轮播
@@ -726,6 +754,14 @@ class LocalLibraryPage(Gtk.Box):
     def _rotate_card(self, card, group_items) -> None:
         if not self._card_rotate_enabled():
             return
+        # 折叠视图未构建 / 页面不可见时不再轮换，避免无谓的封面解码与定时器堆积。
+        if not getattr(self, "_hbox_built", False):
+            return
+        try:
+            if not self.get_mapped():
+                return
+        except Exception:
+            pass
         try:
             import random as _r
             if not group_items:

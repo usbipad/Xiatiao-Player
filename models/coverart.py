@@ -768,8 +768,19 @@ def _square_cover_via_pixbuf(image_bytes: bytes, size: int, radius: int) -> byte
     gi.require_version("GdkPixbuf", "2.0")
     from gi.repository import GdkPixbuf, Gio, GLib
 
+    # 关键：让 GdkPixbuf 在「解码阶段」就缩到目标尺寸附近。
+    # 内嵌封面可能高达 6000x6000，整张解码成 RGBA 约 144MB；
+    # 首页网格会为每个专辑/艺术家并发解码封面，几张同时跑就吃掉数百 MB。
+    # 这里按目标尺寸的 2 倍解码，之后只需极小比例缩放，内存降到几百 KB。
+    limit = max(1, size * 2)
     stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(image_bytes))
-    pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
+    try:
+        pixbuf = GdkPixbuf.Pixbuf.new_from_stream_at_scale(
+            stream, limit, limit, True, None)
+    except Exception:
+        # 旧版 gdk-pixbuf 无 at_scale：退回全尺寸解码（行为同以前）
+        stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(image_bytes))
+        pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
     w, h = pixbuf.get_width(), pixbuf.get_height()
     if w <= 0 or h <= 0:
         return image_bytes
