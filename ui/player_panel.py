@@ -14,6 +14,7 @@ from core.i18n import _
 
 from .widgets.cover_art import CoverArt
 from .widgets.lyrics_view import LyricsView
+from .widgets.marquee_label import MarqueeLabel
 from .widgets.seek_bar import SeekBar
 
 
@@ -148,11 +149,13 @@ class PlayerPanel(Gtk.Box):
         # ---- 曲目信息 ----
         info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         info_box.set_vexpand(False)
-        self.label_track = Gtk.Label(label=_("未播放"))
-        self.label_track.add_css_class("heading")
-        self.label_track.set_ellipsize(3)
-        self.label_artist = Gtk.Label(label="—")
-        self.label_artist.add_css_class("dim-label")
+        # 歌名 / 艺术家用跑马灯标签：文本超长时循环滚动完整展示，
+        # 且水平 natural 宽度恒为 0，绝不撑宽面板（此前长艺术家名
+        # 会把面板顶宽，正方形封面被连带顶大）。
+        self.label_track = MarqueeLabel(_("未播放"), css_classes=["heading"])
+        self.label_track.set_hexpand(True)
+        self.label_artist = MarqueeLabel("—", css_classes=["dim-label"])
+        self.label_artist.set_hexpand(True)
         info_box.append(self.label_track)
         info_box.append(self.label_artist)
         # 套 WindowHandle：拖动歌名/歌手区域也能移动窗口（纯文字，无交互冲突）
