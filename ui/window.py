@@ -3007,7 +3007,7 @@ class MainWindow(Adw.ApplicationWindow):
                 dlg = Adw.AboutDialog()
                 dlg.set_application_name(_("虾条播放器"))
                 dlg.set_application_icon("xiatiao")
-                dlg.set_version("1.0.0")
+                dlg.set_version("1.0.1")
                 dlg.set_comments(_("GTK4 本地音乐播放器，Rust 音频后端，支持 DSD 直通与 DSP"))
                 dlg.set_copyright("© 2026 usbipad")
                 # 法律信息：GTK 会据此提供 GPL-3.0 全文入口。

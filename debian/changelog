@@ -1,3 +1,15 @@
+xiatiao-player (1.0.1) unstable; urgency=medium
+
+  * 修复首页展开专辑/艺术家时内存飙升：封面改在解码阶段缩放到目标尺寸，
+    避免 6000x6000 内嵌封面整张解码（单张约 144MB）。
+  * 折叠视图卡片改为懒构建，不再与展开网格各建一份（封面解码与控件数量减半）。
+  * 卡片轮播加守卫：折叠视图未构建或页面不可见时不再轮换，避免定时器堆积。
+  * 消除窗口缩放/切页/进出沉浸页时的同步重活，提升响应。
+  * 隐藏歌词区滚动条。
+  * 修正构建日志残留：.gitignore 补 *.build，清理 glob 改为 _amd64*.build*。
+
+ -- usbipad <1495941192+usbipad@users.noreply.github.com>  Mon, 21 Sep 2026 14:45:00 +0800
+
 xiatiao-player (1.0.0) unstable; urgency=medium
 
   * 首个正式版本。

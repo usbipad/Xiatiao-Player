@@ -15,7 +15,7 @@
 # 用法：
 #   bash tools/build_deb_debian12.sh
 # 产物：
-#   项目内 release/ 目录下的 xiatiao-player_1.0.0_amd64.deb
+#   项目内 release/ 目录下的 xiatiao-player_1.0.1_amd64.deb
 set -euo pipefail
 
 PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -69,7 +69,7 @@ mv -f "$PROJ"/xiatiao-player_${VER}_amd64.deb "$RELEASE"/ 2>/dev/null || true
 mv -f "$PROJ"/xiatiao-player-dbgsym_${VER}_amd64.deb "$RELEASE"/ 2>/dev/null || true
 # 清理构建中间产物。
 # 注意：sbuild 的日志会在版本号后插入时间戳
-# （xiatiao-player_1.0.0_amd64-2026-09-21T04:22:10Z.build），
+# （xiatiao-player_1.0.1_amd64-2026-09-21T04:22:10Z.build），
 # 所以 glob 必须是 _amd64*.build*，否则匹配不到、日志每次残留。
 rm -f "$PROJ"/xiatiao-player_${VER}_amd64*.build* \
       "$PROJ"/xiatiao-player_${VER}_amd64.changes \

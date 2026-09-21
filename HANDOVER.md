@@ -90,7 +90,7 @@
 - 主要特性：本地曲库扫描、bit-perfect 直通、采样率跟随、DSD 支持、内嵌 CamillaDSP、MPRIS2、系统托盘。
 - 许可证：GPL-3.0（因内嵌 CamillaDSP）。
 - 应用 ID：com.xiatiao.player
-- 当前版本：1.0.0
+- 当前版本：1.0.1
 
 ---
 
@@ -317,7 +317,7 @@ Rust 与内嵌 CamillaDSP 是**两条并行 DSP 路径**。某功能由谁处理
 
     # 构建 .deb（在 Debian 12 基线里编，产物最高只需 GLIBC_2.34）
     bash tools/build_deb_debian12.sh
-    # 产物：xiatiao-player_1.0.0_amd64.deb（覆盖 Debian 12+ / Ubuntu 22.04+）
+    # 产物：xiatiao-player_1.0.1_amd64.deb（覆盖 Debian 12+ / Ubuntu 22.04+）
 
 **为什么不能直接用 `dpkg-buildpackage`**：本机（Debian sid）glibc 2.43，直接编出的
 Rust 后端要求 GLIBC_2.43，装到 Debian 12/Ubuntu 22.04 会因缺符号启动失败。
@@ -367,7 +367,7 @@ Rust 后端要求 GLIBC_2.43，装到 Debian 12/Ubuntu 22.04 会因缺符号启�
 
 ### 9.3 安装
 
-    sudo apt install ./xiatiao-player_1.0.0_amd64.deb
+    sudo apt install ./xiatiao-player_1.0.1_amd64.deb
 
 安装后：程序在 /usr/lib/xiatiao-player/，图标在 /usr/share/icons/hicolor/，启动器在 /usr/share/applications/。
 
