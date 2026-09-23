@@ -39,20 +39,38 @@ def _gtk_log_filter(domain, level, message, user_data):
         sys.stderr.write(f"{domain or 'Gtk'}: {message}\n")
 
 
-try:
-    GLib.log_set_handler("Gtk", GLib.LogLevelFlags.LEVEL_WARNING, _gtk_log_filter, None)
-    GLib.log_set_handler("Adwaita", GLib.LogLevelFlags.LEVEL_WARNING, _gtk_log_filter, None)
-except Exception:
-    pass
+# ---- 调试入口 ----
+# XIATIAO_DEBUG 控制日志级别与输出（未设置=保持常规 INFO 行为）：
+#   XIATIAO_DEBUG=1        -> DEBUG 级别，日志写到 /tmp/xiatiao-debug.log
+#   XIATIAO_DEBUG=verbose  -> 同上，且不再过滤 GTK 噪音警告
+# 目的：出问题时一条命令开启全量诊断日志，无需改代码。
+_DEBUG = os.environ.get("XIATIAO_DEBUG", "").strip().lower()
+_DEBUG_ON = _DEBUG not in ("", "0", "false", "no", "off")
+_DEBUG_VERBOSE = _DEBUG in ("verbose", "2", "all")
 
+# verbose 调试模式下不过滤 GTK 噪音，保留原始警告便于排查。
+if not _DEBUG_VERBOSE:
+    try:
+        GLib.log_set_handler("Gtk", GLib.LogLevelFlags.LEVEL_WARNING, _gtk_log_filter, None)
+        GLib.log_set_handler("Adwaita", GLib.LogLevelFlags.LEVEL_WARNING, _gtk_log_filter, None)
+    except Exception:
+        pass
+
+_log_format = "%(asctime)s %(levelname)s %(name)s: %(message)s" if _DEBUG_ON else \
+    "%(levelname)s %(name)s: %(message)s"
+_log_path = "/tmp/xiatiao-debug.log" if _DEBUG_ON else "/tmp/xiatiao-app.log"
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s %(name)s: %(message)s",
+    level=logging.DEBUG if _DEBUG_ON else logging.INFO,
+    format=_log_format,
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("/tmp/xiatiao-app.log", mode="w", encoding="utf-8"),
+        logging.FileHandler(_log_path, mode="w", encoding="utf-8"),
     ],
 )
+if _DEBUG_ON:
+    logging.getLogger(__name__).info(
+        "调试模式已开启（XIATIAO_DEBUG=%s）：级别=DEBUG，日志=%s%s",
+        _DEBUG, _log_path, "，GTK 噪音不再过滤" if _DEBUG_VERBOSE else "")
 
 APP_ID = "com.xiatiao.player"
 ICON_NAME = "xiatiao"
