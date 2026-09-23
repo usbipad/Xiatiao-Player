@@ -90,8 +90,11 @@ class MarqueeLabel(Gtk.Widget):
             # 关键：minimum 和 natural 都报 0 → 永远不会撑宽父容器。
             # 实际宽度由父容器（hexpand）分配。
             return (0, 0, -1, -1)
+        # 垂直方向 minimum 必须报实际文字高度：若报 0，父容器在空间紧张时
+        # 会把它压到 0 高 → do_size_allocate 里 h<=0 → 子 label 被隐藏 →
+        # 歌名/歌手「消失」。空间不足应由外层 ScrolledWindow 滚动解决。
         _, nat_h, _, _ = self._l1.measure(Gtk.Orientation.VERTICAL, -1)
-        return (0, nat_h, -1, -1)
+        return (nat_h, nat_h, -1, -1)
 
     def do_size_allocate(self, width: int, height: int, baseline: int) -> None:
         _, text_w, _, _ = self._l1.measure(Gtk.Orientation.HORIZONTAL, -1)

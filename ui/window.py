@@ -145,6 +145,14 @@ class MainWindow(Adw.ApplicationWindow):
     narrow_mode = GObject.Property(
         type=bool, default=False, getter=_get_narrow_mode, setter=_set_narrow_mode)
 
+    def _keep_expanded(self, sv, _pspec=None) -> None:
+        """始终保持侧栏展开（不折叠），消除拖窗时的折叠抖动。"""
+        try:
+            if sv.get_collapsed():
+                sv.set_collapsed(False)
+        except Exception:
+            pass
+
     def _apply_narrow(self, on_narrow: bool) -> None:
         """窄屏时隐藏导航文字、收缩搜索框，降低窗口最小宽度。"""
         for _lbl in getattr(self, "_nav_labels", {}).values():
@@ -289,6 +297,14 @@ class MainWindow(Adw.ApplicationWindow):
             self._split_view.set_sidebar_width_fraction(0.28)
         except Exception:
             log.debug("设置侧栏宽度失败", exc_info=True)
+        # 永不折叠（固定并排）：libadwaita 默认在窗口变窄时自动折叠侧栏，
+        # 宽度在临界值附近抖动会「折叠↔展开」反复切换，每次重绘 border/shadow
+        # → 拖动窗口时面板右侧竖线一闪一闪。强制 collapsed 恒 False 消除抖动。
+        try:
+            self._split_view.set_collapsed(False)
+            self._split_view.connect("notify::collapsed", self._keep_expanded)
+        except Exception:
+            log.debug("设置侧栏折叠失败", exc_info=True)
         self._main_stack.add_named(self._split_view, "main")
 
         # 侧栏显隐：headerbar 切换按钮 ↔ show-sidebar 双向绑定。
@@ -503,15 +519,34 @@ class MainWindow(Adw.ApplicationWindow):
             # 这些是库内置样式，style.css（USER 级）拼不过，故用 USER+1000 注入。
             _sv_prov = Gtk.CssProvider()
             _sv_prov.load_from_data(
-                # border 节点：libadwaita 在此画侧栏与内容区分隔线。
-                # 不用分隔线，改为由面板阴影制造层次，故设为透明。
-                b"overlay-split-view > border {"
-                b"background: transparent; background-color: transparent;"
-                b"min-width: 0; min-height: 0; box-shadow: none;}"
+                # 侧栏与内容区交界那条竖线：libadwaita 的 border 节点 + sidebar-pane
+                # 右缘内描边。用最具体选择器 + USER+1000 强制清零（含 :backdrop、
+                # :dir 变体，libadwaita 的这些更具体选择器会压过普通规则）。
+                b"overlay-split-view > border,"
+                b"overlay-split-view > border:backdrop,"
+                b"overlay-split-view > border:dir(ltr),"
+                b"overlay-split-view > border:dir(rtl) {"
+                b"background: none; background-image: none; background-color: transparent;"
+                b"min-width: 0; min-height: 0; border: none; box-shadow: none;}"
                 b"overlay-split-view > outline {"
                 b"background: transparent; box-shadow: none;}"
-                b"overlay-split-view > shadow {"
-                b"background-image: none;}"
+                # 侧栏与内容区之间有个无类名的 AdwGizmo widget（可能是分隔装饰）——
+                # 试着透明化。
+                b"overlay-split-view > widget {"
+                b"background: none; background-image: none;"
+                b"box-shadow: none; min-width: 0;}"
+
+                # .sidebar-pane 右缘内描边（面板右边竖线）——含方向变体，彻底去掉。
+                b"overlay-split-view .sidebar-pane,"
+                b"overlay-split-view .sidebar-pane:dir(ltr),"
+                b"overlay-split-view .sidebar-pane:dir(rtl),"
+                b"overlay-split-view .sidebar-pane.end:dir(ltr),"
+                b"overlay-split-view .sidebar-pane.end:dir(rtl) {"
+                b"border: none; box-shadow: none;}"
+                b"overlay-split-view > shadow,"
+                b"overlay-split-view > shadow.left,"
+                b"overlay-split-view > shadow.right {"
+                b"background: none; background-image: none; box-shadow: none;}"
                 # 注意：不给 .sidebar-pane 设背景色——它的背景由 _dynamic_css
                 # （跟随封面时）或 style.css（兜底）负责。此处设了会因本 provider
                 # 后注册而覆盖掉 _dynamic_css 的跟随色，导致圆角外露白框。
@@ -2289,7 +2324,7 @@ class MainWindow(Adw.ApplicationWindow):
                     # 侧栏容器 + split view 的 border 节点：面板有 margin，
                     # 圆角/margin 外露出的是这层的底；必须与面板同色，否则露白框。
                     "window.main-bg-follow overlay-split-view .sidebar-pane,"
-                    "window.main-bg-follow overlay-split-view > border,"
+                    # 注意：> border 不列入此处——否则会被染成背景色、分隔线消失。
                     "window.main-bg-follow .content-area,"
                     "window.main-bg-follow .content-area scrolledwindow,"
                     "window.main-bg-follow .content-area scrolledwindow > viewport,"

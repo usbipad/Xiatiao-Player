@@ -468,19 +468,31 @@ popover.effect-popover preferencesgroup {
  * libadwaita 给 .sidebar-pane 设了 `background-color: var(--sidebar-bg-color)`
  * 与 `box-shadow: inset -1px 0 ...`（右缘 1px 内描边，即看到的白线）。
  * 这里用足够特异性覆盖背景并去掉那条内描边。 */
+/* .sidebar-pane 用 --sidebar-bg-color + 右缘 `inset -1px 0` 内阴影
+ * （即面板右边那条竖线）。必须覆盖各方向变体，否则 :dir(ltr) 更具体、
+ * box-shadow: none 压不住。 */
 overlay-split-view .sidebar-pane,
 overlay-split-view .sidebar-pane:dir(ltr),
 overlay-split-view .sidebar-pane:dir(rtl),
+overlay-split-view .sidebar-pane.end:dir(ltr),
+overlay-split-view .sidebar-pane.end:dir(rtl),
 overlay-split-view .sidebar-pane > box {
     background-color: @window_bg_color;
+    border: none;
     box-shadow: none;
 }
-/* overlay-split-view 的 border 节点：不用分隔线（层次靠面板阴影表达）。 */
-overlay-split-view > border {
-    background: transparent;
+/* overlay-split-view 的 border 节点：彻底去掉交界竖线（含各状态/方向变体）。 */
+overlay-split-view > border,
+overlay-split-view > border:backdrop,
+overlay-split-view > border:dir(ltr),
+overlay-split-view > border:dir(rtl) {
+    background: none;
+    background-image: none;
     background-color: transparent;
     min-width: 0;
     min-height: 0;
+    border: none;
+    box-shadow: none;
 }
 
 /* 面板字号：固定用「大号」档。

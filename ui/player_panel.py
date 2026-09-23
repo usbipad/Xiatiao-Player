@@ -21,7 +21,7 @@ from .widgets.seek_bar import SeekBar
 log = logging.getLogger(__name__)
 
 #: 面板内容最小宽度（避免拖太窄导致内容溢出）
-PANEL_CONTENT_MIN_W = 415
+PANEL_CONTENT_MIN_W = 320
 #: 面板左右 margin（各一份）。留足空间给外圈阴影扩散，避免被侧栏裁切。
 PANEL_MARGIN = 22
 #: 面板整体最小宽度（含左右 margin），供窗口最小宽度引用
