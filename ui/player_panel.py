@@ -266,6 +266,14 @@ class PlayerPanel(Gtk.Box):
         self.volume = vol_slider
         vol_popover.set_child(vol_slider)
         self._vol_btn.set_popover(vol_popover)
+        # 滚轮调音量：鼠标悬停图标上滚动即可增减（向上增大、向下减小）。
+        # 复用滑块 → value-changed → _on_volume_changed 的既有链路，
+        # 保证图标、滑块、后端音量三者同步。
+        _vol_scroll = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.VERTICAL
+        )
+        _vol_scroll.connect("scroll", self._on_vol_scroll)
+        self._vol_btn.add_controller(_vol_scroll)
         func_box.append(self._vol_btn)
 
         # 喜欢按钮（接通本地喜欢）
@@ -958,6 +966,22 @@ class PlayerPanel(Gtk.Box):
         self._update_volume_icon(vol)
         if self._on_volume is not None:
             self._on_volume(vol)
+
+    def _on_vol_scroll(self, _controller, _dx: float, dy: float) -> bool:
+        """滚轮调节音量：向上（dy<0）增大，向下（dy>0）减小。
+
+        直接改滑块值，触发 value-changed → _on_volume_changed，
+        复用既有同步链路（图标 / 后端音量一并更新）。
+        """
+        try:
+            cur = float(self.volume.get_value())
+            step = 0.05
+            val = max(0.0, min(1.0, cur + (-step if dy < 0 else step)))
+            if abs(val - cur) > 1e-9:
+                self.volume.set_value(val)
+            return True
+        except Exception:
+            return False
 
     # ---- 进度条交互 ----
     def set_progress_color(self, rgb) -> None:
