@@ -171,6 +171,8 @@ def make_group_card(name: str, items, on_enter_group) -> Gtk.Widget:
     on_enter_group(group_name) 在点击卡片时调用。
     """
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    # 卡片容器类：启用 hover 浮起效果（见 style.css .media-card:hover）。
+    box.add_css_class("media-card")
     # 容器比封面宽 2*PAD：左右各留出阴影扩散空间，
     # 否则阴影会被容器边界裁掉（只有底部有标签留白，故只底部可见）。
     box.set_size_request(CARD_COVER_PX + CARD_SHADOW_PAD * 2, -1)

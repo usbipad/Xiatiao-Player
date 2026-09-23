@@ -2288,14 +2288,29 @@ class MainWindow(Adw.ApplicationWindow):
                     # 右键/媒体菜单：popover 是独立 CSS 根，不能用 window 祖先限定。
                     # .media-menu 仅本项目菜单使用，故全局选择器安全；
                     # 且仅在功能开启时注入，关闭即清空。
-                    "popover.media-menu > contents {"
+                    "popover.media-menu > contents,"
+                    "popover.media-menu > arrow {"
                     f"background-color: {col}; border: none;"
+                    "box-shadow: none;"
+                    "}"
+                    "popover.media-menu > contents {"
                     "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
+                    "padding: 4px;"
+                    "}"
+                    # 菜单项更紧凑：减小最小宽度与左右内边距（主题默认 88px/6px 偏宽）
+                    "popover.media-menu modelbutton {"
+                    "min-width: 0; padding: 4px 8px;"
                     "}"
                     # 音效气泡：与菜单同色，跟随主界面背景色自动变化。
                     # 用 USER+1000 的 _dynamic_css 已能压过第三方主题。
-                    "popover.effect-popover > contents {"
+                    # 注意：箭头（> arrow）与内容同属主题的 `popover > arrow` 规则，
+                    # 必须一并覆盖，否则箭头仍是主题白底、与气泡背景不协调。
+                    "popover.effect-popover > contents,"
+                    "popover.effect-popover > arrow {"
                     f"background-color: {col}; border: none;"
+                    "box-shadow: none;"
+                    "}"
+                    "popover.effect-popover > contents {"
                     "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
                     "}"
                     # 左侧面板歌词区顶/底渐隐：原用 @window_bg_color（白）

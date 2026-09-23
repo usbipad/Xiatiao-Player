@@ -644,10 +644,12 @@ class PlayerPanel(Gtk.Box):
         from core.eq_presets import BUILTIN_PRESETS
 
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        body.set_margin_top(12)
-        body.set_margin_bottom(12)
-        body.set_margin_start(12)
-        body.set_margin_end(12)
+        body.set_margin_top(8)
+        body.set_margin_bottom(8)
+        # 适度左右留白（之前 12 与 ActionRow 内边距叠加导致两侧过宽；
+        # 完全清零又会贴边，故取 6px 作为气泡整体内缩）。
+        body.set_margin_start(6)
+        body.set_margin_end(6)
 
         group = Adw.PreferencesGroup()
         group.set_title(_("内置音效"))
@@ -721,16 +723,20 @@ class PlayerPanel(Gtk.Box):
             display = Gdk.Display.get_default()
             if display is None:
                 return
-            # 只注入「结构」样式（圆角/透明/去边框）；背景色由 window._apply_main_bg
-            # 统一注入（与 .media-menu 同色，跟随主界面背景色自动变化），避免两处冲突。
+            # 磨砂纹理图：GSK 无法模糊 popover 后方（独立窗口拿不到后方像素），
+            # 用一张半透明细噪点 PNG 做视觉近似（见 tools/gen_frosted.py）。
+            # 按系统明暗选图。
+            # 只注入「结构」样式（圆角/去边框）；背景色由 window._apply_main_bg
+            # 统一注入（与 .media-menu 同色，跟随主界面背景色自动变化）。
             # 用 USER+1000 压过第三方主题（MacTahoe 等）。
             css = (
                 "popover.effect-popover > contents {"
-                "background-image: none; border-radius: 12px;}"
-                "popover.effect-popover scrolledwindow {"
-                "background: transparent; border-radius: 12px;}"
-                "popover.effect-popover preferencesgroup list.boxed-list {"
-                "background-color: transparent; box-shadow: none;}"
+                "background-image: none; border-radius: 12px; padding: 0;}"
+                "popover.effect-popover scrolledwindow,"
+                "popover.effect-popover preferencesgroup,"
+                "popover.effect-popover list.boxed-list,"
+                "popover.effect-popover row {"
+                "background: transparent; box-shadow: none;}"
             )
             prov = Gtk.CssProvider()
             prov.load_from_data(css.encode("utf-8"))
