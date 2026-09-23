@@ -1414,7 +1414,10 @@ class MainWindow(Adw.ApplicationWindow):
             self.now_playing.set_lyrics(lyrics)
             self.player_panel.set_lyrics(lyrics)
         except Exception:
-            pass
+            # 本块包含封面/背景/歌词等多项 UI 更新，任一步失败都会中断其后
+            # 调用（曾因未定义变量导致歌词无声消失）。此处仅记 debug 日志，
+            # 保持容错不崩，但排查时（日志级别调 DEBUG）可定位到具体失败点。
+            log.debug("应用曲目资产失败（封面/背景/歌词可能未更新）", exc_info=True)
         # 更新 MPRIS 封面（供 KDE Connect 等同步到手机通知栏）。
         # 落盘放在 token 校验之后的主线程，确保文件内容与当前曲目一致；
         # 文件名带 token，artUrl 每次变化，客户端不会命中旧缓存。

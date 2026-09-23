@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Callable, Optional
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
@@ -16,6 +17,8 @@ from .widgets.cover_art import CoverArt
 from .widgets.lyrics_view import LyricsView
 from .widgets.marquee_label import MarqueeLabel
 from .widgets.seek_bar import SeekBar
+
+log = logging.getLogger(__name__)
 
 
 def _fmt_seconds(seconds: float) -> str:
@@ -400,7 +403,9 @@ class PlayerPanel(Gtk.Box):
                     row.add_css_class("queue-current")
                 self._queue_list.append(row)
         except Exception:
-            pass
+            # 队列重建期间任一行出错会中断后续行；仅记 debug 日志保持容错，
+            # 排查时（DEBUG 级别）可定位到失败点。
+            log.debug("刷新队列列表失败", exc_info=True)
 
     def _attach_queue_row_menu(self, row, track) -> None:
         """给队列行挂右键菜单：提升到下一首 / 从列表丢弃。"""
