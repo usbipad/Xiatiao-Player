@@ -566,6 +566,44 @@ DSP 参数（扁平 dict）在内存/磁盘中存在**多个副本**，改动时
 界面用 libadwaita 变量（@accent_bg_color 等），实际观感随系统 GTK/Adw 主题变化。
 播放按钮已改为扁平（不依赖强调色），跟随主题前景色。
 
+### 12.8 第三方主题覆盖 popover 样式（已踩坑）
+
+**现象**：装了第三方 GTK 主题（如 MacTahoe）后，应用在 `style.css` 里给 popover
+设的背景/边框样式不生效，弹层仍是主题的白底。
+
+**原因**：这些主题在 `~/.config/gtk-4.0/gtk.css`（经符号链接加载）里用
+`popover > contents { background-color: ... }` 设了样式。它与应用的 `style.css`
+**同为 `STYLE_PROVIDER_PRIORITY_USER`（800）优先级**；同优先级下**后加载者胜**，
+而用户主题的加载时机可能导致应用样式被覆盖。
+（注意：GTK CSS **不支持 `!important`**，写了会被解析器丢弃并报
+`Junk at end of value`，不能靠它提权。）
+
+**正解**：对需要压过主题的 popover 样式，用**独立的高优先级 provider 注入**——
+`Gtk.StyleContext.add_provider_for_display(display, prov, USER + 1000)`，
+并用 `popover.<专用类> > contents` 选择器（全局、不依赖 window 祖先，因 popover
+是独立顶层窗口）。参见：`player_panel._inject_effect_popover_css`、
+`window._apply_main_bg`（`.media-menu` / `.effect-popover`）。
+另：popover 的**箭头**是 `popover > arrow` 节点，与 `contents` 同属主题那条规则，
+改背景时必须一并覆盖，否则箭头仍是主题白底。
+
+### 12.9 GTK4 popover 无法对后方做模糊（做不了真毛玻璃）
+
+**结论**：`Gtk.Popover` 里的 `backdrop-filter: blur()`（GTK 4.22 支持该 CSS 属性）
+**无法模糊 popover 后方的内容**，只会得到一块透明/纯色底。
+
+**原因**：GTK4 的 popover 是**独立的顶层 surface**，拿不到应用主窗口的像素；
+且 GSK 在控件（或其祖先）使用 filter/opacity 等效果时会**新开一个离屏缓冲区**，
+该缓冲区**起始为空**——`backdrop-filter` 只能看到这层空缓冲，而非底下的窗口画面。
+
+**可选替代**（都不是真模糊）：
+- 半透明色底（如 `alpha(@window_bg_color, 0.85)`）——近似磨砂观感；
+- 预先做好的磨砂纹理 PNG 作背景——**静态纹理**，不反映后方内容；
+- 若确需真模糊，只能把弹层改为**窗口内 overlay 面板**（同 surface），
+  但会失去 popover 的自动定位/点击外部关闭/箭头，需自行实现，改动大。
+
+> 本项目的音效气泡最终采用「背景跟随主界面背景色」方案
+> （见 12.8 的高优先级注入），放弃了毛玻璃尝试。
+
 ### 12.5 Rust 编译警告
 
 后端编译有若干 dead-code 警告（多为预留 API：latency/is_failed/has_pipeline、
