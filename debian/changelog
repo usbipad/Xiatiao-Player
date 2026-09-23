@@ -7,6 +7,9 @@ xiatiao-player (1.0.2) unstable; urgency=medium
   * 关键 UI 路径（切歌资产应用、队列刷新）的静默 except 补 debug 日志，
     便于排查；默认不输出，不产生噪音。
   * 新增统一调试入口 XIATIAO_DEBUG 与 tools/debug_run.sh。
+  * 修复 GTK4 段错误崩溃（SIGSEGV in gtk_widget_unparent）：右键菜单等
+    临时 Popover 只 set_parent 未 unparent，父控件销毁时访问已释放对象。
+    为全部临时 popover 补解父（菜单用 closed 信号，音量用 do_dispose）。
 
  -- usbipad <1495941192+usbipad@users.noreply.github.com>  Tue, 23 Sep 2026 22:20:00 +0800
 
