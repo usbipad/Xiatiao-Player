@@ -90,7 +90,7 @@
 - 主要特性：本地曲库扫描、bit-perfect 直通、采样率跟随、DSD 支持、内嵌 CamillaDSP、MPRIS2、系统托盘。
 - 许可证：GPL-3.0（因内嵌 CamillaDSP）。
 - 应用 ID：com.xiatiao.player
-- 当前版本：1.0.1
+- 当前版本：1.0.2
 
 ---
 

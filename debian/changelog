@@ -1,3 +1,15 @@
+xiatiao-player (1.0.2) unstable; urgency=medium
+
+  * 修复切歌后歌词不显示：_apply_track_assets 引用了未定义变量抛异常，
+    被 except 静默吞掉，连带进度条跟随色、主界面背景跟随一并失效。
+  * 修复系统托盘 dbusmenu 方法返回值类型错误：GetGroupProperties 等
+    返回值未按 DBus 规范用元组包裹，触发 GLib-CRITICAL 并可能超时。
+  * 关键 UI 路径（切歌资产应用、队列刷新）的静默 except 补 debug 日志，
+    便于排查；默认不输出，不产生噪音。
+  * 新增统一调试入口 XIATIAO_DEBUG 与 tools/debug_run.sh。
+
+ -- usbipad <1495941192+usbipad@users.noreply.github.com>  Tue, 23 Sep 2026 22:20:00 +0800
+
 xiatiao-player (1.0.1) unstable; urgency=medium
 
   * 修复首页展开专辑/艺术家时内存飙升：封面改在解码阶段缩放到目标尺寸，

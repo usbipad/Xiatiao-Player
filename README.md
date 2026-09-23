@@ -90,7 +90,7 @@
 从 Releases 下载 `.deb` 后：
 
 ```bash
-sudo apt install ./xiatiao-player_1.0.1_amd64.deb
+sudo apt install ./xiatiao-player_1.0.2_amd64.deb
 ```
 
 安装后：
