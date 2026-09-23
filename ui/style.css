@@ -452,9 +452,33 @@ popover.effect-popover preferencesgroup {
 }
 
 /* 左侧播放面板：浅色背景，与右侧内容区分（Tonearm 风格）*/
+/* 左侧播放面板：浅色背景 + 圆角。
+ * 圆角外侧若露出底层侧栏的默认色会形成白边，故下方给 split view 的
+ * 侧栏区域也染同色（@window_bg_color），圆角外即与面板同色、无白边。 */
 .player-panel {
     background-color: @window_bg_color;
     border-radius: 12px;
+}
+
+/* OverlaySplitView 的侧栏容器：与播放面板同色，避免面板圆角外露白。
+ * libadwaita 给 .sidebar-pane 设了 `background-color: var(--sidebar-bg-color)`
+ * 与 `box-shadow: inset -1px 0 ...`（右缘 1px 内描边，即看到的白线）。
+ * 这里用足够特异性覆盖背景并去掉那条内描边。 */
+overlay-split-view .sidebar-pane,
+overlay-split-view .sidebar-pane:dir(ltr),
+overlay-split-view .sidebar-pane:dir(rtl),
+overlay-split-view .sidebar-pane > box {
+    background-color: @window_bg_color;
+    box-shadow: none;
+}
+/* overlay-split-view 的 border 节点：libadwaita 画 1px 描边
+ * （`background: color-mix(currentColor, ...)`），浅色主题下即白线。
+ * 必须用 `background`（简写）覆盖，且设 transparent 去掉描边。 */
+overlay-split-view > border {
+    background: transparent;
+    background-color: transparent;
+    min-width: 0;
+    min-height: 0;
 }
 
 /* 面板字号：固定用「大号」档。

@@ -491,6 +491,29 @@ class MainWindow(Adw.ApplicationWindow):
                 display, self._dynamic_css,
                 Gtk.STYLE_PROVIDER_PRIORITY_USER + 1000,
             )
+            # 侧栏描边/背景覆盖：libadwaita 给 overlay-split-view > border 画了
+            # 1px 描边（浅色主题下成白线）、给 .sidebar-pane 设了 sidebar 底色。
+            # 这些是库内置样式，style.css（USER 级）拼不过，故用 USER+1000 注入。
+            _sv_prov = Gtk.CssProvider()
+            _sv_prov.load_from_data(
+                b"overlay-split-view > border {"
+                b"background: transparent; background-color: transparent;"
+                b"min-width: 0; min-height: 0; box-shadow: none;}"
+                b"overlay-split-view > outline {"
+                b"background: transparent; box-shadow: none;}"
+                b"overlay-split-view > shadow {"
+                b"background-image: none;}"
+                # 注意：不给 .sidebar-pane 设背景色——它的背景由 _dynamic_css
+                # （跟随封面时）或 style.css（兜底）负责。此处设了会因本 provider
+                # 后注册而覆盖掉 _dynamic_css 的跟随色，导致圆角外露白框。
+                b"overlay-split-view .sidebar-pane {"
+                b"box-shadow: none;}"
+            )
+            Gtk.StyleContext.add_provider_for_display(
+                display, _sv_prov,
+                Gtk.STYLE_PROVIDER_PRIORITY_USER + 1000,
+            )
+            self._sv_css = _sv_prov
 
         # 订阅系统配色明暗变化：关闭「背景跟随封面」时，沉浸页前景
         # 需跟随系统明暗重算（开启时按封面，不受影响）。
@@ -2254,6 +2277,10 @@ class MainWindow(Adw.ApplicationWindow):
                     # 主界面各层背景色
                     "window.main-bg-follow,"
                     "window.main-bg-follow .player-panel,"
+                    # 侧栏容器 + split view 的 border 节点：面板有 margin，
+                    # 圆角/margin 外露出的是这层的底；必须与面板同色，否则露白框。
+                    "window.main-bg-follow overlay-split-view .sidebar-pane,"
+                    "window.main-bg-follow overlay-split-view > border,"
                     "window.main-bg-follow .content-area,"
                     "window.main-bg-follow .content-area scrolledwindow,"
                     "window.main-bg-follow .content-area scrolledwindow > viewport,"
