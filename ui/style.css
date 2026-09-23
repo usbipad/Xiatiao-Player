@@ -458,6 +458,10 @@ popover.effect-popover preferencesgroup {
 .player-panel {
     background-color: @window_bg_color;
     border-radius: 12px;
+    /* 外圈阴影：下方偏移 + 较大模糊，营造卡片「浮起」的层次感。
+       阴影空间由面板 margin（左右/上下 22）保证，避免被侧栏裁切。 */
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.30),
+                0 3px 8px rgba(0, 0, 0, 0.18);
 }
 
 /* OverlaySplitView 的侧栏容器：与播放面板同色，避免面板圆角外露白。
@@ -471,9 +475,7 @@ overlay-split-view .sidebar-pane > box {
     background-color: @window_bg_color;
     box-shadow: none;
 }
-/* overlay-split-view 的 border 节点：libadwaita 画 1px 描边
- * （`background: color-mix(currentColor, ...)`），浅色主题下即白线。
- * 必须用 `background`（简写）覆盖，且设 transparent 去掉描边。 */
+/* overlay-split-view 的 border 节点：不用分隔线（层次靠面板阴影表达）。 */
 overlay-split-view > border {
     background: transparent;
     background-color: transparent;

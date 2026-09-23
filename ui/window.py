@@ -36,7 +36,7 @@ from services.shortcuts import (
 
 from .now_playing import NowPlayingPage
 from .pages import LocalLibraryPage
-from .player_panel import PlayerPanel
+from .player_panel import PANEL_MIN_W, PlayerPanel
 from .settings_dialog import SettingsWindow
 
 log = logging.getLogger(__name__)
@@ -165,12 +165,11 @@ class MainWindow(Adw.ApplicationWindow):
         w = cfg0.get_int("window_width", 1400) or 1400
         h = cfg0.get_int("window_height", 900) or 900
         self.set_default_size(max(340, w), max(480, h))
-        # 窗口最小尺寸 = 左侧播放面板的完整宽度（含其 margin）。
-        # 缩到最窄时只剩播放面板，右侧内容区被完全挤出。
-        # 面板内容最小宽度见 PlayerPanel.set_size_request（当前 280），
-        # 加左右 margin 8+8 → 296。
+        # 窗口最小尺寸 = 左侧播放面板的完整宽度（含其 margin），
+        # 使窗口缩到最窄时恰好容纳完整面板、不被压窄。
+        # 宽度取自 player_panel.PANEL_MIN_W（单一真相源，改面板宽度即自动跟随）。
         try:
-            self.set_size_request(296, 562)
+            self.set_size_request(PANEL_MIN_W, 562)
         except Exception:
             log.debug("设置窗口最小尺寸失败", exc_info=True)
 
@@ -268,11 +267,19 @@ class MainWindow(Adw.ApplicationWindow):
         right_box.add_css_class("content-area")
         right_box.append(self._build_headerbar())
         right_box.append(self._build_right_area())
+        self._right_box = right_box
+        # 用 ScrolledWindow 包住右侧内容区：ScrolledWindow 的最小宽度可为 0
+        # （它会裁切内容，而非被内容撑开），使窗口缩到最窄时右侧被完全挤出，
+        # 窗口最小宽度只由左侧播放面板决定。滚动条策略 NEVER（纯为收缩）。
+        right_scroll = Gtk.ScrolledWindow()
+        right_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
+        right_scroll.set_propagate_natural_width(False)
+        right_scroll.set_child(right_box)
 
         # 可折叠侧栏：宽窗口固定并排，窄窗口折叠为浮层。
         self._split_view = Adw.OverlaySplitView()
         self._split_view.set_sidebar(self.player_panel)
-        self._split_view.set_content(right_box)
+        self._split_view.set_content(right_scroll)
         # 侧栏宽度：**线性**跟随窗口（比例 0.28，钳制在 280~520）。
         # 拖动窗口时连续平滑变化，无跳档；封面（正方形）随之平滑放大/缩小。
         self._split_view.set_min_sidebar_width(280)
@@ -496,6 +503,8 @@ class MainWindow(Adw.ApplicationWindow):
             # 这些是库内置样式，style.css（USER 级）拼不过，故用 USER+1000 注入。
             _sv_prov = Gtk.CssProvider()
             _sv_prov.load_from_data(
+                # border 节点：libadwaita 在此画侧栏与内容区分隔线。
+                # 不用分隔线，改为由面板阴影制造层次，故设为透明。
                 b"overlay-split-view > border {"
                 b"background: transparent; background-color: transparent;"
                 b"min-width: 0; min-height: 0; box-shadow: none;}"

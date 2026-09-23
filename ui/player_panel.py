@@ -20,6 +20,13 @@ from .widgets.seek_bar import SeekBar
 
 log = logging.getLogger(__name__)
 
+#: 面板内容最小宽度（避免拖太窄导致内容溢出）
+PANEL_CONTENT_MIN_W = 415
+#: 面板左右 margin（各一份）。留足空间给外圈阴影扩散，避免被侧栏裁切。
+PANEL_MARGIN = 22
+#: 面板整体最小宽度（含左右 margin），供窗口最小宽度引用
+PANEL_MIN_W = PANEL_CONTENT_MIN_W + PANEL_MARGIN * 2
+
 
 def _fmt_seconds(seconds: float) -> str:
     s = int(seconds or 0)
@@ -60,11 +67,11 @@ class PlayerPanel(Gtk.Box):
         self._on_queue_action = on_queue_action
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add_css_class("player-panel")  # 浅色背景，区分右侧内容区
-        self.set_size_request(280, -1)  # 最小宽度（避免拖太窄导致内容溢出）
-        self.set_margin_start(10)
-        self.set_margin_end(10)
-        self.set_margin_top(14)
-        self.set_margin_bottom(14)
+        self.set_size_request(PANEL_CONTENT_MIN_W, -1)  # 最小宽度（避免拖太窄导致内容溢出）
+        self.set_margin_start(PANEL_MARGIN)
+        self.set_margin_end(PANEL_MARGIN)
+        self.set_margin_top(22)
+        self.set_margin_bottom(22)
 
         # ---- 顶部工具栏（固定面板顶部，标题居中 + 🔔 ☰ 右侧）----
         topbar = Gtk.CenterBox()
