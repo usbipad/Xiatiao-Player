@@ -58,15 +58,15 @@ class PlayerPanel(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add_css_class("player-panel")  # 浅色背景，区分右侧内容区
         self.set_size_request(280, -1)  # 最小宽度（避免拖太窄导致内容溢出）
-        self.set_margin_start(8)
-        self.set_margin_end(8)
-        self.set_margin_top(16)
-        self.set_margin_bottom(16)
+        self.set_margin_start(10)
+        self.set_margin_end(10)
+        self.set_margin_top(14)
+        self.set_margin_bottom(14)
 
         # ---- 顶部工具栏（固定面板顶部，标题居中 + 🔔 ☰ 右侧）----
         topbar = Gtk.CenterBox()
         topbar.set_valign(Gtk.Align.CENTER)
-        topbar.set_margin_bottom(8)
+        topbar.set_margin_bottom(12)
         # 中间：头像 + 昵称；默认应用名，登录后由 set_user_info 改为账号昵称
         title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         title_box.set_valign(Gtk.Align.CENTER)
@@ -94,8 +94,8 @@ class PlayerPanel(Gtk.Box):
         topbar_handle.set_child(topbar)
         self.append(topbar_handle)
 
-        # 内层容器：紧凑排列
-        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        # 内层容器：优雅留白呼吸感排列
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         inner.set_halign(Gtk.Align.FILL)
 
         # CenterBox：内容比视图矮时垂直居中；比视图高时由外层滚动
@@ -128,7 +128,9 @@ class PlayerPanel(Gtk.Box):
         # ---- 封面 / 歌词 切换区（底部 Tab：Player 显示封面，Lyrics 显示歌词）----
         self._cover_area = Gtk.Stack()
         self._cover_area.set_size_request(280, -1)   # 封面区最小宽度
-        self._cover_area.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        # 左右滑入：与本地曲库卡片切换动画一致（点入口从左滑入新页）
+        self._cover_area.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        self._cover_area.set_transition_duration(260)
         # 非均匀高度：Stack 高度取当前可见页（封面页=正方形），
         # 否则会被较高的歌词/队列页撑高，封面上下留白。
         try:
@@ -147,7 +149,9 @@ class PlayerPanel(Gtk.Box):
         inner.append(self._cover_area)
 
         # ---- 曲目信息 ----
-        info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        info_box.set_margin_top(4)
+        info_box.set_margin_bottom(2)
         info_box.set_vexpand(False)
         # 歌名 / 艺术家用跑马灯标签：文本超长时循环滚动完整展示，
         # 且水平 natural 宽度恒为 0，绝不撑宽面板（此前长艺术家名
@@ -185,7 +189,9 @@ class PlayerPanel(Gtk.Box):
         inner.append(self.label_format)
 
         # ---- 控制行（Apple Music 风格：随机 / 上 / 播 / 下 / 循环）----
-        ctrl_box = Gtk.Box(spacing=8)
+        ctrl_box = Gtk.Box(spacing=12)
+        ctrl_box.set_margin_top(2)
+        ctrl_box.set_margin_bottom(2)
         ctrl_box.set_halign(Gtk.Align.CENTER)
         ctrl_box.set_valign(Gtk.Align.CENTER)
 
@@ -300,30 +306,19 @@ class PlayerPanel(Gtk.Box):
         self._add_queue_btn.connect("clicked", lambda *_: self._on_add_queue and self._on_add_queue())
         func_box.append(self._add_queue_btn)
 
-        # 其余功能图标（Tonearm 风格；暂为装饰，点击提示）
-        for icon, tip in (
-            ("xiatiao-download-symbolic", "下载"),
-            ("xiatiao-share-symbolic", "分享"),
-        ):
-            b = Gtk.Button(icon_name=icon)
-            b.add_css_class("flat")
-            b.add_css_class("np-skip-btn")
-            b.set_tooltip_text(tip)
-            b.connect("clicked", lambda *_a, _t=tip: self._toast_func(_t))
-            func_box.append(b)
-
-
         self._func_box = func_box
         inner.append(func_box)
 
         # ---- 底部 Tab（Tonearm 风格：Player / Lyrics / Queue）----
-        tab_box = Gtk.Box(spacing=6)
+        tab_box = Gtk.Box(spacing=4)
+        tab_box.add_css_class("player-tab-bar")
         tab_box.set_halign(Gtk.Align.CENTER)
+        tab_box.set_margin_top(4)
         self._tab_box = tab_box
         self._tab_buttons = []
         for label, icon, key in (
             ("Player", "audio-x-generic-symbolic", "player"),
-            ("Lyrics", "chat-symbolic", "lyrics"),
+            ("Lyrics", "xiatiao-lyrics-symbolic", "lyrics"),
             ("Queue", "view-list-symbolic", "queue"),
         ):
             btn = Gtk.Button()
@@ -590,11 +585,6 @@ class PlayerPanel(Gtk.Box):
         if nick:
             self.user_avatar.set_tooltip_text(nick)
         self.user_avatar.set_visible(bool(url))
-
-    def _toast_func(self, name: str) -> None:
-        """装饰性功能图标的提示回调。"""
-        if self._on_func_toast is not None:
-            self._on_func_toast(f"{name}：暂未实现")
 
     #: 音效预设展示名（键与 PlayerCore 一致）
     _EFFECT_LABELS = [
@@ -888,12 +878,18 @@ class PlayerPanel(Gtk.Box):
             self._on_shuffle(self._shuffle_on)
 
     def set_shuffle_state(self, on: bool) -> None:
-        """纯 UI 同步（不触发回调），供外部保持状态一致。"""
+        """纯 UI 同步（不触发回调），供外部保持状态一致。
+
+        用 np-toggle-on：style.css 已为它定义了激活态（强调色前景 +
+        半透明强调色背景 + 同色弥散阴影）。此前用 suggested-action，
+        但本应用样式表未定义该类、系统主题里也只有 :not(.suggested-action)
+        排除式规则，故开与关外观完全相同。
+        """
         self._shuffle_on = bool(on)
         if self._shuffle_on:
-            self.btn_shuffle.add_css_class("suggested-action")
+            self.btn_shuffle.add_css_class("np-toggle-on")
         else:
-            self.btn_shuffle.remove_css_class("suggested-action")
+            self.btn_shuffle.remove_css_class("np-toggle-on")
 
     def _cycle_repeat(self) -> None:
         self._repeat_mode = (self._repeat_mode + 1) % 3

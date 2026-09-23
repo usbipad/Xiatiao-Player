@@ -30,8 +30,8 @@ TRACK_RGBA_DARK = (1.0, 1.0, 1.0, 0.25)   # 未播轨道：半透明白
 PLAYED_RGBA_DARK = (1.0, 1.0, 1.0, 0.85)  # 已播段：白色
 THUMB_RGBA_DARK = (1.0, 1.0, 1.0, 0.95)   # 滑块：白色
 
-BAR_H = 4          # 轨道高度（更细）
-THUMB_R = 5        # 滑块半径（更小）
+BAR_H = 5          # 轨道高度
+THUMB_R = 7        # 滑块半径
 
 
 def fmt_seconds(seconds: float) -> str:
@@ -177,36 +177,44 @@ class SeekBar(Gtk.DrawingArea):
         self._rounded_bar(cr, x0, cy, track_w)
         cr.fill()
 
-        # 已播段颜色：暗背景优先用白色系；否则封面主色（若有）否则默认深灰
-        if self._dark:
+        # 已播段颜色：优先使用封面主色（保证与封面色调统一）；仅未设封面色时按暗/明背景回退默认色
+        if self._played_rgb is not None:
+            pr, pg, pb = self._played_rgb
+            played_rgba = (pr, pg, pb, 0.95 if self._dark else 0.85)
+            thumb_rgba = (min(1.0, pr * 1.15), min(1.0, pg * 1.15), min(1.0, pb * 1.15), 1.0)
+        elif self._dark:
             played_rgba = PLAYED_RGBA_DARK
             thumb_rgba = THUMB_RGBA_DARK
-        elif self._played_rgb is not None:
-            pr, pg, pb = self._played_rgb
-            played_rgba = (pr, pg, pb, 0.85)
-            thumb_rgba = (pr, pg, pb, 0.95)
         else:
             played_rgba = PLAYED_RGBA
             thumb_rgba = THUMB_RGBA
 
-        # 已播段（圆角）
+        # 已播段长度
+        played_len = track_w * ratio
+        tx = x0 + played_len
+
+        # 已播段（干净圆角条，无光晕）
         cr.set_source_rgba(*played_rgba)
-        self._rounded_bar(cr, x0, cy, track_w * ratio)
+        self._rounded_bar(cr, x0, cy, played_len)
         cr.fill()
 
-        # 滑块（同色小圆）
-        tx = x0 + track_w * ratio
+        # 滑块：纯色小圆 + 极淡柔光（一层放大的半透明圆，非硬描边）
+        cr.set_source_rgba(thumb_rgba[0], thumb_rgba[1], thumb_rgba[2], 0.18)
+        cr.arc(tx, cy, THUMB_R + 2, 0, 2 * 3.141592653589793)
+        cr.fill()
         cr.set_source_rgba(*thumb_rgba)
         cr.arc(tx, cy, THUMB_R, 0, 2 * 3.141592653589793)
         cr.fill()
 
     @staticmethod
-    def _rounded_bar(cr, x: float, cy: float, length: float) -> None:
-        """圆角横条路径（length<=0 不画）。"""
+    def _rounded_bar(cr, x: float, cy: float, length: float,
+                     height: float | None = None) -> None:
+        """圆角横条路径（length<=0 不画）。height 默认用 BAR_H。"""
         if length <= 0.5:
             cr.new_path()
             return
-        r = BAR_H / 2.0
+        h = float(height) if height is not None else float(BAR_H)
+        r = h / 2.0
         cr.new_path()
         cr.move_to(x + r, cy - r)
         cr.line_to(x + length - r, cy - r)

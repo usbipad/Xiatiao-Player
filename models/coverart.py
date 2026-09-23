@@ -132,7 +132,8 @@ def lighten_for_background(rgb: tuple[int, int, int],
 def tint_for_background(rgb: tuple[int, int, int],
                         target_lum: float = 0.80,
                         sat_scale: float = 0.55,
-                        sat_cap: float = 0.32) -> tuple[int, int, int]:
+                        sat_cap: float = 0.32,
+                        dark: bool = False) -> tuple[int, int, int]:
     """把封面主色转成背景色：保留色相，**保留原始饱和度**（按比例压制）。
 
     与 lighten_for_background 的区别：
@@ -141,13 +142,20 @@ def tint_for_background(rgb: tuple[int, int, int],
       使输出浓度贴合封面本身：淡封面→淡背景，艳封面→柔和背景。
 
     rgb:        封面主色 (r,g,b)。
-    target_lum: 目标亮度 L（0..1）。
+    target_lum: 目标亮度 L（0..1）。亮色模式用默认 0.80。
     sat_scale:  饱和度缩放系数（0..1）。
     sat_cap:    饱和度上限（0..1），防止过艳。
+    dark:       是否暗色主题。为 True 时改用压暗的目标亮度——
+                否则暗色模式下背景仍被拉到高亮度，表现为「白灰蒙层 + 一点封面色」。
     返回: 背景色 (r,g,b)。
     """
     try:
         import colorsys
+        if dark:
+            # 暗色模式：用低亮度 + 略高饱和度，得到「带封面色的暗调」。
+            # 亮度太低会看不出色相，0.20 左右既能压暗又保留可辨识的封面色调。
+            target_lum = 0.20
+            sat_cap = max(sat_cap, 0.40)
         r, g, b = rgb
         h, _l, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
         s2 = min(s * sat_scale, sat_cap)
@@ -848,23 +856,19 @@ def _round_corners_to_png(square, radius: int) -> bytes:
 
 def make_blurred_bg(image_bytes: bytes, out_w: int = 640, out_h: int = 480,
                     darken: float = 0.0, blur_px: int = 24,
-                    lighten: float = 0.0) -> bytes | None:
+                    lighten: float = 0.28) -> bytes | None:
     """用封面生成「模糊 + 遮罩」的背景图（Apple Music 风格）。
 
-    做法（不依赖 PIL）：
-    1. 缩到极小（如 blur_px x blur_px）再放大 → 天然模糊；
-    2. 可选叠暗色遮罩压暗（darken），或叠白色遮罩提亮（lighten）；
-    3. 输出 PNG 字节。
-    darken:  0=不压暗，1=全黑。
-    lighten: 0=不提亮，1=全白。
-    blur_px: 越小越糊（放大倍数越大）。
-    失败返回 None（调用方回退纯色背景）。
+    做法：
+    1. 缩到低分辨率矩阵（天然模糊）并覆盖式缩放裁剪；
+    2. 叠加半透明白色亮度蒙层，增强通透感并保持前景字体对比度；
+    3. 导出 PNG 字节供主线程渲染。
     """
     if not image_bytes or out_w <= 0 or out_h <= 0:
         return None
     try:
-        import math
-
+        import io
+        import cairo
         import gi
 
         gi.require_version("GdkPixbuf", "2.0")
@@ -875,26 +879,28 @@ def make_blurred_bg(image_bytes: bytes, out_w: int = 640, out_h: int = 480,
         w, h = pixbuf.get_width(), pixbuf.get_height()
         if w <= 0 or h <= 0:
             return None
-        # 1) 先缩到中等尺寸（保留较多细节，避免单次大比例放大产生马赛克）
-        work = max(32, min(int(blur_px) * 8, 200))
-        scale = max(work / w, work / h)
+
+        seed_dim = max(12, min(int(blur_px), 24))
+        scale = max(seed_dim / w, seed_dim / h)
         nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-        base = pixbuf.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)
-        # 2) 逐级缩小再放大：多轮小比例缩放 = 近似高斯模糊，边缘平滑无方块。
-        #    每一轮缩到上一轮的 1/2，再放大回去，反复几次把细节磨平。
-        # 固定 9 轮模糊：多轮「缩一半再放回」把细节磨到最平，最大化模糊
-        levels = 9
-        cur = base
-        cur_w, cur_h = cur.get_width(), cur.get_height()
-        for _ in range(levels):
-            hw = max(1, cur_w // 2)
-            hh = max(1, cur_h // 2)
-            down = cur.scale_simple(hw, hh, GdkPixbuf.InterpType.BILINEAR)
-            cur = down.scale_simple(cur_w, cur_h, GdkPixbuf.InterpType.BILINEAR)
-        # 3) 覆盖式缩放到输出尺寸并居中裁剪（方形）
-        out_scale = max(out_w / cur_w, out_h / cur_h)
-        fw, fh = max(1, int(cur_w * out_scale)), max(1, int(cur_h * out_scale))
+        cur = pixbuf.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)
+        if not cur:
+            return None
+
+        cw, ch = cur.get_width(), cur.get_height()
+        while cw < out_w // 2 or ch < out_h // 2:
+            cw = min(out_w, cw * 2)
+            ch = min(out_h, ch * 2)
+            next_step = cur.scale_simple(cw, ch, GdkPixbuf.InterpType.BILINEAR)
+            if next_step:
+                cur = next_step
+
+        out_scale = max(out_w / cur.get_width(), out_h / cur.get_height()) * 1.25
+        fw, fh = max(1, int(cur.get_width() * out_scale)), max(1, int(cur.get_height() * out_scale))
         fitted = cur.scale_simple(fw, fh, GdkPixbuf.InterpType.BILINEAR)
+        if not fitted:
+            return None
+
         big = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, out_w, out_h)
         big.fill(0x00000000)
         fitted.composite(
@@ -902,14 +908,11 @@ def make_blurred_bg(image_bytes: bytes, out_w: int = 640, out_h: int = 480,
             -(fw - out_w) // 2, -(fh - out_h) // 2, 1.0, 1.0,
             GdkPixbuf.InterpType.BILINEAR, 255,
         )
-        # 3) 叠遮罩（暗化 / 提亮），用 cairo 画半透明层
-        import io
-
-        import cairo
 
         ok, png = big.save_to_bufferv("png", [], [])
         if not ok:
             return None
+
         surf = cairo.ImageSurface.create_from_png(io.BytesIO(bytes(png)))
         cr = cairo.Context(surf)
         da = max(0.0, min(1.0, darken))
@@ -920,7 +923,7 @@ def make_blurred_bg(image_bytes: bytes, out_w: int = 640, out_h: int = 480,
         if la > 0:
             cr.set_source_rgba(1.0, 1.0, 1.0, la)
             cr.paint()
-        # 输出 PNG
+
         out = io.BytesIO()
         surf.write_to_png(out)
         return out.getvalue()

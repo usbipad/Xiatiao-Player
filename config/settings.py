@@ -58,6 +58,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "nowplaying_dark_threshold": 0.65,
     # 主界面背景是否跟随当前封面主色调（关闭则用主题色 @view_bg_color）
     "main_bg_follow_cover": False,
+    # 进度条已播段是否跟随当前封面主色（关闭则用默认深灰/白）
+    "progress_follow_cover": True,
     # ---- 行为 ----
     "auto_scan_on_start": True,
     "close_to_tray": False,

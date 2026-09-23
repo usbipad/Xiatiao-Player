@@ -18,6 +18,22 @@ class CoverArt(Gtk.Box):
     on_clicked 非空时，在封面右下角叠加"进入全屏"悬浮按钮。
     """
 
+    #: 封面四周留白（像素）。
+    #:
+    #: 外部阴影画在封面之外，需要空间扩散。若封面贴满容器，
+    #: 阴影会被容器边界裁掉，只有底部（无遮挡方向）可见。
+    #: 当前阴影最大扩散 11+20=31px，左右扩散 20px，故留 22px
+    #: 让它在边界前收住，避免相邻区域出现深浅突变的接缝。
+    _SHADOW_PAD = 22
+
+    #: 下方额外留白（像素）。
+    #:
+    #: .cover-shadow 的垂直偏移为 11px（阴影整体向下），
+    #: 故下方需要比上/左右更多的空间，否则下缘阴影被 AspectFrame
+    #: 的 overflow=HIDDEN 裁掉，看起来「下方的浮起感不足」。
+    #: 下方扩散 11+20=31px，需 ≥ 31，故 22+12=34。
+    _SHADOW_BOTTOM_EXTRA = 12
+
     def __init__(self, on_clicked: Callable[[], None] | None = None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self._on_clicked = on_clicked
@@ -35,6 +51,18 @@ class CoverArt(Gtk.Box):
         self._cover_stack.set_vexpand(True)
         # 阴影/圆角加在封面图片上（正方形），而非外层矩形 AspectFrame
         self._cover_stack.add_css_class("cover-shadow")
+        # 四周留白：外部阴影需要空间扩散。
+        # 关键：留白必须加在 AspectFrame 的**内部**。
+        # AspectFrame 设了 overflow=HIDDEN，会裁掉超出其边界的部分；
+        # 若把留白加在 CoverArt（AspectFrame 之外），AspectFrame 仍会
+        # 把宽度吃满、阴影照样被它自己的 HIDDEN 裁掉，看不出变化。
+        _pad = self._SHADOW_PAD
+        self._cover_stack.set_margin_start(_pad)
+        self._cover_stack.set_margin_end(_pad)
+        self._cover_stack.set_margin_top(_pad)
+        # 下方阴影有 11px 垂直偏移（见 .cover-shadow），
+        # 需要比上/左右更多空间，否则下方阴影被裁掉。
+        self._cover_stack.set_margin_bottom(_pad + self._SHADOW_BOTTOM_EXTRA)
         try:
             self._cover_stack.set_overflow(Gtk.Overflow.HIDDEN)
         except Exception:
@@ -70,6 +98,17 @@ class CoverArt(Gtk.Box):
         self._cover_stack.add_named(self._cover_picture, "cover")
         self._cover_stack.set_visible_child_name("placeholder")
 
+        # 厚度层已移除：此前在封面「之上」叠一层只画内阴影（浮雕）的透明控件，
+        # 现按需求去掉，让播放面板封面只保留外阴影，与网格卡片观感一致。
+        # 注：内阴影若加在 _cover_stack 自身上会被铺满的 Picture 盖住，
+        # 且 Picture 自身不绘制 box-shadow，故无法用更简单的方式实现，直接不要。
+        cover_overlay = Gtk.Overlay()
+        cover_overlay.set_halign(Gtk.Align.FILL)
+        cover_overlay.set_valign(Gtk.Align.FILL)
+        cover_overlay.set_hexpand(True)
+        cover_overlay.set_vexpand(True)
+        cover_overlay.set_child(self._cover_stack)
+
         # 封面容器：固定正方形尺寸，居中，不随图片变化。
         # 用普通 Box 而非 Gtk.AspectFrame：AspectFrame 会画出 GTK 默认的方形
         # 边框/底色，在圆角阴影外形成"四方尖角框"。尺寸已由 size_request 固定，
@@ -82,7 +121,7 @@ class CoverArt(Gtk.Box):
         # 阴影已加在封面图片上，AspectFrame 透明 → 不会露出白边。
         cover_frame.set_hexpand(True)
         cover_frame.set_valign(Gtk.Align.FILL)
-        cover_frame.set_child(self._cover_stack)
+        cover_frame.set_child(cover_overlay)
         cover_frame.set_overflow(Gtk.Overflow.HIDDEN)
 
         # 用 Overlay 在封面右下角叠加"进入全屏"悬浮按钮

@@ -324,6 +324,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_shuffle=self._on_shuffle,
             on_repeat=self._on_repeat,
             on_volume=self._on_volume,
+            on_effect=self._on_open_effect_settings,
         )
         self.now_playing.bind_window(self)
         self._main_stack.add_named(self.now_playing, "nowplaying")
@@ -476,8 +477,10 @@ class MainWindow(Adw.ApplicationWindow):
         provider.load_from_path(css_path)
         display = Gdk.Display.get_default()
         if display is not None:
+            # 使用 USER 级（800）优先级，确保本应用精心设计的样式能够完全压过
+            # 用户系统中安装的任何第三方 GTK/Adwaita 主题（如 MacTahoe、WhiteSur 等）
             Gtk.StyleContext.add_provider_for_display(
-                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_USER
             )
             # 动态背景 provider：主界面「背景跟随封面」时注入封面主色。
             # 用 USER 级（最高）优先级，确保压过 libadwaita 主题里
@@ -487,6 +490,47 @@ class MainWindow(Adw.ApplicationWindow):
                 display, self._dynamic_css,
                 Gtk.STYLE_PROVIDER_PRIORITY_USER,
             )
+
+        # 订阅系统配色明暗变化：关闭「背景跟随封面」时，沉浸页前景
+        # 需跟随系统明暗重算（开启时按封面，不受影响）。
+        try:
+            import gi
+            gi.require_version("Adw", "1")
+            from gi.repository import Adw
+            _sm = Adw.StyleManager.get_default()
+            _sm.connect("notify::dark", self._on_system_dark_changed)
+        except Exception:
+            log.debug("订阅系统配色变化失败", exc_info=True)
+
+    def _on_system_dark_changed(self, *_args) -> None:
+        """系统配色明暗变化：刷新沉浸页前景 + 重算主界面背景。"""
+        try:
+            np = getattr(self, "now_playing", None)
+            if np is not None:
+                np.refresh_dark_bg()
+        except Exception:
+            log.debug("刷新沉浸页前景失败", exc_info=True)
+        # 主界面背景：用缓存的封面主色重算（暗色压暗、亮色提亮）。
+        # 纯计算，不重新解码封面、不起后台线程。
+        try:
+            dom = getattr(self, "_current_dominant_rgb", None)
+            if dom:
+                from models import tint_for_background
+                rgb = tint_for_background(dom, dark=self._current_theme_dark())
+                self._current_bg_rgb = rgb
+                self._apply_main_bg(rgb)
+        except Exception:
+            log.debug("重算主界面背景失败", exc_info=True)
+
+    def _current_theme_dark(self) -> bool:
+        """当前是否为暗色主题；查询失败按亮色处理。"""
+        try:
+            import gi
+            gi.require_version("Adw", "1")
+            from gi.repository import Adw
+            return bool(Adw.StyleManager.get_default().get_dark())
+        except Exception:
+            return False
 
     # ============================================================
     # 启动闪屏（Splash）—— 逻辑已抽到 ui/splash.py，此处仅做转发
@@ -563,6 +607,9 @@ class MainWindow(Adw.ApplicationWindow):
         }
         self._nav_buttons: Dict[str, Gtk.Button] = {}
         self._nav_labels: Dict[str, Gtk.Label] = {}
+        nav_container = Gtk.Box(spacing=2)
+        nav_container.add_css_class("nav-segmented-bar")
+        nav_container.set_valign(Gtk.Align.CENTER)
         for label, key in NAV_ITEMS:
             btn = Gtk.Button()
             btn.add_css_class("flat")
@@ -576,9 +623,10 @@ class MainWindow(Adw.ApplicationWindow):
             btn.set_child(_inner)
             btn.set_tooltip_text(_(label))
             btn.connect("clicked", self._on_nav_clicked, key)
-            left_box.append(btn)
+            nav_container.append(btn)
             self._nav_buttons[key] = btn
             self._nav_labels[key] = _lbl
+        left_box.append(nav_container)
         # 导航按钮右侧：全局搜索框（搜当前页：本地曲库 / 我喜欢）
         left_box.append(Gtk.Box(spacing=8))
         self._search_entry = Gtk.SearchEntry()
@@ -1282,11 +1330,21 @@ class MainWindow(Adw.ApplicationWindow):
         sz_panel = getattr(getattr(self, "player_panel", None), "cover", None)
         p_size = getattr(sz_panel, "cover_size", 320)
         n_size = getattr(getattr(self, "now_playing", None), "_COVER_PX", 320)
+        # 主界面背景色需知道当前主题明暗（暗色要压暗而非提亮）。
+        # 后台线程读 Adw.StyleManager 是只读查询，安全；失败则按亮色处理。
+        try:
+            import gi
+            gi.require_version("Adw", "1")
+            from gi.repository import Adw as _Adw
+            _dark_theme = bool(_Adw.StyleManager.get_default().get_dark())
+        except Exception:
+            _dark_theme = False
         assets = load_cover_assets(
             cover_raw, p_size, n_size,
             blur_on=_cfg.get_bool("nowplaying_blur_bg", True),
             blur_px=_cfg.get_int("nowplaying_blur_px", 6),
             dark_threshold=_cfg.get("nowplaying_dark_threshold", 0.65),
+            dark_theme=_dark_theme,
         )
         cover_panel_tex = assets["panel_tex"]
         cover_np_tex = assets["np_tex"]
@@ -1348,6 +1406,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.now_playing.set_bg_texture(bg_tex, bg_dark)
             # 主界面背景跟随封面（独立开关，用 main_bg_rgb，不受沉浸页模糊开关影响）
             self._current_bg_rgb = main_bg_rgb
+            # 缓存封面主色：系统切明暗时据此重算背景（纯计算，不重新解码封面）
+            self._current_dominant_rgb = assets.get("dominant_rgb")
             self._apply_main_bg(main_bg_rgb)
             # 主界面左侧进度条也跟随封面主色
             self.player_panel.set_progress_color(seekbar_rgb)
@@ -1575,10 +1635,9 @@ class MainWindow(Adw.ApplicationWindow):
             self._refresh_queue_view(force=True)
 
     def _on_current_changed_queue(self, *_args) -> None:
-        """切歌时：仅当左侧面板正在显示 Queue 才刷新队列（否则跳过，省重建）。"""
+        """切歌时刷新队列列表（高亮当前项）。"""
         try:
-            if getattr(self.player_panel, "_active_tab", None) == "queue":
-                self._refresh_queue_view()
+            self._refresh_queue_view()
         except Exception:
             pass
 
@@ -1589,9 +1648,8 @@ class MainWindow(Adw.ApplicationWindow):
         """
         try:
             self._queue_ids = None
-            # 仅在 Queue 视图可见时立即重建；否则标记待刷新（切到 Queue 时 _on_panel_tab 会重建）
-            if getattr(self.player_panel, "_active_tab", None) == "queue":
-                self._refresh_queue_view(force=True)
+            # 队列内容变化：立即重建（不再依赖 Queue 是否可见）
+            self._refresh_queue_view(force=True)
         except Exception:
             pass
         # 持久化队列（重启恢复）
@@ -2142,13 +2200,19 @@ class MainWindow(Adw.ApplicationWindow):
             if not raw:
                 return
             r, g, b = raw
-            # 进度条颜色始终跟随封面主色（不受背景开关影响）；
-            # 背景在关闭开关时回退主题色。
+            # 背景在关闭模糊开关时回退主题色；进度条颜色受
+            # 「进度条跟随封面取色」开关控制（关闭则回退默认深灰/白）。
             from config.settings import get_config as _get_cfg
-            _blur_on = _get_cfg().get_bool("nowplaying_blur_bg", True)
+            _cfg = _get_cfg()
+            _blur_on = _cfg.get_bool("nowplaying_blur_bg", True)
             bg_rgb = lighten_for_background((r, g, b)) if _blur_on else None
+            try:
+                _follow = _cfg.get_bool("progress_follow_cover", True)
+            except Exception:
+                _follow = True
             f = 0.72
-            seek = (r / 255.0 * f, g / 255.0 * f, b / 255.0 * f)
+            seek = ((r / 255.0 * f, g / 255.0 * f, b / 255.0 * f)
+                    if _follow else None)
             self.now_playing.set_bg_colors(bg_rgb, seek)
         except Exception:
             pass
@@ -2243,6 +2307,35 @@ class MainWindow(Adw.ApplicationWindow):
     def reapply_main_bg(self) -> None:
         """设置页切换「主界面背景跟随封面」后即时应用当前封面主色。"""
         self._apply_main_bg(getattr(self, "_current_bg_rgb", None))
+
+    def reapply_progress_color(self) -> None:
+        """设置页切换「进度条跟随封面取色」后即时重设进度条颜色。
+
+        用缓存的封面主色重算（纯计算，不重新解码封面）：
+        开关开启 → 主色 * 0.72；关闭 → None（进度条回退默认深灰/白）。
+        同时应用到左侧面板进度条与沉浸页进度条。
+        """
+        try:
+            enabled = get_config().get_bool("progress_follow_cover", True)
+        except Exception:
+            enabled = True
+        rgb = None
+        if enabled:
+            dom = getattr(self, "_current_dominant_rgb", None)
+            if dom:
+                r, g, b = dom
+                f = 0.72
+                rgb = (r / 255.0 * f, g / 255.0 * f, b / 255.0 * f)
+        try:
+            self.player_panel.set_progress_color(rgb)
+        except Exception:
+            pass
+        try:
+            np = getattr(self, "now_playing", None)
+            if np is not None:
+                np._apply_seekbar_color(dom if enabled else None)
+        except Exception:
+            pass
 
     def reapply_nowplaying_bg(self) -> None:
         """设置页切换「背景模糊」后即时重应用当前曲目的背景。

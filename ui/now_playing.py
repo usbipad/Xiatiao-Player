@@ -23,9 +23,14 @@ def _fmt(seconds: float) -> str:
 class NowPlayingPage(Gtk.Overlay):
     """全屏播放页。"""
 
+    #: 封面阴影四周留白（像素）。外扩 shadow_box，给阴影扩散空间，
+    #: 否则阴影会被 left_col 边界挤掉。
+    #: 当前阴影最大扩散 16+32=48px，故留 52 收住。
+    _SHADOW_PAD = 52
+
     def __init__(self, on_exit, on_seek=None, on_play_pause=None,
                  on_prev=None, on_next=None, on_shuffle=None,
-                 on_repeat=None, on_volume=None) -> None:
+                 on_repeat=None, on_volume=None, on_effect=None) -> None:
         super().__init__()
         self.add_css_class("now-playing-root")
         self._on_exit = on_exit
@@ -36,6 +41,7 @@ class NowPlayingPage(Gtk.Overlay):
         self._on_shuffle = on_shuffle
         self._on_repeat = on_repeat
         self._on_volume = on_volume
+        self._on_effect = on_effect
         # 播放模式状态（与左侧面板同步）
         self._shuffle_on = False
         self._repeat_mode = 0
@@ -108,7 +114,8 @@ class NowPlayingPage(Gtk.Overlay):
         left_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=28)
         left_col.set_valign(Gtk.Align.CENTER)
         left_col.set_halign(Gtk.Align.CENTER)
-        left_col.set_size_request(self._COVER_PX, -1)
+        # 左列宽度 = 封面 + 两侧阴影留白（否则 shadow_box 被挤回封面宽、阴影被裁）
+        left_col.set_size_request(self._COVER_PX + self._SHADOW_PAD * 2, -1)
         left_col.set_hexpand(False)
         left_col.set_vexpand(False)
         body.append(left_col)
@@ -152,8 +159,30 @@ class NowPlayingPage(Gtk.Overlay):
         cover_frame.set_halign(Gtk.Align.CENTER)
         cover_frame.set_valign(Gtk.Align.CENTER)
         cover_frame.set_overflow(Gtk.Overflow.HIDDEN)
-        left_col.append(cover_frame)
+        # 阴影层分三级：
+        #   shadow_box  —— 外扩留白（封面 + 2*PAD），只提供阴影扩散空间，不画阴影
+        #   shadow_layer—— 与封面**同尺寸**，承载 .np-cover-shadow，阴影贴封面边缘
+        #   cover_frame —— 封面本体，overflow:HIDDEN 裁圆角
+        # 关键：阴影必须画在与封面同尺寸的层上，否则会画到大盒子边界、
+        # 离封面太远而「看不见」。
+        _shadow_pad = self._SHADOW_PAD
+        shadow_layer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        shadow_layer.add_css_class("np-cover-shadow")
+        shadow_layer.set_halign(Gtk.Align.CENTER)
+        shadow_layer.set_valign(Gtk.Align.CENTER)
+        shadow_layer.set_size_request(self._COVER_PX, self._COVER_PX)
+        shadow_layer.append(cover_frame)
+
+        shadow_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        shadow_box.set_halign(Gtk.Align.CENTER)
+        shadow_box.set_valign(Gtk.Align.CENTER)
+        shadow_box.set_size_request(
+            self._COVER_PX + _shadow_pad * 2,
+            self._COVER_PX + _shadow_pad * 2)
+        shadow_box.append(shadow_layer)
+        left_col.append(shadow_box)
         self._cover_frame = cover_frame
+        self._cover_shadow_box = shadow_box
 
         # 封面下方：歌名 / 歌手
         # 固定高度 + 顶部对齐：避免不同歌名换行数不同导致封面位置上下跳动。
@@ -222,9 +251,13 @@ class NowPlayingPage(Gtk.Overlay):
         ctrl.set_halign(Gtk.Align.CENTER)
         ctrl.set_valign(Gtk.Align.CENTER)
 
-        # 音量：与控制按钮同一排，点击向上弹出竖向滑块
-        self._vol_btn = Gtk.MenuButton()
-        self._vol_btn.set_icon_name("audio-volume-high-symbolic")
+        # 音量：与控制按钮同一排，点击向上弹出竖向滑块。
+        # 用普通 Gtk.Button（而非 Gtk.MenuButton）：MenuButton 内部多一层
+        # button 节点，图标画在内层，拿不到 .np-aux-btn 的前景色，
+        # 表现为不跟随主题明暗切换（且样式解析慢一拍）。
+        # 改成与音效/随机/循环完全相同的 Button + 手动 Popover，
+        # 即可复用同一套变色逻辑。
+        self._vol_btn = Gtk.Button(icon_name="audio-volume-high-symbolic")
         self._vol_btn.add_css_class("flat")
         self._vol_btn.add_css_class("np-skip-btn")
         self._vol_btn.add_css_class("np-aux-btn")
@@ -241,16 +274,23 @@ class NowPlayingPage(Gtk.Overlay):
         self._vol_slider.set_size_request(-1, 140)
         self._vol_slider.connect("value-changed", self._on_volume_changed)
         vol_popover.set_child(self._vol_slider)
-        self._vol_btn.set_popover(vol_popover)
+        # Popover 挂到按钮上（与列表右键菜单同一模式），点击开合
+        vol_popover.set_parent(self._vol_btn)
+        self._vol_popover = vol_popover
+        self._vol_btn.connect("clicked", self._on_vol_btn_clicked)
 
-        # 左辅助：随机（小号）
-        self._btn_shuffle = Gtk.Button(icon_name="media-playlist-shuffle-symbolic")
-        self._btn_shuffle.add_css_class("np-skip-btn")
-        self._btn_shuffle.add_css_class("np-aux-btn")
-        self._btn_shuffle.set_tooltip_text(_("随机播放"))
-        self._btn_shuffle.set_valign(Gtk.Align.CENTER)
-        self._btn_shuffle.connect("clicked", lambda *_: self._toggle_shuffle())
-        ctrl.append(self._btn_shuffle)
+        # 音量放最左
+        ctrl.append(self._vol_btn)
+
+        # 左辅助：音效（小号）。点击打开音效选择对话框，
+        # 与左侧面板的音效按钮走同一个入口。
+        self._btn_effect = Gtk.Button(icon_name="xiatiao-equalizer-symbolic")
+        self._btn_effect.add_css_class("np-skip-btn")
+        self._btn_effect.add_css_class("np-aux-btn")
+        self._btn_effect.set_tooltip_text(_("音效"))
+        self._btn_effect.set_valign(Gtk.Align.CENTER)
+        self._btn_effect.connect("clicked", lambda *_: self._on_effect and self._on_effect())
+        ctrl.append(self._btn_effect)
 
         # 核心组：上一曲 / 播放 / 下一曲（紧凑）
         core = Gtk.Box(spacing=20)
@@ -262,6 +302,12 @@ class NowPlayingPage(Gtk.Overlay):
         self._btn_play.add_css_class("np-play-btn")
         self._btn_play.set_can_focus(False)
         self._btn_play.connect("clicked", lambda *_: self._on_play_pause and self._on_play_pause())
+        # 独立 CSS provider：按封面主色给播放键染色（见 update_play_button_accent）
+        self._btn_play_css = Gtk.CssProvider()
+        self._btn_play.get_style_context().add_provider(
+            self._btn_play_css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 10,
+        )
         btn_next = Gtk.Button(icon_name="media-skip-forward-symbolic")
         btn_next.add_css_class("np-skip-btn")
         btn_next.connect("clicked", lambda *_: self._on_next and self._on_next())
@@ -270,7 +316,7 @@ class NowPlayingPage(Gtk.Overlay):
         core.append(btn_next)
         ctrl.append(core)
 
-        # 右辅助：循环（小号，三态图标 + 数字 1）
+        # 右辅助之一：循环（小号，三态图标 + 数字 1）
         self._btn_repeat = Gtk.Button()
         self._btn_repeat.add_css_class("np-skip-btn")
         self._btn_repeat.add_css_class("np-aux-btn")
@@ -289,8 +335,15 @@ class NowPlayingPage(Gtk.Overlay):
         self._btn_repeat.connect("clicked", lambda *_: self._cycle_repeat())
         ctrl.append(self._btn_repeat)
 
-        # 音量放最右
-        ctrl.append(self._vol_btn)
+        # 右辅助之二：随机（小号）。从最左移到循环之后，
+        # 与左侧的音效形成对称，整排更平衡。
+        self._btn_shuffle = Gtk.Button(icon_name="media-playlist-shuffle-symbolic")
+        self._btn_shuffle.add_css_class("np-skip-btn")
+        self._btn_shuffle.add_css_class("np-aux-btn")
+        self._btn_shuffle.set_tooltip_text(_("随机播放"))
+        self._btn_shuffle.set_valign(Gtk.Align.CENTER)
+        self._btn_shuffle.connect("clicked", lambda *_: self._toggle_shuffle())
+        ctrl.append(self._btn_shuffle)
 
         bottom.append(ctrl)
 
@@ -385,7 +438,7 @@ class NowPlayingPage(Gtk.Overlay):
             lambda: self._np_placeholder.set_size_request(cover, cover),
             lambda: self._info.set_size_request(cover, info_h),
             lambda: self.viz.set_size_request(cover, 48),
-            lambda: self._left_col.set_size_request(cover, -1),
+            lambda: self._left_col.set_size_request(cover + self._SHADOW_PAD * 2, -1),
             lambda: self._gap.set_size_request(gap_w, -1),
             lambda: self.lyrics.set_size_request(lyrics_w, -1),
         ):
@@ -568,14 +621,19 @@ class NowPlayingPage(Gtk.Overlay):
         color 为 None（无封面）时：背景回退到主题色 @window_bg_color，
         与主界面一致。渐隐层已改为透明（见 style.css），此处不再注入渐隐色。
         """
+        # 记录背景来源：True=封面色（前景按封面），False=主题色（前景跟系统）。
+        # refresh_dark_bg 据此决定系统明暗变化时是否重算前景。
+        self._bg_is_cover_color = bool(color)
         if color:
             r, g, b = color
             bg_css = f"rgb({r}, {g}, {b})"
             self._set_dark_bg(self._is_dark(r, g, b))
         else:
-            # 无封面：回退主题色，与主界面一致
+            # 无封面 / 关闭背景取色：回退主题色，与主界面一致。
+            # 前景明暗**跟随系统主题**（而非固定亮色）——背景是主题色，
+            # 系统暗则需亮色前景、系统亮则需深色前景。
             bg_css = "@window_bg_color"
-            self._set_dark_bg(False)
+            self._set_dark_bg(self._current_theme_dark())
         css = f".now-playing-root {{ background-color: {bg_css}; }}"
         # 颜色没变则跳过：load_from_data 会让 GTK 重新解析样式表并 restyle
         # 整棵控件树，开销可观。进入沉浸页时会重设同一颜色，属于纯浪费。
@@ -595,6 +653,27 @@ class NowPlayingPage(Gtk.Overlay):
                     self._bg_provider_installed = True
         except Exception:
             pass
+
+    @staticmethod
+    def _current_theme_dark() -> bool:
+        """当前是否为暗色主题；查询失败按亮色处理。"""
+        try:
+            import gi
+            gi.require_version("Adw", "1")
+            from gi.repository import Adw
+            return bool(Adw.StyleManager.get_default().get_dark())
+        except Exception:
+            return False
+
+    def refresh_dark_bg(self) -> None:
+        """系统明暗变化时刷新沉浸页前景。
+
+        仅当背景**不是**封面色（即关闭背景取色 / 无封面，背景为主题色）时，
+        前景才跟随系统重算；开启背景取色时前景按封面走，不受系统影响。
+        """
+        if getattr(self, "_bg_is_cover_color", False):
+            return
+        self._set_dark_bg(self._current_theme_dark())
 
     @staticmethod
     def _is_dark(r: int, g: int, b: int, threshold: float = 0.65) -> bool:
@@ -635,13 +714,18 @@ class NowPlayingPage(Gtk.Overlay):
             self._on_repeat(self._repeat_mode)
 
     def set_shuffle(self, on: bool) -> None:
+        """切换随机激活态。
+
+        用 np-toggle-on：style.css 已为它定义了激活态（强调色前景 +
+        半透明强调色背景 + 同色弥散阴影）。此前用 suggested-action，
+        但本应用样式表未定义该类、系统主题里也只有 :not(.suggested-action)
+        排除式规则，故开与关外观完全相同。
+        """
         self._shuffle_on = bool(on)
-        # 用 Adwaita 内置的 suggested-action（和主界面随机按钮完全一致），
-        # 自带激活态背景填充；自定义 np-toggle-on 会被 image-button 主题规则压住。
         if self._shuffle_on:
-            self._btn_shuffle.add_css_class("suggested-action")
+            self._btn_shuffle.add_css_class("np-toggle-on")
         else:
-            self._btn_shuffle.remove_css_class("suggested-action")
+            self._btn_shuffle.remove_css_class("np-toggle-on")
 
     def set_repeat_mode(self, mode: int) -> None:
         self._repeat_mode = mode % 3
@@ -655,6 +739,31 @@ class NowPlayingPage(Gtk.Overlay):
         tips = {0: "不循环", 1: "列表循环", 2: "单曲循环"}
         self._btn_repeat.set_tooltip_text(tips[self._repeat_mode])
 
+    def update_play_button_accent(self, rgb: tuple[int, int, int] | None) -> None:
+        """按封面主色给播放键染色；rgb=None 时清除。"""
+        if not hasattr(self, "_btn_play_css"):
+            return
+        if not rgb:
+            self._btn_play_css.load_from_data(b"")
+            return
+        r, g, b = rgb
+        lum = (r * 299 + g * 587 + b * 114) / 255000.0
+        fg = "#1a1a1a" if lum > 0.65 else "#ffffff"
+        # 注意：GTK CSS 不支持 !important——写了会被当作非法值，
+        # 导致整条规则被丢弃（沉浸页播放键染色曾因此完全失效）。
+        # 这里通过「重复类名提高特异性」来压过 style.css 的基础规则。
+        css = (
+            f".now-playing-root .np-play-btn.np-play-btn {{\n"
+            f"    background-color: rgb({r}, {g}, {b});\n"
+            f"    color: {fg};\n"
+            f"    box-shadow: 0 4px 16px rgba({r}, {g}, {b}, 0.45);\n"
+            f"}}\n"
+            f".now-playing-root .np-play-btn.np-play-btn:hover {{\n"
+            f"    background-color: rgba({r}, {g}, {b}, 0.88);\n"
+            f"}}\n"
+        )
+        self._btn_play_css.load_from_data(css.encode("utf-8"))
+
     def set_volume(self, value: float) -> None:
         """外部同步音量（不触发回调）。"""
         self._vol_slider.handler_block_by_func(self._on_volume_changed)
@@ -664,6 +773,16 @@ class NowPlayingPage(Gtk.Overlay):
     def _on_volume_changed(self, scale) -> None:
         if self._on_volume is not None:
             self._on_volume(scale.get_value())
+
+    def _on_vol_btn_clicked(self, _btn) -> None:
+        """点击音量按钮：开合竖向滑块弹层。"""
+        pop = getattr(self, "_vol_popover", None)
+        if pop is None:
+            return
+        if pop.get_visible():
+            pop.popdown()
+        else:
+            pop.popup()
 
     def set_lyrics(self, lyrics: list[tuple[float, str]]) -> None:
         self.lyrics.set_lyrics(lyrics)

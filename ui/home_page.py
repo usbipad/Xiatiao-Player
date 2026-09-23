@@ -80,7 +80,7 @@ class HomePage(Gtk.Box):
     def __init__(self,
                  on_track_activated: Optional[Callable[[TrackItem], None]] = None,
                  track_actions: Optional[dict] = None) -> None:
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=20)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.set_margin_top(4)
 
         # ---- 1) 专辑 ----

@@ -136,6 +136,8 @@ def _on_cover_setup(_factory, list_item) -> None:
     pic.set_size_request(COVER_SIZE, COVER_SIZE)
     pic.set_can_shrink(True)
     pic.add_css_class("cover-img")
+    # 无内嵌封面时露出这层圆角底色（配合中央音符占位图标）
+    pic.add_css_class("track-cover")
     pic.set_vexpand(True)
     pic.set_valign(Gtk.Align.FILL)
 
@@ -155,9 +157,17 @@ def _on_cover_setup(_factory, list_item) -> None:
     badge.set_visible(False)
     badge.set_tooltip_text(_("Hi-Res 高解析音频"))
     overlay.add_overlay(badge)
+    # 无封面时的占位音符（居中，默认显示，bind 时按需隐藏）
+    ph_icon = Gtk.Image.new_from_icon_name("audio-x-generic-symbolic")
+    ph_icon.set_pixel_size(18)
+    ph_icon.add_css_class("track-cover-placeholder")
+    ph_icon.set_halign(Gtk.Align.CENTER)
+    ph_icon.set_valign(Gtk.Align.CENTER)
+    overlay.add_overlay(ph_icon)
     list_item.set_child(overlay)
     list_item._cover_overlay = overlay
     list_item._cover_badge = badge
+    list_item._cover_ph = ph_icon
 
 
 def _on_indicator_setup(_factory, list_item) -> None:
@@ -198,6 +208,9 @@ def _on_cover_bind(_factory, list_item) -> None:
     if pic is None:
         return
     pic.set_paintable(None)
+    ph = getattr(list_item, "_cover_ph", None)
+    if ph is not None:
+        ph.set_visible(True)
 
     # 音质徽标（DSD / Hi-Res / CD）：按当前曲目音频规格显示/隐藏
     try:
@@ -230,6 +243,8 @@ def _on_cover_bind(_factory, list_item) -> None:
     cached = cache_get(filepath)
     if cached is not MISS:
         pic.set_paintable(cached)
+        if ph is not None:
+            ph.set_visible(cached is None)
         return
     loading = cover_loading_map()
     if filepath in loading:
@@ -251,12 +266,18 @@ def _on_cover_bind(_factory, list_item) -> None:
         cur = list_item.get_item()
         if cur is not None and getattr(cur, "filepath", "") == filepath:
             pic.set_paintable(tex)
+            _ph = getattr(list_item, "_cover_ph", None)
+            if _ph is not None:
+                _ph.set_visible(tex is None)
         # 回填所有等待同一 filepath 的其它列表项（曲库/历史/歌单可能同屏）
         for w_item, w_pic, _kind in waiters:
             try:
                 wc = w_item.get_item()
                 if wc is not None and getattr(wc, "filepath", "") == filepath:
                     w_pic.set_paintable(tex)
+                    _wph = getattr(w_item, "_cover_ph", None)
+                    if _wph is not None:
+                        _wph.set_visible(tex is None)
             except Exception:
                 pass
 

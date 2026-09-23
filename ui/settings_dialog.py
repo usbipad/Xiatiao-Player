@@ -777,6 +777,14 @@ class SettingsWindow(Adw.PreferencesWindow):
         main_bg_row.connect("notify::active", self._on_main_bg_toggled)
         group.add(main_bg_row)
 
+        # 进度条跟随封面取色
+        prog_row = Adw.SwitchRow()
+        prog_row.set_title(_("进度条跟随封面取色"))
+        prog_row.set_subtitle(_("进度条已播段用当前封面主色；关闭则用默认深灰/白"))
+        prog_row.set_active(cfg.get_bool("progress_follow_cover", True))
+        prog_row.connect("notify::active", self._on_progress_follow_toggled)
+        group.add(prog_row)
+
         # 行为分组
         behave = Adw.PreferencesGroup()
         behave.set_title(_("行为"))
@@ -838,6 +846,18 @@ class SettingsWindow(Adw.PreferencesWindow):
             win = self._get_window()
             if win is not None and hasattr(win, "reapply_main_bg"):
                 win.reapply_main_bg()
+        except Exception:
+            pass
+
+    def _on_progress_follow_toggled(self, row, _pspec) -> None:
+        """切换进度条跟随封面取色，持久化并即时重应用进度条颜色。"""
+        enabled = bool(row.get_active())
+        get_config().set_bool("progress_follow_cover", enabled)
+        # 即时生效：通知主窗口用当前封面主色重设进度条颜色
+        try:
+            win = self._get_window()
+            if win is not None and hasattr(win, "reapply_progress_color"):
+                win.reapply_progress_color()
         except Exception:
             pass
 
