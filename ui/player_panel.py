@@ -252,6 +252,9 @@ class PlayerPanel(Gtk.Box):
         self._vol_btn.set_icon_name("audio-volume-high-symbolic")
         self._vol_btn.add_css_class("flat")
         self._vol_btn.add_css_class("np-skip-btn")
+        # 专用类：去掉 hover 时的方形背景块（详见 style.css），
+        # 保持按钮原有大小与明暗不变。
+        self._vol_btn.add_css_class("np-vol-btn")
         self._vol_btn.set_tooltip_text(_("音量"))
 
         vol_popover = Gtk.Popover()
@@ -632,28 +635,13 @@ class PlayerPanel(Gtk.Box):
             return
         self._open_effect_dialog()
 
-    def _open_effect_dialog(self) -> None:
-        """构建并显示音效选择对话框。"""
-        # 已开着则直接置前，避免重复点击叠出多个对话框
-        existing = getattr(self, "_effect_dialog", None)
-        if existing is not None:
-            try:
-                existing.present(self)
-                return
-            except Exception:
-                self._effect_dialog = None
+    def _build_effect_list_box(self, rows: dict) -> Gtk.Widget:
+        """构建音效列表内容（内置预设 + 我的预设 + DSP 入口）。
 
+        抽成独立函数，供主页与沉浸页共用。rows 用于回填行控件引用
+        （供高亮刷新使用），调用方传入自己的 dict。
+        """
         from core.eq_presets import BUILTIN_PRESETS
-
-        dialog = Adw.Dialog()
-        dialog.set_title(_("音效"))
-        dialog.set_content_width(420)
-        dialog.set_content_height(560)
-        self._effect_dialog = dialog
-
-        toolbar = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        toolbar.add_top_bar(header)
 
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         body.set_margin_top(12)
@@ -663,27 +651,19 @@ class PlayerPanel(Gtk.Box):
 
         group = Adw.PreferencesGroup()
         group.set_title(_("内置音效"))
-
-        # 选中态用「行高亮」表达（不再用勾选框）：
-        # 勾选框可被手动取消，造成「勾没了但音效还开着」的矛盾。
-        # 高亮统一在构建完所有行后由 _refresh_effect_dialog_highlight()
-        # 按单一源设置，这里不逐个判断，避免与单一源不一致。
-        self._effect_dialog_rows = {}
+        # 选中态用「行高亮」表达（不用勾选框：勾选框可被手动取消，
+        # 造成「勾没了但音效还开着」的矛盾）。
         for preset in BUILTIN_PRESETS:
             name = preset["name"]
             row = Adw.ActionRow()
             row.set_title(name)
             row.set_activatable(True)
-            # 点整行 = 选中该音效（高亮 + 下发）
             row.connect("activated", self._on_effect_dialog_choice, name)
             group.add(row)
-            self._effect_dialog_rows[name] = row
+            rows[name] = row
         body.append(group)
 
         # ---- 「我的预设」：DSP 设置页保存的自定义预设（可删除）----
-        # 注意：勾选统一用 cur（= self._effect_current），与内置区共享同一
-        # 「当前音效」状态；不能用 dsp_store.current() 单独判断，否则内置与
-        # 自定义可能同时被勾选（显示冲突）。
         try:
             from core.dsp_store import get_dsp_preset_store
             store = get_dsp_preset_store()
@@ -696,7 +676,6 @@ class PlayerPanel(Gtk.Box):
             for name in custom_names:
                 row = Adw.ActionRow()
                 row.set_title(name)
-                # 删除按钮（仅自定义预设可删）
                 del_btn = Gtk.Button(icon_name="user-trash-symbolic")
                 del_btn.set_valign(Gtk.Align.CENTER)
                 del_btn.add_css_class("flat")
@@ -704,10 +683,9 @@ class PlayerPanel(Gtk.Box):
                 del_btn.connect("clicked", self._on_effect_dialog_delete, name)
                 row.add_suffix(del_btn)
                 row.set_activatable(True)
-                # 点整行 = 选中该音效（高亮 + 下发）
                 row.connect("activated", self._on_effect_dialog_choice, name)
                 custom_group.add(row)
-                self._effect_dialog_rows[name] = row
+                rows[name] = row
         else:
             hint = Adw.ActionRow()
             hint.set_title(_("还没有自定义预设"))
@@ -726,23 +704,97 @@ class PlayerPanel(Gtk.Box):
         cfg_row.connect("activated", self._on_effect_dialog_settings)
         cfg_group.add(cfg_row)
         body.append(cfg_group)
+        return body
+
+    def _inject_effect_popover_css(self) -> None:
+        """用独立高优先级 provider 注入音效气泡样式（压过第三方主题）。
+
+        背景：用户主题（如 MacTahoe）用 `popover > contents` 设了背景/边框，
+        与 style.css 同为 USER 优先级；同优先级下后加载者胜，可能导致
+        style.css 的气泡样式被覆盖。这里改用 USER+10 优先级的独立 provider，
+        确保气泡外观由本项目决定（与 _apply_main_bg 的 .media-menu 同机制）。
+        只注入一次，幂等。
+        """
+        if getattr(self, "_effect_pop_css_installed", False):
+            return
+        try:
+            display = Gdk.Display.get_default()
+            if display is None:
+                return
+            # 只注入「结构」样式（圆角/透明/去边框）；背景色由 window._apply_main_bg
+            # 统一注入（与 .media-menu 同色，跟随主界面背景色自动变化），避免两处冲突。
+            # 用 USER+1000 压过第三方主题（MacTahoe 等）。
+            css = (
+                "popover.effect-popover > contents {"
+                "background-image: none; border-radius: 12px;}"
+                "popover.effect-popover scrolledwindow {"
+                "background: transparent; border-radius: 12px;}"
+                "popover.effect-popover preferencesgroup list.boxed-list {"
+                "background-color: transparent; box-shadow: none;}"
+            )
+            prov = Gtk.CssProvider()
+            prov.load_from_data(css.encode("utf-8"))
+            Gtk.StyleContext.add_provider_for_display(
+                display, prov, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1000)
+            self._effect_pop_css = prov
+            self._effect_pop_css_installed = True
+        except Exception:
+            log.debug("注入音效气泡样式失败", exc_info=True)
+
+    def _open_effect_dialog(self, anchor: Gtk.Widget | None = None) -> None:
+        """在音效按钮旁弹出音效列表气泡（Popover）。
+
+        anchor: 气泡挂靠的按钮；None 时用主页音效按钮 self._effect_btn。
+        主页与沉浸页共用本方法，气泡从各自点击的按钮旁弹出。
+        """
+        anchor = anchor if anchor is not None else self._effect_btn
+        # 已开着则先关（避免叠加）
+        existing = getattr(self, "_effect_popover", None)
+        if existing is not None:
+            try:
+                existing.popdown()
+            except Exception:
+                pass
+            self._effect_popover = None
+
+        rows: dict = {}
+        body = self._build_effect_list_box(rows)
+        self._effect_dialog_rows = rows
 
         scroll = Gtk.ScrolledWindow()
+        # 竖向显示滚动条：让用户一眼看出下面还有更多音效。
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_vexpand(True)
+        # 气泡宽度收窄：最小 200、最大 260，高度 380 内滚动。
+        scroll.set_size_request(200, 380)
+        try:
+            scroll.set_max_content_width(260)
+            scroll.set_propagate_natural_width(False)
+        except Exception:
+            pass
         scroll.set_child(body)
-        toolbar.set_content(scroll)
-        dialog.set_child(toolbar)
-        # 构建完各行后，统一按单一源刷新一次高亮（保证打开即正确）。
+
+        popover = Gtk.Popover()
+        popover.set_child(scroll)
+        popover.set_has_arrow(True)
+        popover.add_css_class("effect-popover")
+        popover.set_parent(anchor)
+        self._effect_popover = popover
+        # 气泡样式用独立高优先级 provider 注入：
+        # 用户主题（MacTahoe 等）对 `popover > contents` 设了背景/边框，
+        # 与 style.css 同为 USER 优先级且可能后加载，会覆盖 style.css 的规则。
+        # 这里用 USER+10（高于主题）注入，确保气泡背景/圆角/边框由本项目决定。
+        self._inject_effect_popover_css()
+        # 关闭即解父（GTK4 要求，避免悬空 popover 崩溃）
+        popover.connect("closed", lambda p: (setattr(self, "_effect_popover", None),
+                                             p.unparent()))
+        # 构建完各行后按单一源刷新一次高亮
         self._refresh_effect_dialog_highlight()
-        # 手动关闭时清理引用（否则 _effect_dialog 会悬空，
-        # 且下次点击按钮时防重逻辑会误判为「已开着」）
-        dialog.connect("closed", self._on_effect_dialog_closed)
-        dialog.present(self)
+        popover.popup()
 
     def _on_effect_dialog_closed(self, _dialog) -> None:
         """对话框关闭：清引用。"""
         self._effect_dialog = None
+        self._effect_popover = None
 
     def _on_effect_state_changed(self, _state, name: str) -> None:
         """「当前音效」变更：同步缓存 + 刷新已打开的弹窗高亮。"""
@@ -790,15 +842,17 @@ class PlayerPanel(Gtk.Box):
                     self._on_func_toast(_("已删除预设：{name}").format(name=name))
         except Exception:
             pass
-        # 刷新对话框（关闭重开，简单可靠）
-        dlg = getattr(self, "_effect_dialog", None)
-        if dlg is not None:
+        # 刷新气泡（关闭重开，简单可靠）：锚定当前气泡的父按钮
+        pop = getattr(self, "_effect_popover", None)
+        anchor = None
+        if pop is not None:
             try:
-                dlg.close()
+                anchor = pop.get_parent()
+                pop.popdown()
             except Exception:
                 pass
-            self._effect_dialog = None
-        self._open_effect_dialog()
+            self._effect_popover = None
+        self._open_effect_dialog(anchor=anchor)
 
     def _select_effect(self, name: str) -> None:
         """选中预设：更新单一源 + 回调 window（下发音频）。
@@ -817,13 +871,13 @@ class PlayerPanel(Gtk.Box):
             self._on_effect(name)
 
     def _on_effect_dialog_settings(self, _row) -> None:
-        dlg = getattr(self, "_effect_dialog", None)
-        if dlg is not None:
+        pop = getattr(self, "_effect_popover", None)
+        if pop is not None:
             try:
-                dlg.close()
+                pop.popdown()
             except Exception:
                 pass
-            self._effect_dialog = None
+            self._effect_popover = None
         if self._on_effect_settings is not None:
             self._on_effect_settings()
 
@@ -968,15 +1022,16 @@ class PlayerPanel(Gtk.Box):
             self._on_volume(vol)
 
     def _on_vol_scroll(self, _controller, _dx: float, dy: float) -> bool:
-        """滚轮调节音量：向上（dy<0）增大，向下（dy>0）减小。
+        """滚轮调节音量：向上增大，向下减小。
 
+        GTK 中向上滚 dy<0、向下滚 dy>0，故 dy<0 → +step。
         直接改滑块值，触发 value-changed → _on_volume_changed，
         复用既有同步链路（图标 / 后端音量一并更新）。
         """
         try:
             cur = float(self.volume.get_value())
             step = 0.05
-            val = max(0.0, min(1.0, cur + (-step if dy < 0 else step)))
+            val = max(0.0, min(1.0, cur + (step if dy < 0 else -step)))
             if abs(val - cur) > 1e-9:
                 self.volume.set_value(val)
             return True

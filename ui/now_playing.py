@@ -280,9 +280,15 @@ class NowPlayingPage(Gtk.Overlay):
         vol_popover.set_parent(self._vol_btn)
         self._vol_popover = vol_popover
         self._vol_btn.connect("clicked", self._on_vol_btn_clicked)
+        # 滚轮调音量：鼠标悬停图标上滚动即可增减（向上增大、向下减小）。
+        # 复用滑块 → value-changed → _on_volume_changed 的既有链路。
+        _vol_scroll = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.VERTICAL
+        )
+        _vol_scroll.connect("scroll", self._on_vol_scroll)
+        self._vol_btn.add_controller(_vol_scroll)
 
-        # 音量放最左
-        ctrl.append(self._vol_btn)
+        # 音量按钮的位置：放到最后（最右），见下方 ctrl.append。
 
         # 左辅助：音效（小号）。点击打开音效选择对话框，
         # 与左侧面板的音效按钮走同一个入口。
@@ -291,8 +297,20 @@ class NowPlayingPage(Gtk.Overlay):
         self._btn_effect.add_css_class("np-aux-btn")
         self._btn_effect.set_tooltip_text(_("音效"))
         self._btn_effect.set_valign(Gtk.Align.CENTER)
-        self._btn_effect.connect("clicked", lambda *_: self._on_effect and self._on_effect())
+        # 把自身按钮作为 anchor 传入：音效气泡从本按钮旁弹出。
+        self._btn_effect.connect(
+            "clicked",
+            lambda *_: self._on_effect and self._on_effect(self._btn_effect))
         ctrl.append(self._btn_effect)
+
+        # 随机（小号）：放在音效之后、核心组之前。
+        self._btn_shuffle = Gtk.Button(icon_name="media-playlist-shuffle-symbolic")
+        self._btn_shuffle.add_css_class("np-skip-btn")
+        self._btn_shuffle.add_css_class("np-aux-btn")
+        self._btn_shuffle.set_tooltip_text(_("随机播放"))
+        self._btn_shuffle.set_valign(Gtk.Align.CENTER)
+        self._btn_shuffle.connect("clicked", lambda *_: self._toggle_shuffle())
+        ctrl.append(self._btn_shuffle)
 
         # 核心组：上一曲 / 播放 / 下一曲（紧凑）
         core = Gtk.Box(spacing=20)
@@ -335,17 +353,10 @@ class NowPlayingPage(Gtk.Overlay):
         repeat_box.append(self._repeat_num)
         self._btn_repeat.set_child(repeat_box)
         self._btn_repeat.connect("clicked", lambda *_: self._cycle_repeat())
-        ctrl.append(self._btn_repeat)
 
-        # 右辅助之二：随机（小号）。从最左移到循环之后，
-        # 与左侧的音效形成对称，整排更平衡。
-        self._btn_shuffle = Gtk.Button(icon_name="media-playlist-shuffle-symbolic")
-        self._btn_shuffle.add_css_class("np-skip-btn")
-        self._btn_shuffle.add_css_class("np-aux-btn")
-        self._btn_shuffle.set_tooltip_text(_("随机播放"))
-        self._btn_shuffle.set_valign(Gtk.Align.CENTER)
-        self._btn_shuffle.connect("clicked", lambda *_: self._toggle_shuffle())
-        ctrl.append(self._btn_shuffle)
+        # 音量放最右（循环之后）
+        ctrl.append(self._btn_repeat)
+        ctrl.append(self._vol_btn)
 
         bottom.append(ctrl)
 
@@ -771,10 +782,27 @@ class NowPlayingPage(Gtk.Overlay):
         self._vol_slider.handler_block_by_func(self._on_volume_changed)
         self._vol_slider.set_value(value)
         self._vol_slider.handler_unblock_by_func(self._on_volume_changed)
+        self._update_volume_icon(value)
+
+    def _update_volume_icon(self, vol: float) -> None:
+        """按音量值更新喇叭图标（与左侧面板一致）。"""
+        try:
+            if vol <= 0.01:
+                self._vol_btn.set_icon_name("audio-volume-muted-symbolic")
+            elif vol < 0.4:
+                self._vol_btn.set_icon_name("audio-volume-low-symbolic")
+            elif vol < 0.7:
+                self._vol_btn.set_icon_name("audio-volume-medium-symbolic")
+            else:
+                self._vol_btn.set_icon_name("audio-volume-high-symbolic")
+        except Exception:
+            pass
 
     def _on_volume_changed(self, scale) -> None:
+        vol = scale.get_value()
+        self._update_volume_icon(vol)
         if self._on_volume is not None:
-            self._on_volume(scale.get_value())
+            self._on_volume(vol)
 
     def _on_vol_btn_clicked(self, _btn) -> None:
         """点击音量按钮：开合竖向滑块弹层。"""
@@ -785,6 +813,22 @@ class NowPlayingPage(Gtk.Overlay):
             pop.popdown()
         else:
             pop.popup()
+
+    def _on_vol_scroll(self, _controller, _dx: float, dy: float) -> bool:
+        """滚轮调节音量：向上增大，向下减小（dy<0 → +step）。
+
+        直接改滑块值，触发 value-changed → _on_volume_changed，
+        复用既有同步链路（图标 / 后端音量一并更新）。
+        """
+        try:
+            cur = float(self._vol_slider.get_value())
+            step = 0.05
+            val = max(0.0, min(1.0, cur + (step if dy < 0 else -step)))
+            if abs(val - cur) > 1e-9:
+                self._vol_slider.set_value(val)
+            return True
+        except Exception:
+            return False
 
     def do_dispose(self) -> None:
         """控件销毁：解父临时 popover，避免 GTK 访问已释放对象而 SIGSEGV。

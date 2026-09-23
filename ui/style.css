@@ -322,6 +322,58 @@ aspectframe,
     background-color: alpha(@window_fg_color, 0.15);
 }
 
+/* 音量按钮（MenuButton）：悬停时不显示方形背景块。
+ * 音量按钮用滚轮/点击调音量，视觉上无需 hover 底色反馈；
+ * 且 MenuButton 内部未命中圆角规则，hover 底会呈方形、很突兀。 */
+.np-vol-btn,
+.np-vol-btn:hover,
+.np-vol-btn:active {
+    background: none;
+    box-shadow: none;
+}
+
+/* MenuButton 内层可能有 button 节点，一并覆盖 */
+.np-vol-btn button,
+.np-vol-btn button:hover,
+.np-vol-btn button:active {
+    background: none;
+    box-shadow: none;
+}
+
+/* 音效列表气泡：与 .media-menu 菜单统一风格（不透明主题底 + 圆角阴影），
+ * 并让内层 PreferencesGroup 卡片与气泡同底，避免"两层白"的割裂感。
+ * AdwPreferencesGroup 的标题是节点 `preferencesgroup` 内带 `.heading/.h4`
+ * 类的 label，用后代选择器覆盖字号（不依赖具体层级）。仅作用于气泡内。 */
+/* 音效气泡的背景/边框/圆角由 player_panel._inject_effect_popover_css()
+ * 用独立高优先级 provider（USER+10）注入——因为用户主题（MacTahoe 等）
+ * 对 `popover > contents` 的规则与 style.css 同为 USER 级，可能覆盖此处。
+ * 这里只保留不受主题冲突的字号/行高/间距规则。 */
+popover.effect-popover preferencesgroup .heading,
+popover.effect-popover preferencesgroup .h4 {
+    font-size: 12px;
+    font-weight: 600;
+}
+popover.effect-popover preferencesgroup > box {
+    margin: 0;
+}
+popover.effect-popover scrolledwindow > viewport {
+    background: transparent;
+}
+/* 列表项更紧凑：缩小行高与内边距，减少气泡留白 */
+popover.effect-popover preferencesgroup row,
+popover.effect-popover preferencesgroup list > row {
+    min-height: 36px;
+    padding-top: 2px;
+    padding-bottom: 2px;
+}
+popover.effect-popover preferencesgroup row label {
+    font-size: 13px;
+}
+/* 各分组之间留白收紧 */
+popover.effect-popover preferencesgroup {
+    margin-bottom: 6px;
+}
+
 /* 播放 / 暂停：精致克制的微透悬浮纽扣 (方案 A)
    收敛至 48px，微透基底与轻柔外框，既保持主焦点又与切歌键协调呼吸 */
 .np-play-btn {

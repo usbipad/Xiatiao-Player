@@ -324,7 +324,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_shuffle=self._on_shuffle,
             on_repeat=self._on_repeat,
             on_volume=self._on_volume,
-            on_effect=self._on_open_effect_settings,
+            on_effect=self._open_effect_dialog,
         )
         self.now_playing.bind_window(self)
         self._main_stack.add_named(self.now_playing, "nowplaying")
@@ -483,12 +483,13 @@ class MainWindow(Adw.ApplicationWindow):
                 display, provider, Gtk.STYLE_PROVIDER_PRIORITY_USER
             )
             # 动态背景 provider：主界面「背景跟随封面」时注入封面主色。
-            # 用 USER 级（最高）优先级，确保压过 libadwaita 主题里
-            # `listview { background-color: var(--view-bg-color) }` 等规则。
+            # 用 USER+1000 优先级：用户主题（MacTahoe 等）的 popover/listview
+            # 规则与 USER 同级且后加载，会覆盖我们；提高到 +1000 确保胜出
+            # （音效气泡/菜单背景即依赖此 provider）。
             self._dynamic_css = Gtk.CssProvider()
             Gtk.StyleContext.add_provider_for_display(
                 display, self._dynamic_css,
-                Gtk.STYLE_PROVIDER_PRIORITY_USER,
+                Gtk.STYLE_PROVIDER_PRIORITY_USER + 1000,
             )
 
         # 订阅系统配色明暗变化：关闭「背景跟随封面」时，沉浸页前景
@@ -2291,6 +2292,12 @@ class MainWindow(Adw.ApplicationWindow):
                     f"background-color: {col}; border: none;"
                     "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
                     "}"
+                    # 音效气泡：与菜单同色，跟随主界面背景色自动变化。
+                    # 用 USER+1000 的 _dynamic_css 已能压过第三方主题。
+                    "popover.effect-popover > contents {"
+                    f"background-color: {col}; border: none;"
+                    "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
+                    "}"
                     # 左侧面板歌词区顶/底渐隐：原用 @window_bg_color（白）
                     # 在彩色面板上形成白色渐变块，改用封面色渐变。
                     "window.main-bg-follow .np-lyrics-compact .np-fade-top {"
@@ -2547,6 +2554,22 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_open_effect_settings(self) -> None:
         """音效菜单"详细配置"：打开设置并跳到音效页。"""
         self._on_open_settings(goto_effect=True)
+
+    def _open_effect_dialog(self, anchor=None) -> None:
+        """打开音效列表气泡（与主页音效按钮同一入口）。
+
+        沉浸页音效按钮调用此方法：复用 player_panel 的内容构建，气泡
+        从传入的 anchor 按钮旁弹出（不传则用主页音效按钮）。
+        """
+        try:
+            fn = getattr(self.player_panel, "_open_effect_dialog", None)
+            if callable(fn):
+                if anchor is None:
+                    fn()
+                else:
+                    fn(anchor=anchor)
+        except Exception:
+            log.debug("打开音效弹窗失败", exc_info=True)
 
     def _on_coloring_changed(self, tube_drive: float, bbe_amount: float) -> None:
         """音色染色参数：下发后端 + 持久化。"""
