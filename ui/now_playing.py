@@ -275,12 +275,11 @@ class NowPlayingPage(Gtk.Overlay):
         self._vol_slider.connect("value-changed", self._on_volume_changed)
         vol_popover.set_child(self._vol_slider)
         # Popover 挂到按钮上（与列表右键菜单同一模式），点击开合。
-        # set_parent 的 popover 必须与父控件同生命周期：本控件 dispose 时
+        # set_parent 的 popover 必须与父控件同生命周期：在 do_dispose() 里
         # 解父，否则父按钮销毁后 GTK 仍持有已释放 popover → SIGSEGV。
         vol_popover.set_parent(self._vol_btn)
         self._vol_popover = vol_popover
         self._vol_btn.connect("clicked", self._on_vol_btn_clicked)
-        self._vol_btn.connect("destroy", lambda _w, p=vol_popover: p.unparent())
 
         # 音量放最左
         ctrl.append(self._vol_btn)
@@ -786,6 +785,21 @@ class NowPlayingPage(Gtk.Overlay):
             pop.popdown()
         else:
             pop.popup()
+
+    def do_dispose(self) -> None:
+        """控件销毁：解父临时 popover，避免 GTK 访问已释放对象而 SIGSEGV。
+
+        用 dispose 而非 "destroy" 信号：GTK4 中 destroy 已废弃且不总是触发，
+        dispose 是对象拆除前的可靠时机。
+        """
+        pop = getattr(self, "_vol_popover", None)
+        if pop is not None:
+            try:
+                pop.unparent()
+            except Exception:
+                pass
+            self._vol_popover = None
+        Gtk.Widget.do_dispose(self)
 
     def set_lyrics(self, lyrics: list[tuple[float, str]]) -> None:
         self.lyrics.set_lyrics(lyrics)
