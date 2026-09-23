@@ -1376,11 +1376,11 @@ class MainWindow(Adw.ApplicationWindow):
         # 不能在后台线程落盘——快速切歌时旧线程晚到会覆盖新封面。
         GLib.idle_add(self._apply_track_assets, token, cover_panel_tex, cover_np_tex,
                       lyrics, rg_gain, bg_rgb, seekbar_rgb, bg_tex, bg_dark,
-                      cover_raw, main_bg_rgb)
+                      cover_raw, main_bg_rgb, assets.get("dominant_rgb"))
 
     def _apply_track_assets(self, token: int, cover_panel_tex, cover_np_tex, lyrics, rg_gain,
                             bg_rgb=None, seekbar_rgb=None, bg_tex=None, bg_dark=None,
-                            mpris_cover_raw=None, main_bg_rgb=None) -> bool:
+                            mpris_cover_raw=None, main_bg_rgb=None, dominant_rgb=None) -> bool:
         """主线程：应用后台已建好的 GdkTexture / 歌词 / ReplayGain。
 
         封面纹理在后台线程已解码完成，这里只 set_paintable，几乎零耗时。
@@ -1407,7 +1407,7 @@ class MainWindow(Adw.ApplicationWindow):
             # 主界面背景跟随封面（独立开关，用 main_bg_rgb，不受沉浸页模糊开关影响）
             self._current_bg_rgb = main_bg_rgb
             # 缓存封面主色：系统切明暗时据此重算背景（纯计算，不重新解码封面）
-            self._current_dominant_rgb = assets.get("dominant_rgb")
+            self._current_dominant_rgb = dominant_rgb
             self._apply_main_bg(main_bg_rgb)
             # 主界面左侧进度条也跟随封面主色
             self.player_panel.set_progress_color(seekbar_rgb)
