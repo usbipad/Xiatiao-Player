@@ -15,8 +15,14 @@ xiatiao-player (1.0.2) unstable; urgency=medium
   * 音量图标支持鼠标滚轮调节（主页 + 沉浸页），图标随音量大小变化。
   * 专辑/艺术家卡片悬停浮起效果（上浮 + 阴影 + 封面轻放大）。
   * 沉浸页控制栏按钮重排（音效/随机/播放组/循环/音量）。
+  * 修复左侧面板歌名/歌手不显示：MarqueeLabel 垂直最小高度报 0，
+    空间紧张时被压成 0 高而隐藏；改为报实际文字高度。
+  * 修复左侧播放面板外圈白边/右缘竖线（libadwaita 侧栏容器与分隔
+    装饰 AdwGizmo 的描边）。
+  * 窗口最小宽度 = 左侧面板完整宽度（含 margin），缩到最窄只剩面板。
+  * 主界面「背景跟随封面」开启时，菜单/音效气泡背景随之变化。
 
- -- usbipad <1495941192+usbipad@users.noreply.github.com>  Tue, 23 Sep 2026 22:20:00 +0800
+ -- usbipad <1495941192+usbipad@users.noreply.github.com>  Wed, 24 Sep 2026 02:00:00 +0800
 
 xiatiao-player (1.0.1) unstable; urgency=medium
 
