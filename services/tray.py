@@ -300,7 +300,9 @@ class Tray:
         try:
             if method == "GetLayout":
                 log.info("托盘：GetLayout 被调用")
-                # 用 new_tuple 显式组合，避免把已打包的 variant 当普通值再序列化
+                # DBus 方法返回值必须是「元组」，其元素依次对应 out 参数。
+                # 用 new_tuple(revision, layout) 显式组装，避免把已打包的
+                # variant 当普通值再序列化（否则类型不符 -> GLib-CRITICAL）。
                 layout = GLib.Variant.new_tuple(
                     GLib.Variant("u", self._revision),
                     self._layout(),
@@ -308,10 +310,14 @@ class Tray:
                 inv.return_value(layout)
                 return
             if method == "GetGroupProperties":
-                inv.return_value(GLib.Variant("a(ia{sv})", []))
+                # 出参 (a(ia{sv}))：同样必须用元组包裹。
+                inv.return_value(GLib.Variant.new_tuple(
+                    GLib.Variant("a(ia{sv})", [])))
                 return
             if method == "GetProperty":
-                inv.return_value(GLib.Variant("(v)", (GLib.Variant("s", ""),)))
+                # 出参 (v)：元组包裹一个 variant。
+                inv.return_value(GLib.Variant.new_tuple(
+                    GLib.Variant("v", GLib.Variant("s", ""))))
                 return
             if method == "Event":
                 mid, event_id, _data, _ts = params.unpack()
@@ -320,13 +326,16 @@ class Tray:
                 inv.return_value(None)
                 return
             if method == "EventGroup":
-                inv.return_value(GLib.Variant("(ai)", ([],)))
+                inv.return_value(GLib.Variant.new_tuple(
+                    GLib.Variant("ai", [])))
                 return
             if method == "AboutToShow":
-                inv.return_value(GLib.Variant("(b)", (False,)))
+                inv.return_value(GLib.Variant.new_tuple(
+                    GLib.Variant("b", False)))
                 return
             if method == "AboutToShowGroup":
-                inv.return_value(GLib.Variant("(aiai)", ([], [])))
+                inv.return_value(GLib.Variant.new_tuple(
+                    GLib.Variant("ai", []), GLib.Variant("ai", [])))
                 return
         except Exception:
             log.debug("托盘：dbusmenu 方法 %s 失败", method, exc_info=True)
