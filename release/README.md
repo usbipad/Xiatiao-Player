@@ -7,8 +7,8 @@
 
 | 文件 | 说明 |
 |---|---|
-| xiatiao-player_1.0.1_amd64.deb | 主安装包 |
-| xiatiao-player-dbgsym_1.0.1_amd64.deb | 调试符号（可选） |
+| xiatiao-player_1.0.2_amd64.deb | 主安装包 |
+| xiatiao-player-dbgsym_1.0.2_amd64.deb | 调试符号（可选） |
 
 ## 覆盖范围
 
@@ -34,6 +34,6 @@ GLIBC_2.34。由于 glibc 向上兼容，一个包即可覆盖：
 
 ## 安装
 
-    sudo apt install ./xiatiao-player_1.0.1_amd64.deb
+    sudo apt install ./xiatiao-player_1.0.2_amd64.deb
 
 详见项目根目录 HANDOVER.md 第 9 节。

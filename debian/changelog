@@ -10,6 +10,11 @@ xiatiao-player (1.0.2) unstable; urgency=medium
   * 修复 GTK4 段错误崩溃（SIGSEGV in gtk_widget_unparent）：右键菜单等
     临时 Popover 只 set_parent 未 unparent，父控件销毁时访问已释放对象。
     为全部临时 popover 补解父（菜单用 closed 信号，音量用 do_dispose）。
+  * 音效弹窗重构：由居中对话框改为从音效按钮旁弹出的气泡，主页/沉浸页
+    共用；背景跟随主界面背景色，用高优先级 provider 压过第三方主题。
+  * 音量图标支持鼠标滚轮调节（主页 + 沉浸页），图标随音量大小变化。
+  * 专辑/艺术家卡片悬停浮起效果（上浮 + 阴影 + 封面轻放大）。
+  * 沉浸页控制栏按钮重排（音效/随机/播放组/循环/音量）。
 
  -- usbipad <1495941192+usbipad@users.noreply.github.com>  Tue, 23 Sep 2026 22:20:00 +0800
 
