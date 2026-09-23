@@ -274,10 +274,13 @@ class NowPlayingPage(Gtk.Overlay):
         self._vol_slider.set_size_request(-1, 140)
         self._vol_slider.connect("value-changed", self._on_volume_changed)
         vol_popover.set_child(self._vol_slider)
-        # Popover 挂到按钮上（与列表右键菜单同一模式），点击开合
+        # Popover 挂到按钮上（与列表右键菜单同一模式），点击开合。
+        # set_parent 的 popover 必须与父控件同生命周期：本控件 dispose 时
+        # 解父，否则父按钮销毁后 GTK 仍持有已释放 popover → SIGSEGV。
         vol_popover.set_parent(self._vol_btn)
         self._vol_popover = vol_popover
         self._vol_btn.connect("clicked", self._on_vol_btn_clicked)
+        self._vol_btn.connect("destroy", lambda _w, p=vol_popover: p.unparent())
 
         # 音量放最左
         ctrl.append(self._vol_btn)

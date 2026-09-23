@@ -304,6 +304,9 @@ class PlaylistsPage(Gtk.Box):
         ag.add_action(a1)
         ag.add_action(a2)
         box.insert_action_group("card", ag)
+        # 关闭即解父：临时 popover 若不 unparent，父控件（卡片）销毁时
+        # GTK 会访问已释放的 popover → SIGSEGV in gtk_widget_unparent()。
+        pop.connect("closed", lambda p: p.unparent())
         pop.popup()
 
     # ---- 交互 ----
@@ -341,6 +344,8 @@ class PlaylistsPage(Gtk.Box):
         a.connect("activate", lambda *_: self._create_playlist())
         ag.add_action(a)
         self._flow.insert_action_group("pl", ag)
+        # 关闭即解父（同上）：避免父控件销毁时访问已释放 popover 而崩溃。
+        pop.connect("closed", lambda p: p.unparent())
         pop.popup()
 
     # ---- 操作 ----

@@ -102,6 +102,9 @@ def _attach_cell_right_click(_factory, list_item, menu_model, ctx) -> None:
         rect.width = 1
         rect.height = 1
         popover.set_pointing_to(rect)
+        # 关闭即解父并销毁：临时 popover 若不 unparent，父控件（列表行）销毁时
+        # GTK 会访问已释放的 popover → SIGSEGV in gtk_widget_unparent()。
+        popover.connect("closed", lambda p: p.unparent())
         popover.popup()
 
     g = Gtk.GestureClick()

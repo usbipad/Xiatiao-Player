@@ -440,6 +440,9 @@ class PlayerPanel(Gtk.Box):
             _mk("promote", "promote")
             _mk("discard", "discard")
             row.insert_action_group("qrow", ag)
+            # 关闭即解父：临时 popover 若不 unparent，父控件（队列行）销毁时
+            # GTK 会访问已释放的 popover → SIGSEGV in gtk_widget_unparent()。
+            popover.connect("closed", lambda p: p.unparent())
             popover.popup()
 
         g = Gtk.GestureClick()
