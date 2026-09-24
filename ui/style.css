@@ -273,22 +273,6 @@ aspectframe,
     background: linear-gradient(to top, @window_bg_color, alpha(@window_bg_color, 0));
 }
 
-/* 上一曲 / 下一曲：裸图标按钮，无底色 */
-.np-skip-btn {
-    background: none;
-    border: none;
-    box-shadow: none;
-    color: @window_fg_color;
-    min-width: 40px;
-    min-height: 40px;
-    padding: 0;
-    -gtk-icon-size: 19px;
-}
-
-.np-skip-btn:hover {
-    background-color: alpha(@window_fg_color, 0.08);
-}
-
 /* 辅助按钮（随机/循环/音效）：比核心控件更小、更淡，弱化权重 */
 .np-skip-btn.np-aux-btn {
     min-width: 32px;
@@ -297,7 +281,8 @@ aspectframe,
     -gtk-icon-size: 17px;
 }
 
-/* 控制栏按钮：轻量灵动的交互动效与圆润触感 */
+/* 控制栏按钮（上一曲 / 下一曲 / 随机 / 循环）：裸图标，无底色。
+ * 统一 20px 图标尺寸，与 .np-play-btn 对齐，保证整行图标一致。 */
 .np-skip-btn {
     background: none;
     border: none;
@@ -307,7 +292,7 @@ aspectframe,
     min-height: 42px;
     padding: 0;
     border-radius: 999px;
-    -gtk-icon-size: 21px;
+    -gtk-icon-size: 20px;
     transition: background-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
                 box-shadow 160ms cubic-bezier(0.16, 1, 0.3, 1),
                 color 160ms ease;
@@ -387,7 +372,7 @@ popover.effect-popover preferencesgroup {
     min-height: 48px;
     padding: 0;
     border-radius: 999px;
-    -gtk-icon-size: 22px;
+    -gtk-icon-size: 20px;
     margin-top: 2px;
     margin-bottom: 2px;
     transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 120ms ease;
@@ -452,16 +437,20 @@ popover.effect-popover preferencesgroup {
 }
 
 /* 左侧播放面板：浅色背景，与右侧内容区分（Tonearm 风格）*/
-/* 左侧播放面板：浅色背景 + 圆角。
- * 圆角外侧若露出底层侧栏的默认色会形成白边，故下方给 split view 的
- * 侧栏区域也染同色（@window_bg_color），圆角外即与面板同色、无白边。 */
-/* 面板：圆角卡片（四周留白 + 柔和阴影），Tonearm 风格。 */
+/* 左侧播放面板：圆角卡片（四周留白），Tonearm 风格。
+ * 层级统一：面板相对「底」（窗口根 / sidebar-pane）始终暗一档。
+ * 用前景色 alpha 叠加实现——亮色下加黑、暗色下加白，明暗自适应，
+ * 与「背景跟随封面」时的 ×0.90 暗一档视觉方向一致，两种模式层级表现相同。 */
 .player-panel {
     background-color: @window_bg_color;
+    background-image: linear-gradient(alpha(@window_fg_color, 0.05),
+                                      alpha(@window_fg_color, 0.05));
     border-radius: 16px;
     border: none;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.10),
-                0 1px 4px rgba(0, 0, 0, 0.06);
+    /* 悬浮阴影：参考专辑卡片但收敛扩散范围（偏移/模糊更小），
+     * 使阴影更贴边、不外扩，便于把侧栏 padding 收窄。 */
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.16),
+                0 1px 3px rgba(0, 0, 0, 0.10);
 }
 
 /* OverlaySplitView 的侧栏容器：与播放面板同色，避免面板圆角外露白。
@@ -472,17 +461,18 @@ popover.effect-popover preferencesgroup {
  * （即面板右边那条竖线）。必须覆盖各方向变体，否则 :dir(ltr) 更具体、
  * box-shadow: none 压不住。 */
 /* 侧栏容器：不设背景/描边，但保留外层空间不裁子控件阴影。 */
+/* 侧栏容器：底色与右侧内容区一致（@view_bg_color），
+ * 让左侧外框区域与右侧背景连成一体。
+ * padding 收到 2px：外框极窄；阴影基本会被裁掉。 */
 overlay-split-view .sidebar-pane,
 overlay-split-view .sidebar-pane:dir(ltr),
 overlay-split-view .sidebar-pane:dir(rtl),
 overlay-split-view .sidebar-pane.end:dir(ltr),
-overlay-split-view .sidebar-pane.end:dir(rtl),
-overlay-split-view .sidebar-pane > box {
-    background: none;
-    background-color: transparent;
+overlay-split-view .sidebar-pane.end:dir(rtl) {
+    background-color: @view_bg_color;
     border: none;
     box-shadow: none;
-    padding: 4px;
+    padding: 2px;
 }
 /* overlay-split-view 的 border 节点：侧栏与内容区的分隔线（淡前景色）。 */
 overlay-split-view > border,
@@ -788,8 +778,8 @@ button.unset-key {
     box-shadow: 0 3px 6px 0 rgba(0, 0, 0, 0.15);
 }
 
-/* 喜欢按钮激活：实心爱心，颜色跟随主题前景色（浅色黑 / 暗色白），
-   并强制不透明，避免 symbolic 图标被主题淡化。 */
+/* 喜欢按钮激活：实心爱心 + 红色（情感化操作惯例），
+ * 一眼可辨「已喜欢」。未激活保持空心、跟随主题前景色。 */
 button.np-skip-btn.liked-active,
 button.np-skip-btn.liked-active:hover {
     opacity: 1;
@@ -797,7 +787,7 @@ button.np-skip-btn.liked-active:hover {
 
 image.like-icon-active,
 button.np-skip-btn.liked-active image {
-    color: inherit;
+    color: #e0245e;
     opacity: 1;
     -gtk-icon-filter: none;
 }

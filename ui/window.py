@@ -2324,14 +2324,18 @@ class MainWindow(Adw.ApplicationWindow):
                 # 与 view-bg-color 不同，这个属性没有任何内置控件引用，
                 # 因此不会污染沉浸页/按钮等（仅显式引用它的规则受影响）。
                 css = (
-                    # 面板外的底（窗口根 + 侧栏容器）：原封面色（浅）。
+                    # 面板外的底（窗口根 + 侧栏容器）：原封面色。
                     "window.main-bg-follow,"
                     "window.main-bg-follow overlay-split-view .sidebar-pane {"
                     f"background-color: {col};"
                     "}"
-                    # 左侧面板（卡片）：略暗色（深），与面板外的底拉开对比。
+                    # 左侧面板：略暗色，与面板外的底拉开对比。
+                    # 同时清除 style.css 里 .player-panel 的 background-image 叠加层
+                    # （那是系统默认色模式下的暗一档实现）；否则跟随封面时
+                    # 会「col_panel × 再叠一层」双重变暗，与系统模式层级不一致。
                     "window.main-bg-follow .player-panel {"
                     f"background-color: {col_panel};"
+                    "background-image: none;"
                     "}"
                     # 右侧内容区：原封面色
                     "window.main-bg-follow .content-area,"

@@ -68,11 +68,12 @@ class PlayerPanel(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add_css_class("player-panel")  # 浅色背景，区分右侧内容区
         self.set_size_request(PANEL_CONTENT_MIN_W, -1)  # 最小宽度（避免拖太窄导致内容溢出）
-        # 面板四周留白（卡片浮起，Tonearm 风格）。
-        self.set_margin_start(12)
-        self.set_margin_end(12)
-        self.set_margin_top(12)
-        self.set_margin_bottom(12)
+        # 面板 margin 归零：留白由 sidebar-pane 的 padding 提供（见 style.css），
+        # 这样面板阴影在 sidebar-pane 内扩散，不会被父容器裁成方角。
+        self.set_margin_start(0)
+        self.set_margin_end(0)
+        self.set_margin_top(0)
+        self.set_margin_bottom(0)
 
         # ---- 顶部工具栏（固定面板顶部，标题居中 + 🔔 ☰ 右侧）----
         topbar = Gtk.CenterBox()
@@ -180,6 +181,9 @@ class PlayerPanel(Gtk.Box):
 
         # ---- 进度条（独立组件：点击/拖动 seek）----
         self.progress = SeekBar(on_seek=self._on_seek, on_drag=self._on_progress_drag)
+        # 两侧留白让进度条比面板内容窄一些（更精致，不顶到边）。
+        self.progress.set_margin_start(24)
+        self.progress.set_margin_end(24)
         inner.append(self.progress)
 
         self.label_time_left = Gtk.Label(label="0:00")
