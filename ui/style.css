@@ -455,14 +455,13 @@ popover.effect-popover preferencesgroup {
 /* 左侧播放面板：浅色背景 + 圆角。
  * 圆角外侧若露出底层侧栏的默认色会形成白边，故下方给 split view 的
  * 侧栏区域也染同色（@window_bg_color），圆角外即与面板同色、无白边。 */
-/* 面板：圆角 + 边框 + 悬浮阴影（margin 留空间给阴影扩散）。 */
+/* 面板：圆角卡片（四周留白 + 柔和阴影），Tonearm 风格。 */
 .player-panel {
     background-color: @window_bg_color;
     border-radius: 16px;
-    /* 1px 细边框：半透明前景色，明暗自适应，强化面板轮廓。 */
-    border: 1px solid alpha(@window_fg_color, 0.18);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.30),
-                0 3px 8px rgba(0, 0, 0, 0.18);
+    border: none;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.10),
+                0 1px 4px rgba(0, 0, 0, 0.06);
 }
 
 /* OverlaySplitView 的侧栏容器：与播放面板同色，避免面板圆角外露白。
@@ -472,16 +471,18 @@ popover.effect-popover preferencesgroup {
 /* .sidebar-pane 用 --sidebar-bg-color + 右缘 `inset -1px 0` 内阴影
  * （即面板右边那条竖线）。必须覆盖各方向变体，否则 :dir(ltr) 更具体、
  * box-shadow: none 压不住。 */
+/* 侧栏容器：不设背景/描边，但保留外层空间不裁子控件阴影。 */
 overlay-split-view .sidebar-pane,
 overlay-split-view .sidebar-pane:dir(ltr),
 overlay-split-view .sidebar-pane:dir(rtl),
 overlay-split-view .sidebar-pane.end:dir(ltr),
 overlay-split-view .sidebar-pane.end:dir(rtl),
 overlay-split-view .sidebar-pane > box {
-    background-color: transparent;
     background: none;
+    background-color: transparent;
     border: none;
     box-shadow: none;
+    padding: 4px;
 }
 /* overlay-split-view 的 border 节点：侧栏与内容区的分隔线（淡前景色）。 */
 overlay-split-view > border,
