@@ -64,12 +64,14 @@ class SettingsWindow(Adw.PreferencesWindow):
         ("seek_fwd", "快进 5 秒"),
         ("vol_up", "音量 +5%"),
         ("vol_down", "音量 -5%"),
+        ("open_settings", "打开设置"),
     )
     #: 默认全部为空（未绑定），由用户自行录制
     _SHORTCUT_DEFAULTS = {
         "play_pause": "", "prev": "", "next": "",
         "seek_back": "", "seek_fwd": "",
         "vol_up": "", "vol_down": "",
+        "open_settings": "",
     }
 
     def _build_shortcuts_page(self) -> None:
@@ -505,6 +507,13 @@ class SettingsWindow(Adw.PreferencesWindow):
         """跳到音效页（供音效菜单"详细配置"调用）。"""
         try:
             self.set_visible_page(self._effect_page)
+        except Exception:
+            pass
+
+    def show_shortcuts_page(self) -> None:
+        """跳到快捷键页（供应用菜单"键盘快捷键"调用）。"""
+        try:
+            self.set_visible_page(self._shortcuts_page)
         except Exception:
             pass
 

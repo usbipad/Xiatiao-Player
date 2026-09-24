@@ -77,13 +77,10 @@ aspectframe,
     background: transparent;
     background-color: transparent;
     border: none;
-    /* 悬浮阴影：以垂直偏移为主导，营造「光从上方来」的方向感。
-       下方 (11+20=31px) 明显、上方仅 (20-11=9px) 残留、左右各 20px。
-       若偏移过小而模糊很大，阴影会从中心向四周均匀扩散，
-       看起来像「发光晕」而非「浮起」。
-       近景层 (3+8=11px) 提供贴边的实感，避免只有远景弥散显得虚。 */
-    box-shadow: 0 11px 20px rgba(0, 0, 0, 0.26),
-                0 3px 8px rgba(0, 0, 0, 0.14);
+    /* 悬浮阴影：与右侧专辑卡片（.media-card-cover）同款，
+       保持面板内封面与内容区卡片的浮动语言一致。 */
+    box-shadow: 0 10px 14px rgba(0, 0, 0, 0.26),
+                0 3px 6px rgba(0, 0, 0, 0.16);
 }
 
 /* ============================================================
@@ -264,13 +261,22 @@ aspectframe,
     color: @window_fg_color;
 }
 
-/* 紧凑歌词的顶/底渐隐：用面板背景色 */
+/* 紧凑歌词的顶/底渐隐：顶端 = 面板卡片复合底色（@window_bg_color + 5% 前景），
+ * 底端透明。与「加了阴影的左侧浮起面板」底色一致，不再出现比面板亮的色块。
+ * 用两层 background-image 叠加复现面板色：底层 window_bg_color，
+ * 顶层 5% 前景（与 .player-panel 的配方相同）。 */
 .np-lyrics-compact .np-fade-top {
-    background: linear-gradient(to bottom, @window_bg_color, alpha(@window_bg_color, 0));
+    background-image:
+        linear-gradient(to bottom, alpha(@window_fg_color, 0.05), alpha(@window_fg_color, 0)),
+        linear-gradient(to bottom, @window_bg_color, alpha(@window_bg_color, 0));
+    background-color: transparent;
 }
 
 .np-lyrics-compact .np-fade-bottom {
-    background: linear-gradient(to top, @window_bg_color, alpha(@window_bg_color, 0));
+    background-image:
+        linear-gradient(to top, alpha(@window_fg_color, 0.05), alpha(@window_fg_color, 0)),
+        linear-gradient(to top, @window_bg_color, alpha(@window_bg_color, 0));
+    background-color: transparent;
 }
 
 /* 辅助按钮（随机/循环/音效）：比核心控件更小、更淡，弱化权重 */
@@ -438,13 +444,9 @@ popover.effect-popover preferencesgroup {
 
 /* 左侧播放面板：浅色背景，与右侧内容区分（Tonearm 风格）*/
 /* 左侧播放面板：圆角卡片（四周留白），Tonearm 风格。
- * 层级统一：面板相对「底」（窗口根 / sidebar-pane）始终暗一档。
- * 用前景色 alpha 叠加实现——亮色下加黑、暗色下加白，明暗自适应，
- * 与「背景跟随封面」时的 ×0.90 暗一档视觉方向一致，两种模式层级表现相同。 */
+ * 面板与底色同色（不加暗一档叠加），层级靠圆角/阴影/边界区分。 */
 .player-panel {
     background-color: @window_bg_color;
-    background-image: linear-gradient(alpha(@window_fg_color, 0.05),
-                                      alpha(@window_fg_color, 0.05));
     border-radius: 16px;
     border: none;
     /* 悬浮阴影：参考专辑卡片但收敛扩散范围（偏移/模糊更小），

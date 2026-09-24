@@ -58,6 +58,7 @@ sbuild \
     --dist=bookworm \
     --arch=amd64 \
     --arch-any --no-arch-all \
+    --no-run-lintian \
     --debbuildopts='-B' \
     "$PARENT/${SRC_BASE}.dsc"
 

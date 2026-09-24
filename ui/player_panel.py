@@ -22,10 +22,12 @@ log = logging.getLogger(__name__)
 
 #: 面板内容最小宽度（避免拖太窄导致内容溢出）
 PANEL_CONTENT_MIN_W = 320
-#: 面板左右 margin（各一份）。留足空间给外圈阴影扩散，避免被侧栏裁切。
+#: 面板左右 margin（各一份）。
+#: 注：面板自身 margin 已归零，留白由 sidebar-pane 的 padding 提供；
+#: 此常量保留仅为兼容，不再计入窗口最小宽度。
 PANEL_MARGIN = 22
-#: 面板整体最小宽度（含左右 margin），供窗口最小宽度引用
-PANEL_MIN_W = PANEL_CONTENT_MIN_W + PANEL_MARGIN * 2
+#: 窗口最小宽度 = 左侧面板最小宽度（二者相等，不再额外加 margin）。
+PANEL_MIN_W = PANEL_CONTENT_MIN_W
 
 
 def _fmt_seconds(seconds: float) -> str:
@@ -196,10 +198,13 @@ class PlayerPanel(Gtk.Box):
         self.label_format.set_halign(Gtk.Align.CENTER)
         self.label_time_right = Gtk.Label(label="0:00")
         self.label_time_right.add_css_class("caption")
-        # CenterBox：中间留空，两侧时间对齐
+        # CenterBox：中间留空，两侧时间对齐。
+        # 左右 margin 与进度条一致（24px），使两端时间与进度条对齐。
         time_box = Gtk.CenterBox()
         time_box.set_start_widget(self.label_time_left)
         time_box.set_end_widget(self.label_time_right)
+        time_box.set_margin_start(24)
+        time_box.set_margin_end(24)
         inner.append(time_box)
         inner.append(self.label_format)
 
@@ -336,10 +341,13 @@ class PlayerPanel(Gtk.Box):
         inner.append(func_box)
 
         # ---- 底部 Tab（Tonearm 风格：Player / Lyrics / Queue）----
+        # 固定在面板最底部：append 到 self（外层），而非 inner（滚动内容），
+        # 否则会随内容滚动。中间 scroll 有 vexpand，会把本行顶到底部。
         tab_box = Gtk.Box(spacing=4)
         tab_box.add_css_class("player-tab-bar")
         tab_box.set_halign(Gtk.Align.CENTER)
         tab_box.set_margin_top(4)
+        tab_box.set_margin_bottom(4)
         self._tab_box = tab_box
         self._tab_buttons = []
         for label, icon, key in (
@@ -357,7 +365,8 @@ class PlayerPanel(Gtk.Box):
             btn.connect("clicked", self._on_tab_clicked, key)
             tab_box.append(btn)
             self._tab_buttons.append(btn)
-        inner.append(tab_box)
+        # 固定到面板底部（在滚动区之外）。
+        self.append(tab_box)
         self._active_tab = "player"
 
         # 播放模式状态

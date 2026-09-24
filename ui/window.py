@@ -173,8 +173,8 @@ class MainWindow(Adw.ApplicationWindow):
         w = cfg0.get_int("window_width", 1400) or 1400
         h = cfg0.get_int("window_height", 900) or 900
         self.set_default_size(max(340, w), max(480, h))
-        # 窗口最小尺寸 = 左侧播放面板的完整宽度（含其 margin），
-        # 使窗口缩到最窄时恰好容纳完整面板、不被压窄。
+        # 窗口最小尺寸 = 左侧播放面板的最小宽度（二者相等）。
+        # 使窗口缩到最窄时恰好容纳面板、不被压窄。
         # 宽度取自 player_panel.PANEL_MIN_W（单一真相源，改面板宽度即自动跟随）。
         try:
             self.set_size_request(PANEL_MIN_W, 562)
@@ -734,7 +734,11 @@ class MainWindow(Adw.ApplicationWindow):
         act_settings = Gio.SimpleAction.new("settings", None)
         act_settings.connect("activate", lambda *_: self._on_open_settings())
         act_shortcuts = Gio.SimpleAction.new("shortcuts", None)
-        act_shortcuts.connect("activate", lambda *_: self._show_shortcuts())
+        # 跳到设置页的「快捷键」页（而非弹 GTK 快捷键窗口），
+        # 与「音效 → 详细配置」跳到音效页同一模式。
+        act_shortcuts.connect(
+            "activate",
+            lambda *_: self._on_open_settings(goto_shortcuts=True))
         act_about = Gio.SimpleAction.new("about", None)
         act_about.connect("activate", lambda *_: self._show_about())
         act_quit = Gio.SimpleAction.new("quit", None)
@@ -2307,9 +2311,8 @@ class MainWindow(Adw.ApplicationWindow):
             if enabled and bg_rgb:
                 r, g, b = bg_rgb
                 col = f"rgb({r}, {g}, {b})"
-                # 左侧面板：略暗一档（沉下去），与右侧内容区区分。
-                _d = 0.90
-                col_panel = f"rgb({int(r * _d)}, {int(g * _d)}, {int(b * _d)})"
+                # 左侧面板与底同色（不暗一档），层级靠圆角/阴影/边界区分。
+                col_panel = col
                 # 给窗口加类，统一覆盖主界面所有背景层。
                 # 必须显式覆盖 listview/columnview 等：libadwaita 默认给
                 # `listview, list` 设了不透明的 --view-bg-color，会盖住底层色。
@@ -2397,13 +2400,15 @@ class MainWindow(Adw.ApplicationWindow):
                     "popover.effect-popover > contents {"
                     "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
                     "}"
-                    # 左侧面板歌词区顶/底渐隐：原用 @window_bg_color（白）
-                    # 在彩色面板上形成白色渐变块，改用封面色渐变。
+                    # 左侧面板歌词区顶/底渐隐：用面板底色 col_panel（×0.90，暗一档），
+                    # 与加了阴影的浮起面板一致；用 col 会在面板上形成偏亮渐变块。
                     "window.main-bg-follow .np-lyrics-compact .np-fade-top {"
-                    f"background: linear-gradient(to bottom, {col}, alpha({col}, 0));"
+                    f"background-image: linear-gradient(to bottom, {col_panel}, alpha({col_panel}, 0));"
+                    "background-color: transparent;"
                     "}"
                     "window.main-bg-follow .np-lyrics-compact .np-fade-bottom {"
-                    f"background: linear-gradient(to top, {col}, alpha({col}, 0));"
+                    f"background-image: linear-gradient(to top, {col_panel}, alpha({col_panel}, 0));"
+                    "background-color: transparent;"
                     "}"
                 )
             else:
@@ -2634,7 +2639,8 @@ class MainWindow(Adw.ApplicationWindow):
     # ============================================================
     # 设置 / 关闭
     # ============================================================
-    def _on_open_settings(self, _btn=None, goto_effect: bool = False) -> None:
+    def _on_open_settings(self, _btn=None, goto_effect: bool = False,
+                          goto_shortcuts: bool = False) -> None:
         win = SettingsWindow(
             self,
             on_dirs_changed=self._on_dirs_changed,
@@ -2648,6 +2654,8 @@ class MainWindow(Adw.ApplicationWindow):
         win.present()
         if goto_effect:
             win.show_effect_page()
+        if goto_shortcuts:
+            win.show_shortcuts_page()
         self._settings_win = win
 
     def _on_open_effect_settings(self) -> None:
@@ -3037,6 +3045,8 @@ class MainWindow(Adw.ApplicationWindow):
                 self._volume_relative(0.05)
             elif action == "vol_down":
                 self._volume_relative(-0.05)
+            elif action == "open_settings":
+                self._on_open_settings()
         except Exception:
             pass
 

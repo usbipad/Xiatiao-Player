@@ -11,6 +11,7 @@
     seek_fwd    快进 5 秒
     vol_up      音量 +
     vol_down    音量 -
+    open_settings  打开设置
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ log = logging.getLogger(__name__)
 #: 支持的动作名（顺序即匹配顺序）
 SHORTCUT_ACTIONS = (
     "play_pause", "prev", "next", "seek_back", "seek_fwd", "vol_up", "vol_down",
+    "open_settings",
 )
 
 #: 动作默认绑定（全空 = 未绑定，由用户在设置里录制）
