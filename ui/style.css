@@ -455,11 +455,12 @@ popover.effect-popover preferencesgroup {
 /* 左侧播放面板：浅色背景 + 圆角。
  * 圆角外侧若露出底层侧栏的默认色会形成白边，故下方给 split view 的
  * 侧栏区域也染同色（@window_bg_color），圆角外即与面板同色、无白边。 */
+/* 面板：圆角 + 边框 + 悬浮阴影（margin 留空间给阴影扩散）。 */
 .player-panel {
     background-color: @window_bg_color;
-    border-radius: 12px;
-    /* 外圈阴影：下方偏移 + 较大模糊，营造卡片「浮起」的层次感。
-       阴影空间由面板 margin（左右/上下 22）保证，避免被侧栏裁切。 */
+    border-radius: 16px;
+    /* 1px 细边框：半透明前景色，明暗自适应，强化面板轮廓。 */
+    border: 1px solid alpha(@window_fg_color, 0.18);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.30),
                 0 3px 8px rgba(0, 0, 0, 0.18);
 }
@@ -477,20 +478,21 @@ overlay-split-view .sidebar-pane:dir(rtl),
 overlay-split-view .sidebar-pane.end:dir(ltr),
 overlay-split-view .sidebar-pane.end:dir(rtl),
 overlay-split-view .sidebar-pane > box {
-    background-color: @window_bg_color;
+    background-color: transparent;
+    background: none;
     border: none;
     box-shadow: none;
 }
-/* overlay-split-view 的 border 节点：彻底去掉交界竖线（含各状态/方向变体）。 */
+/* overlay-split-view 的 border 节点：侧栏与内容区的分隔线（淡前景色）。 */
 overlay-split-view > border,
 overlay-split-view > border:backdrop,
 overlay-split-view > border:dir(ltr),
 overlay-split-view > border:dir(rtl) {
-    background: none;
+    background: alpha(@window_fg_color, 0.12);
     background-image: none;
-    background-color: transparent;
-    min-width: 0;
-    min-height: 0;
+    background-color: alpha(@window_fg_color, 0.12);
+    min-width: 1px;
+    min-height: 1px;
     border: none;
     box-shadow: none;
 }

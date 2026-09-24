@@ -519,22 +519,25 @@ class MainWindow(Adw.ApplicationWindow):
             # 这些是库内置样式，style.css（USER 级）拼不过，故用 USER+1000 注入。
             _sv_prov = Gtk.CssProvider()
             _sv_prov.load_from_data(
-                # 侧栏与内容区交界那条竖线：libadwaita 的 border 节点 + sidebar-pane
-                # 右缘内描边。用最具体选择器 + USER+1000 强制清零（含 :backdrop、
-                # :dir 变体，libadwaita 的这些更具体选择器会压过普通规则）。
+                # 侧栏与内容区之间的分隔线（border 节点）：淡前景色，明暗自适应。
                 b"overlay-split-view > border,"
                 b"overlay-split-view > border:backdrop,"
                 b"overlay-split-view > border:dir(ltr),"
                 b"overlay-split-view > border:dir(rtl) {"
-                b"background: none; background-image: none; background-color: transparent;"
-                b"min-width: 0; min-height: 0; border: none; box-shadow: none;}"
+                b"background: alpha(@window_fg_color, 0.12);"
+                b"background-image: none;"
+                b"background-color: alpha(@window_fg_color, 0.12);"
+                b"min-width: 1px; min-height: 1px; border: none; box-shadow: none;}"
                 b"overlay-split-view > outline {"
-                b"background: transparent; box-shadow: none;}"
-                # 侧栏与内容区之间有个无类名的 AdwGizmo widget（可能是分隔装饰）——
-                # 试着透明化。
-                b"overlay-split-view > widget {"
                 b"background: none; background-image: none;"
-                b"box-shadow: none; min-width: 0;}"
+                b"border: none; box-shadow: none; min-width: 0; min-height: 0;}"
+                # 侧栏与内容区之间有个无类名的 AdwGizmo widget（分隔装饰）。
+                b"overlay-split-view > widget {"
+                b"background: none; background-image: none; border: none;"
+                b"box-shadow: none; min-width: 0; min-height: 0;}"
+                # dimming（暗化层）也清零，避免残留。
+                b"overlay-split-view > dimming {"
+                b"background: none; border: none; box-shadow: none;}"
 
                 # .sidebar-pane 右缘内描边（面板右边竖线）——含方向变体，彻底去掉。
                 b"overlay-split-view .sidebar-pane,"
@@ -2304,6 +2307,9 @@ class MainWindow(Adw.ApplicationWindow):
             if enabled and bg_rgb:
                 r, g, b = bg_rgb
                 col = f"rgb({r}, {g}, {b})"
+                # 左侧面板：略暗一档（沉下去），与右侧内容区区分。
+                _d = 0.90
+                col_panel = f"rgb({int(r * _d)}, {int(g * _d)}, {int(b * _d)})"
                 # 给窗口加类，统一覆盖主界面所有背景层。
                 # 必须显式覆盖 listview/columnview 等：libadwaita 默认给
                 # `listview, list` 设了不透明的 --view-bg-color，会盖住底层色。
@@ -2318,13 +2324,14 @@ class MainWindow(Adw.ApplicationWindow):
                 # 与 view-bg-color 不同，这个属性没有任何内置控件引用，
                 # 因此不会污染沉浸页/按钮等（仅显式引用它的规则受影响）。
                 css = (
-                    # 主界面各层背景色
+                    # 窗口根 + 左侧面板：都用略暗色（col_panel）。
+                    # 窗口根与面板同色 → 面板外缘不会露出更亮的窗口底色（否则显一圈框）。
                     "window.main-bg-follow,"
                     "window.main-bg-follow .player-panel,"
-                    # 侧栏容器 + split view 的 border 节点：面板有 margin，
-                    # 圆角/margin 外露出的是这层的底；必须与面板同色，否则露白框。
-                    "window.main-bg-follow overlay-split-view .sidebar-pane,"
-                    # 注意：> border 不列入此处——否则会被染成背景色、分隔线消失。
+                    "window.main-bg-follow overlay-split-view .sidebar-pane {"
+                    f"background-color: {col_panel};"
+                    "}"
+                    # 右侧内容区：原封面色
                     "window.main-bg-follow .content-area,"
                     "window.main-bg-follow .content-area scrolledwindow,"
                     "window.main-bg-follow .content-area scrolledwindow > viewport,"

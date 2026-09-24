@@ -68,10 +68,11 @@ class PlayerPanel(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add_css_class("player-panel")  # 浅色背景，区分右侧内容区
         self.set_size_request(PANEL_CONTENT_MIN_W, -1)  # 最小宽度（避免拖太窄导致内容溢出）
-        self.set_margin_start(PANEL_MARGIN)
-        self.set_margin_end(PANEL_MARGIN)
-        self.set_margin_top(22)
-        self.set_margin_bottom(22)
+        # 面板留 margin：给圆角 + 悬浮阴影扩散空间。
+        self.set_margin_start(8)
+        self.set_margin_end(8)
+        self.set_margin_top(8)
+        self.set_margin_bottom(8)
 
         # ---- 顶部工具栏（固定面板顶部，标题居中 + 🔔 ☰ 右侧）----
         topbar = Gtk.CenterBox()
