@@ -12,6 +12,7 @@ from core.i18n import _
 from models import extract_dominant_color, make_square_cover_bytes
 
 from .widgets.lyrics_view import LyricsView
+from .widgets.marquee_label import MarqueeLabel
 from .widgets.seek_bar import SeekBar
 
 
@@ -191,18 +192,15 @@ class NowPlayingPage(Gtk.Overlay):
         info.set_valign(Gtk.Align.START)
         info.set_size_request(self._COVER_PX, 120)
         self._info = info
-        self._track_label = Gtk.Label(label="")
-        self._track_label.add_css_class("np-track-name")
-        self._track_label.set_justify(Gtk.Justification.CENTER)
-        self._track_label.set_wrap(True)
-        self._track_label.set_lines(2)          # 最多 2 行，超出省略
-        self._track_label.set_ellipsize(3)      # Pango.EllipsizeMode.END
-        self._track_label.set_valign(Gtk.Align.START)
-        self._artist_label = Gtk.Label(label="")
-        self._artist_label.add_css_class("np-secondary")
-        self._artist_label.set_justify(Gtk.Justification.CENTER)
-        self._artist_label.set_ellipsize(3)
-        self._artist_label.set_valign(Gtk.Align.START)
+        # 歌名 / 歌手：超长时跑马灯循环滚动（MarqueeLabel），
+        # 不再换行截断；hexpand 占满 info 宽度（其 natural 宽度为 0，
+        # 不会撑宽父容器）。
+        self._track_label = MarqueeLabel("", css_classes=["np-track-name"])
+        self._track_label.set_hexpand(True)
+        self._track_label.set_halign(Gtk.Align.FILL)
+        self._artist_label = MarqueeLabel("", css_classes=["np-secondary"])
+        self._artist_label.set_hexpand(True)
+        self._artist_label.set_halign(Gtk.Align.FILL)
         # 音频技术信息（格式 / 采样率 / 位深 / 声道 / 码率）
         self._format_label = Gtk.Label(label="")
         self._format_label.add_css_class("np-secondary")
@@ -521,6 +519,7 @@ class NowPlayingPage(Gtk.Overlay):
         纹理由后台线程用 make_blurred_bg 生成好，主线程只 set_paintable。
         dark: True/False 显式指定背景明暗（切换前景色）；None 时不动。
         """
+        self._bg_tex = texture
         try:
             self._bg_picture.set_paintable(texture)
         except Exception:

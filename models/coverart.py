@@ -856,7 +856,7 @@ def _round_corners_to_png(square, radius: int) -> bytes:
 
 def make_blurred_bg(image_bytes: bytes, out_w: int = 640, out_h: int = 480,
                     darken: float = 0.0, blur_px: int = 24,
-                    lighten: float = 0.28) -> bytes | None:
+                    lighten: float = 0.28, min_seed: int = 12) -> bytes | None:
     """用封面生成「模糊 + 遮罩」的背景图（Apple Music 风格）。
 
     做法：
@@ -880,7 +880,9 @@ def make_blurred_bg(image_bytes: bytes, out_w: int = 640, out_h: int = 480,
         if w <= 0 or h <= 0:
             return None
 
-        seed_dim = max(12, min(int(blur_px), 24))
+        # 模糊强度：先缩到 seed_dim 像素的小矩阵再放大（越小越糊）。
+        # blur_px 映射到 seed_dim，钳在 [min_seed, 24]；min_seed 越小越糊。
+        seed_dim = max(int(min_seed), min(int(blur_px), 24))
         scale = max(seed_dim / w, seed_dim / h)
         nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
         cur = pixbuf.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)

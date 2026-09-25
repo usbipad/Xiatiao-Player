@@ -13,7 +13,6 @@
 """
 from __future__ import annotations
 
-import cairo
 from typing import Callable
 
 from gi.repository import GLib, Gtk

@@ -49,6 +49,8 @@ def load_cover_assets(cover_raw: bytes | None,
         "dominant_rgb": None,
         "seekbar_rgb": None,
         "bg_dark": None,
+        "bg_png_path": None,
+        "popover_bg_path": None,
         "pending_cover_raw": None,
     }
     if not cover_raw:
@@ -101,6 +103,29 @@ def load_cover_assets(cover_raw: bytes | None,
                 from gi.repository import Gdk, GLib
                 out["bg_tex"] = Gdk.Texture.new_from_bytes(GLib.Bytes.new(png))
                 out["bg_dark"] = _is_dark_background(png, dark_threshold)
+                # 模糊图写到临时文件：供沉浸页音效气泡用 CSS background-image
+                # 直接引用（GSK 无法模糊 popover 后方，用同一张模糊图作气泡底，
+                # 与沉浸页视觉一致）。
+                try:
+                    import os as _os
+                    import tempfile as _tf
+                    _p = _os.path.join(_tf.gettempdir(),
+                                       "xiatiao-immersive-bg.png")
+                    with open(_p, "wb") as _fp:
+                        _fp.write(png)
+                    out["bg_png_path"] = _p
+                    # 气泡专用：最高模糊（seed_dim 很小 → 高度模糊的色块底）
+                    png_blur = make_blurred_bg(cover_raw, 640, 480,
+                                               darken=0.0, blur_px=4,
+                                               lighten=0.25, min_seed=4)
+                    if png_blur:
+                        _pb = _os.path.join(_tf.gettempdir(),
+                                            "xiatiao-popover-bg.png")
+                        with open(_pb, "wb") as _fp:
+                            _fp.write(png_blur)
+                        out["popover_bg_path"] = _pb
+                except Exception:
+                    out["bg_png_path"] = None
         except Exception:
             out["bg_tex"] = None
 

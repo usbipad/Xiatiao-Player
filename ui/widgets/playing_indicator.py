@@ -11,7 +11,6 @@ from __future__ import annotations
 import math
 import random
 
-import cairo
 from gi.repository import GLib, Gtk
 
 #: 全局「当前播放行键」；由播放列表页在切歌时设置。

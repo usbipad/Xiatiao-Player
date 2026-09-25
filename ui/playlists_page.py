@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, GLib, Gtk
 
 from core.i18n import _
 
@@ -22,6 +22,52 @@ def _section_title(text: str) -> Gtk.Label:
     lbl.add_css_class("heading")
     lbl.set_halign(Gtk.Align.START)
     return lbl
+
+
+def _popup_menu(parent, x, y, entries) -> None:
+    """在 (x,y) 处弹出菜单。entries: [(label, callback), ...]。
+
+    用 Gtk.Popover + 普通按钮直接连回调，不经 Gio 动作解析——
+    PopoverMenu + 动作组在部分容器下点击无反应（与歌曲列表同因）。
+    """
+    pop = Gtk.Popover()
+    pop.add_css_class("media-menu")
+    pop.set_parent(parent)
+    pop.set_has_arrow(False)
+    pop.set_halign(Gtk.Align.START)
+    rect = Gdk.Rectangle()
+    rect.x = int(x)
+    rect.y = int(y)
+    rect.width = 1
+    rect.height = 1
+    pop.set_pointing_to(rect)
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+    box.set_margin_top(6)
+    box.set_margin_bottom(6)
+    box.set_margin_start(6)
+    box.set_margin_end(6)
+    for label, cb in entries:
+        btn = Gtk.Button()
+        btn.add_css_class("flat")
+        btn.set_halign(Gtk.Align.FILL)
+        lbl = Gtk.Label(label=label)
+        lbl.set_xalign(0.0)
+        lbl.set_hexpand(True)
+        btn.set_child(lbl)
+
+        def _cb(_b, _fn=cb):
+            pop.popdown()
+            try:
+                _fn()
+            except Exception:
+                pass
+
+        btn.connect("clicked", _cb)
+        box.append(btn)
+    pop.set_child(box)
+    pop.connect("closed", lambda p: p.unparent())
+    pop.popup()
 
 
 def _row_to_track(r: dict) -> Optional[TrackItem]:
@@ -282,32 +328,14 @@ class PlaylistsPage(Gtk.Box):
             return None
 
     def _card_menu(self, box, pl: dict, x: float, y: float) -> None:
-        menu = Gio.Menu()
-        menu.append(_("播放"), "card.play")
-        menu.append(_("重命名…"), "card.rename")
-        menu.append(_("删除歌单"), "card.delete")
-        pop = Gtk.PopoverMenu.new_from_model(menu)
-        pop.add_css_class("media-menu")
-        pop.set_parent(box)
-        pop.set_has_arrow(False)
-        rect = Gdk.Rectangle()
-        rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
-        pop.set_pointing_to(rect)
-        ag = Gio.SimpleActionGroup()
-        a0 = Gio.SimpleAction.new("play", None)
-        a0.connect("activate", lambda *_: self._play_playlist(pl.get("id")))
-        a1 = Gio.SimpleAction.new("rename", None)
-        a1.connect("activate", lambda *_: self._rename_playlist(pl.get("id"), pl.get("name")))
-        a2 = Gio.SimpleAction.new("delete", None)
-        a2.connect("activate", lambda *_: self._delete_playlist(pl.get("id"), pl.get("name")))
-        ag.add_action(a0)
-        ag.add_action(a1)
-        ag.add_action(a2)
-        box.insert_action_group("card", ag)
-        # 关闭即解父：临时 popover 若不 unparent，父控件（卡片）销毁时
-        # GTK 会访问已释放的 popover → SIGSEGV in gtk_widget_unparent()。
-        pop.connect("closed", lambda p: p.unparent())
-        pop.popup()
+        # 用 Gtk.Popover + 按钮直接连回调，不经 Gio 动作解析
+        # （与歌曲列表右键一致：PopoverMenu + 动作组在部分场景点击无反应）。
+        entries = [
+            (_("播放"), lambda: self._play_playlist(pl.get("id"))),
+            (_("重命名…"), lambda: self._rename_playlist(pl.get("id"), pl.get("name"))),
+            (_("删除歌单"), lambda: self._delete_playlist(pl.get("id"), pl.get("name"))),
+        ]
+        _popup_menu(box, x, y, entries)
 
     # ---- 交互 ----
     def _play_all(self) -> None:
@@ -327,26 +355,8 @@ class PlaylistsPage(Gtk.Box):
     def _on_blank_right_click(self, gesture, _n, x, y) -> None:
         if self._stack.get_visible_child_name() != "cards":
             return
-        menu = Gio.Menu()
-        menu.append(_("新建歌单"), "pl.new")
-        pop = Gtk.PopoverMenu.new_from_model(menu)
-        pop.add_css_class("media-menu")
-        pop.set_parent(self._flow)
-        pop.set_has_arrow(False)
-        rect = Gdk.Rectangle()
-        rect.x = int(x)
-        rect.y = int(y)
-        rect.width = 1
-        rect.height = 1
-        pop.set_pointing_to(rect)
-        ag = Gio.SimpleActionGroup()
-        a = Gio.SimpleAction.new("new", None)
-        a.connect("activate", lambda *_: self._create_playlist())
-        ag.add_action(a)
-        self._flow.insert_action_group("pl", ag)
-        # 关闭即解父（同上）：避免父控件销毁时访问已释放 popover 而崩溃。
-        pop.connect("closed", lambda p: p.unparent())
-        pop.popup()
+        _popup_menu(self._flow, x, y,
+                    [(_("新建歌单"), self._create_playlist)])
 
     # ---- 操作 ----
     def _create_playlist(self) -> None:

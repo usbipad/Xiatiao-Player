@@ -1594,11 +1594,13 @@ class MainWindow(Adw.ApplicationWindow):
         # 不能在后台线程落盘——快速切歌时旧线程晚到会覆盖新封面。
         GLib.idle_add(self._apply_track_assets, token, cover_panel_tex, cover_np_tex,
                       lyrics, rg_gain, bg_rgb, seekbar_rgb, bg_tex, bg_dark,
-                      cover_raw, main_bg_rgb, assets.get("dominant_rgb"))
+                      cover_raw, main_bg_rgb, assets.get("dominant_rgb"),
+                      assets.get("bg_png_path"), assets.get("popover_bg_path"))
 
     def _apply_track_assets(self, token: int, cover_panel_tex, cover_np_tex, lyrics, rg_gain,
                             bg_rgb=None, seekbar_rgb=None, bg_tex=None, bg_dark=None,
-                            mpris_cover_raw=None, main_bg_rgb=None, dominant_rgb=None) -> bool:
+                            mpris_cover_raw=None, main_bg_rgb=None, dominant_rgb=None,
+                            bg_png_path=None, popover_bg_path=None) -> bool:
         """主线程：应用后台已建好的 GdkTexture / 歌词 / ReplayGain。
 
         封面纹理在后台线程已解码完成，这里只 set_paintable，几乎零耗时。
@@ -1622,6 +1624,10 @@ class MainWindow(Adw.ApplicationWindow):
             self.now_playing.set_cover_texture(cover_np_tex, bg_rgb, seekbar_rgb)
             # 沉浸页背景：封面模糊图铺满（None 时清空 → 回退纯色背景）
             self.now_playing.set_bg_texture(bg_tex, bg_dark)
+            # 记录模糊图路径/明暗，供沉浸页音效气泡作背景
+            # 气泡用专用「超糊」图（比沉浸页背景更糊）。
+            self._immersive_bg_path = popover_bg_path or bg_png_path
+            self._immersive_bg_dark = bg_dark
             # 主界面背景跟随封面（独立开关，用 main_bg_rgb，不受沉浸页模糊开关影响）
             self._current_bg_rgb = main_bg_rgb
             # 缓存封面主色：系统切明暗时据此重算背景（纯计算，不重新解码封面）
@@ -2856,8 +2862,12 @@ class MainWindow(Adw.ApplicationWindow):
         try:
             fn = getattr(self.player_panel, "_open_effect_dialog", None)
             if callable(fn):
-                if anchor is None:
-                    fn()
+                # 沉浸页打开时，用沉浸页的模糊封面图作气泡背景
+                # （与沉浸页视觉一致；无模糊图时回退主界面背景色）。
+                path = getattr(self, "_immersive_bg_path", None)
+                dark = getattr(self, "_immersive_bg_dark", None)
+                if path and anchor is not None:
+                    fn(anchor=anchor, bg_image_path=path, bg_dark=dark)
                 else:
                     fn(anchor=anchor)
         except Exception:
