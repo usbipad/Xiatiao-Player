@@ -35,6 +35,52 @@ def _fmt_seconds(seconds: float) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
+def _popup_menu(parent, x, y, entries) -> None:
+    """在 (x,y) 处弹出菜单。entries: [(label, callback), ...]。
+
+    用 Gtk.Popover + 普通按钮直接连回调，不经 Gio 动作解析——
+    PopoverMenu + 动作组在部分容器下点击无反应（与歌单/列表同因）。
+    """
+    pop = Gtk.Popover()
+    pop.add_css_class("media-menu")
+    pop.set_parent(parent)
+    pop.set_has_arrow(False)
+    pop.set_halign(Gtk.Align.START)
+    rect = Gdk.Rectangle()
+    rect.x = int(x)
+    rect.y = int(y)
+    rect.width = 1
+    rect.height = 1
+    pop.set_pointing_to(rect)
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+    box.set_margin_top(6)
+    box.set_margin_bottom(6)
+    box.set_margin_start(6)
+    box.set_margin_end(6)
+    for label, cb in entries:
+        btn = Gtk.Button()
+        btn.add_css_class("flat")
+        btn.set_halign(Gtk.Align.FILL)
+        lbl = Gtk.Label(label=label)
+        lbl.set_xalign(0.0)
+        lbl.set_hexpand(True)
+        btn.set_child(lbl)
+
+        def _cb(_b, _fn=cb):
+            pop.popdown()
+            try:
+                _fn()
+            except Exception:
+                pass
+
+        btn.connect("clicked", _cb)
+        box.append(btn)
+    pop.set_child(box)
+    pop.connect("closed", lambda p: p.unparent())
+    pop.popup()
+
+
 class PlayerPanel(Gtk.Box):
     """左侧播放器面板。
 
@@ -457,35 +503,12 @@ class PlayerPanel(Gtk.Box):
             return
 
         def on_right_click(gesture, n_press, x, y):
-            menu = Gio.Menu()
-            menu.append(_("提升到下一首"), "qrow.promote")
-            menu.append(_("从列表丢弃"), "qrow.discard")
-            popover = Gtk.PopoverMenu.new_from_model(menu)
-            popover.add_css_class("media-menu")
-            popover.set_parent(row)
-            popover.set_has_arrow(False)
-            popover.set_halign(Gtk.Align.START)
-            rect = Gdk.Rectangle()
-            rect.x = int(x)
-            rect.y = int(y)
-            rect.width = 1
-            rect.height = 1
-            popover.set_pointing_to(rect)
-            # 动作组：作用于本行曲目
-            ag = Gio.SimpleActionGroup()
-
-            def _mk(name, action_name):
-                a = Gio.SimpleAction.new(name, None)
-                a.connect("activate", lambda *_: self._on_queue_action(action_name, track))
-                ag.add_action(a)
-
-            _mk("promote", "promote")
-            _mk("discard", "discard")
-            row.insert_action_group("qrow", ag)
-            # 关闭即解父：临时 popover 若不 unparent，父控件（队列行）销毁时
-            # GTK 会访问已释放的 popover → SIGSEGV in gtk_widget_unparent()。
-            popover.connect("closed", lambda p: p.unparent())
-            popover.popup()
+            # 用 Gtk.Popover + 按钮直接连回调，不经 Gio 动作解析
+            # （PopoverMenu + 动作组在部分容器下点击无反应，与歌单/列表同因）。
+            _popup_menu(row, x, y, [
+                (_("提升到下一首"), lambda: self._on_queue_action("promote", track)),
+                (_("从列表丢弃"), lambda: self._on_queue_action("discard", track)),
+            ])
 
         g = Gtk.GestureClick()
         g.set_button(3)
