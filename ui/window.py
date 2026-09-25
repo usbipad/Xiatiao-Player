@@ -879,6 +879,14 @@ class MainWindow(Adw.ApplicationWindow):
             page.set_filter_text(text)
 
     def _switch_page(self, key: str) -> None:
+        # 切页即清空搜索框：各页搜索互不干扰。
+        # 放在唯一入口 _switch_page（而非 _on_nav_clicked），未来新增切页
+        # 路径也自动生效。set_text("") 触发 search-changed → _on_global_search，
+        # 此刻 _active_source 仍是旧页，先清旧页过滤；随后 _fill_page_data
+        # 以空词同步新页。
+        se = getattr(self, "_search_entry", None)
+        if se is not None and se.get_text():
+            se.set_text("")
         # 只做「立即」的事：切页 + 高亮导航（不阻塞）
         self._active_source = key
         self.stack.set_visible_child_name(key)
