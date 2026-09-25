@@ -1893,10 +1893,14 @@ class MainWindow(Adw.ApplicationWindow):
             log.debug("初始化 DSP 失败: %s", exc)
 
     def _on_panel_tab(self, key: str) -> None:
-        """面板 Tab 切换：queue 时刷新队列数据（切到队列时强制重建一次）。"""
+        """面板 Tab 切换：切到 queue 时刷新队列（靠指纹去重，不强制重建）。
+
+        之前用 force=True 会在切页动画期间重建整列表（清空+逐行新建+异步
+        加载封面），造成明显卡顿。改为不强制：队列组成没变时
+        _refresh_queue_view 只更新当前项高亮，不动行，切页顺滑。
+        """
         if key == "queue":
-            self._queue_ids = None
-            self._refresh_queue_view(force=True)
+            self._refresh_queue_view()
 
     def _on_current_changed_queue(self, *_args) -> None:
         """切歌时刷新队列列表（高亮当前项）。"""
@@ -2428,9 +2432,15 @@ class MainWindow(Adw.ApplicationWindow):
         # 否则这些同步开销会让「点击 → 动画开始」之间出现可感知的停顿。
         self._main_stack.set_visible_child_name("nowplaying")
         if track is not None:
-            # 沉浸页背景/进度条色：切歌时已随封面设过；此处仅兜底补算，
-            # 颜色未变时内部会直接返回，不再解码、不再重解析 CSS。
+            # 沉浸页背景/进度条色：切歌时已随封面设过；此处仅兜底补算。
             self._apply_cover_color_for_now_playing()
+        # 关键：进入沉浸页后强制重应用一次前景明暗（黑/白）。
+        # 首次进入时，切歌阶段的明暗应用可能发生在栈切过来之前，导致
+        # 前景/控件仍是默认色；这里补一次，确保首进即正确。
+        try:
+            self.now_playing.reapply_dark_bg()
+        except Exception:
+            pass
         # 进入沉浸页：启动可视化采集 + 渲染（主界面期间不跑）
         try:
             if getattr(self, "_viz_pipeline", None) is not None and \

@@ -406,6 +406,8 @@ class PlayerPanel(Gtk.Box):
         tab_box.set_margin_bottom(4)
         self._tab_box = tab_box
         self._tab_buttons = []
+        # key → 按钮，供切换时更新 nav-active 选中态。
+        self._tab_btn_by_key = {}
         for label, icon, key in (
             ("Player", "audio-x-generic-symbolic", "player"),
             ("Lyrics", "xiatiao-lyrics-symbolic", "lyrics"),
@@ -421,9 +423,12 @@ class PlayerPanel(Gtk.Box):
             btn.connect("clicked", self._on_tab_clicked, key)
             tab_box.append(btn)
             self._tab_buttons.append(btn)
+            self._tab_btn_by_key[key] = btn
         # 固定到面板底部（在滚动区之外）。
         self.append(tab_box)
         self._active_tab = "player"
+        # 初始高亮 Player 页。
+        self._set_active_tab("player")
 
         # 播放模式状态
         self._shuffle_on = False
@@ -619,9 +624,21 @@ class PlayerPanel(Gtk.Box):
             except Exception:
                 pass
 
+    def _set_active_tab(self, key: str) -> None:
+        """更新底部 Tab 的选中高亮（nav-active 类）。"""
+        for k, b in getattr(self, "_tab_btn_by_key", {}).items():
+            try:
+                if k == key:
+                    b.add_css_class("nav-active")
+                else:
+                    b.remove_css_class("nav-active")
+            except Exception:
+                pass
+
     def _on_tab_clicked(self, btn, key: str) -> None:
         """底部 Tab 切换：Player 封面 / Lyrics 歌词 / Queue 队列。"""
         self._active_tab = key
+        self._set_active_tab(key)
         if key == "lyrics":
             self._cover_area.set_visible_child_name("lyrics")
             self._cover_area.set_vexpand(True)

@@ -51,6 +51,11 @@ class NowPlayingPage(Gtk.Overlay):
         self._bg_provider_installed = False
         # 当前封面显示尺寸（响应式算出；切歌时用它，而非固定 _COVER_PX）。
         self._current_cover_px = self._COVER_PX
+        # 模糊背景图的真实明暗（供进入沉浸页时重算前景）；None=无模糊图。
+        self._bg_tex_dark = None
+        # 当前背景色 / 是否封面色（供前景明暗判定）。
+        self._bg_color_rgb = None
+        self._bg_is_cover_color = False
 
         # ============ 背景：封面模糊图拉伸铺满（Apple Music 风格）============
         # 用 Picture 铺满整页；模糊+暗化在后台线程生成，主线程只设纹理。
@@ -527,7 +532,9 @@ class NowPlayingPage(Gtk.Overlay):
         if texture is None:
             # 清空背景图时，纯色回退由 _apply_bg_color 决定明暗
             return
+        # 记录模糊图的真实明暗（供进入沉浸页时重算前景）。
         if dark is not None:
+            self._bg_tex_dark = bool(dark)
             self._set_dark_bg(bool(dark))
 
     def set_cover_texture(self, texture, bg_rgb=None, seekbar_rgb=None) -> None:
@@ -636,6 +643,8 @@ class NowPlayingPage(Gtk.Overlay):
         # 记录背景来源：True=封面色（前景按封面），False=主题色（前景跟系统）。
         # refresh_dark_bg 据此决定系统明暗变化时是否重算前景。
         self._bg_is_cover_color = bool(color)
+        # 记录当前背景 RGB，供进入沉浸页时重算前景明暗（reapply_dark_bg）。
+        self._bg_color_rgb = tuple(color) if color else None
         if color:
             r, g, b = color
             bg_css = f"rgb({r}, {g}, {b})"
@@ -686,6 +695,32 @@ class NowPlayingPage(Gtk.Overlay):
         if getattr(self, "_bg_is_cover_color", False):
             return
         self._set_dark_bg(self._current_theme_dark())
+
+    def reapply_dark_bg(self) -> None:
+        """进入沉浸页时无条件重算一次前景明暗。
+
+        首次进入时，切歌阶段的前景应用可能早于栈切过来，导致控件仍是
+        默认色（封面暗却显示黑字/黑图标）。这里按当前背景重新判定：
+        - 背景是封面色：按封面主色判定；
+        - 背景是主题色：按系统明暗判定。
+        """
+        try:
+            # 优先用「模糊背景图的真实明暗」——沉浸页实际显示的是模糊图，
+            # 而非提亮后的纯色，故判定应以模糊图为准（否则深色封面的歌
+            # 因提亮纯色判成浅色，前景不切白）。
+            tex_dark = getattr(self, "_bg_tex_dark", None)
+            if tex_dark is not None:
+                self._set_dark_bg(bool(tex_dark))
+                return
+            # 无模糊图（关闭背景模糊）：按封面主色纯色判定。
+            if getattr(self, "_bg_is_cover_color", False):
+                col = getattr(self, "_bg_color_rgb", None)
+                if col:
+                    self._set_dark_bg(self._is_dark(*col))
+                    return
+            self._set_dark_bg(self._current_theme_dark())
+        except Exception:
+            pass
 
     @staticmethod
     def _is_dark(r: int, g: int, b: int, threshold: float = 0.65) -> bool:
