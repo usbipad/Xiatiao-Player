@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import List, Optional
+from typing import List
 
-from gi.repository import GLib, GObject
+from gi.repository import GLib
 
 from config.settings import SUPPORTED_EXTENSIONS, get_config
 from core.tasks import run_async

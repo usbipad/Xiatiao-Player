@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import math
-from typing import List, Optional
+from typing import List
 
 import cairo
 from gi.repository import Gtk

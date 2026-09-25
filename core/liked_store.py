@@ -11,8 +11,7 @@ import logging
 import sqlite3
 import threading
 import time
-from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from ._base_store import SqliteStore, track_key
 

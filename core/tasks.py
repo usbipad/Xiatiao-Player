@@ -20,7 +20,6 @@ GTK 不是线程安全的：所有 UI 更新必须在主线程（GLib 主循环�
 from __future__ import annotations
 
 import logging
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 

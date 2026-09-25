@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Callable
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
@@ -63,6 +63,7 @@ class PlayerPanel(Gtk.Box):
         on_queue_activate: Callable[[object], None] | None = None,
         on_queue_action: Callable[[str, object], None] | None = None,
         on_add_queue: Callable[[], None] | None = None,
+        on_cast: Callable[[], None] | None = None,
     ) -> None:
         self._on_add_queue = on_add_queue
         self._on_queue_activate = on_queue_activate
@@ -138,6 +139,7 @@ class PlayerPanel(Gtk.Box):
         self._on_like = on_like
         self._on_effect = on_effect
         self._on_effect_settings = on_effect_settings
+        self._on_cast = on_cast
 
         # ---- 封面 / 歌词 切换区（底部 Tab：Player 显示封面，Lyrics 显示歌词）----
         self._cover_area = Gtk.Stack()
@@ -336,6 +338,14 @@ class PlayerPanel(Gtk.Box):
         self._add_queue_btn.set_tooltip_text(_("添加到歌单"))
         self._add_queue_btn.connect("clicked", lambda *_: self._on_add_queue and self._on_add_queue())
         func_box.append(self._add_queue_btn)
+
+        # 投送：把当前曲目推送到局域网 DLNA 设备（音箱/电视）播放。
+        self._cast_btn = Gtk.Button(icon_name="xiatiao-cast-symbolic")
+        self._cast_btn.add_css_class("flat")
+        self._cast_btn.add_css_class("np-skip-btn")
+        self._cast_btn.set_tooltip_text(_("投送到设备"))
+        self._cast_btn.connect("clicked", lambda *_: self._on_cast and self._on_cast())
+        func_box.append(self._cast_btn)
 
         self._func_box = func_box
         inner.append(func_box)

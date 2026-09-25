@@ -9,6 +9,65 @@
 
 ---
 
+## 0.1 更新（2026-09-25）—— DLNA 投送（推送端，标准实现）
+
+本轮新增 **DLNA 推送端（DMC 控制器）**：把本地曲目推送到局域网 DLNA
+设备（音箱/电视）播放，本机不放（B1 模式）。入口在播放面板的「投送」按钮。
+
+### 组成（新增文件）
+- `core/dlna_push.py`：SSDP 发现渲染器 + SOAP 控制 + HTTP 文件服务。
+- `ui/cast_dialog.py`：设备选择对话框（扫描 + 选择 + 停止投送）。
+
+### 关键机制（全部标准 DLNA，无 hack）
+- **SSDP**：组播 `239.255.255.250:1900` 发 M-SEARCH，收集 MediaRenderer，
+  拉取设备描述 XML 提取 friendlyName + AVTransport 控制 URL。
+- **HTTP 文件服务**：把本地音频暴露为 `http://<本机IP>:8201/file?path=...`，
+  供渲染器拉流（渲染器无法访问本机文件系统）。HTTP/1.1 + 标准 Range 支持。
+  端口 8201 起，占用则递增。
+- **SOAP 控制**：SetAVTransportURI / Play / Pause / Stop / Seek / GetPositionInfo。
+- **seek**：标准 `Seek(REL_TIME)`，由渲染器自行跳转（本机不碰数据流）。
+- **进度**：投送模式后台线程每秒查 `GetPositionInfo`，用设备上报的位置/时长。
+- **播放/暂停状态由本机操作权威维护**，轮询只同步进度、不同步状态。
+
+### 踩坑记录（重要）
+- **UI 状态被本机 stop 事件覆盖（真 bug）**：投送开始时调 `player.stop()`，
+  本机后端异步回 `state=stopped`，`_on_play_state_changed` 会把按钮设成
+  「未播放」，与「设备在放」不一致 → 点击方向错乱（表现为「要按两次」）。
+  修复：投送模式下 `_on_play_state_changed` 直接 return（忽略本机后端 state）。
+- **暂停后直接 Play 不恢复**：部分设备（小爱）暂停后不重新拉流，直接 Play
+  可能静默。`resume()` 用 **`Seek(当前位置) + Play`**（标准做法）触发设备
+  重新定位，确保恢复出声。
+- **seek 不能按字节切**：曾尝试重推带字节偏移的 URI / 服务端转码流，均不可行
+  或过于复杂。最终回归标准 `Seek(REL_TIME)` 命令，简洁且标准设备完美工作。
+- **PlayerCore 缺转发方法**：新增命令务必在 `player_core.py` 加转发（早期
+  `set_dlna` 因缺转发静默失败）。
+
+### 接收端已移除
+早期实现过 DLNA **接收端（DMR）**（后端 `audio_backend_rs/src/dlna.rs`），
+后因定位为「播放器 + 推送」而**整体删除**：后端 `dlna.rs`、`SetDlna`/
+`GetDlnaStatus` 协议、`pending_events` 事件机制、设置页 DLNA 页、
+`dlna_*` 配置项、`player_core`/`rust_backend` 相关方法均已清理。
+当前 DLNA 仅剩**推送端**（Python 侧 `core/dlna_push.py`）。
+
+### 投送图标
+`data/icons/hicolor/scalable/actions/xiatiao-cast-symbolic.svg`（自定义
+投屏符号：左下信号弧 + 右下屏幕）。播放面板「投送」按钮用它。
+
+### 其它修复（同轮）
+- **歌曲列表右键菜单点击无反应**：`Gtk.PopoverMenu.new_from_model` 在
+  ColumnView 单元格场景下**无法可靠解析** Gio 动作组（试过挂
+  column_view / popover / child 三种位置均失败）。改为 **`Gtk.Popover` +
+  普通 `Gtk.Button` 直接连回调**（`ui/pages/song_list.py` 的
+  `_popup_track_menu`），彻底绕开 Gio 动作查找。
+  **教训**：ColumnView 单元格的右键菜单不要依赖 `new_from_model` + 动作组。
+- **死代码清理**：AST + grep 逐个核实后，删除 13 个文件的未使用导入
+  （`player_core`/`playlist`/`tasks`/`camilla`/`history_store`/`liked_store`/
+  `playlist_store`/`track`/`providers.local`/`media_grid`/`player_panel`/
+  `settings_dialog`/`viz_renderer`）。注意 `ruff.toml` 的 `ignore=["F401"]`
+  是为保留兼容性重导出，清理时须逐个确认而非通杀。
+
+---
+
 ## 0. 最近更新（2026-09-20）
 
 本轮聚焦 **DSD 直通/软解** 与 **UI 响应式** 两大块。要点：
@@ -116,11 +175,11 @@
 
 - main.py：应用入口（GTK4 Application）
 - config/settings.py：配置读写（~/.config/xiatiao/config.json）
-- core/：核心逻辑（rust_backend / player_core / playlist / camilla / dsp_store / eq_presets / 各 store / viz / i18n）
+- core/：核心逻辑（rust_backend / player_core / playlist / camilla / dsp_store / eq_presets / 各 store / viz / i18n / dlna_push DLNA 推送）
 - models/：数据模型（track / coverart / lyrics / replaygain）
 - providers/：音乐来源（base / local 本地曲库）
 - services/：系统集成（mpris / tray / shortcuts / track_assets）
-- ui/：GTK4 界面（window / player_panel / settings_dialog / advanced_dsp_window / effect_page / 各页面 / widgets）
+- ui/：GTK4 界面（window / player_panel / settings_dialog / advanced_dsp_window / effect_page / cast_dialog 投送对话框 / 各页面 / widgets）
 - data/：icons（应用图标）/ desktop 文件
 - audio_backend_rs/：Rust 音频后端（见第 5 节）
 - debian/：Debian 打包配置
@@ -190,6 +249,7 @@ config.json 中与音频相关的关键项：
 - bbe.rs / tube.rs / reverb.rs / oversample.rs：音色/混响/超采样。
 - deps.rs：外部程序查找（ffmpeg/pw-cat）。
 - ipc.rs：IPC 辅助。
+（DLNA 推送端在 Python 侧 `core/dlna_push.py`；后端 Rust 无 DLNA 代码。）
 
 ### 5.1 输出后端选择
 

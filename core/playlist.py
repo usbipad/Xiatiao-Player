@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from gi.repository import GObject
 
-from models import TrackItem, SOURCE_LOCAL
+from models import TrackItem
 
 # 循环模式
 REPEAT_OFF = 0       # 不循环：到末尾停

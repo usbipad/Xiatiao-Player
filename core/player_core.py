@@ -16,8 +16,6 @@ import logging
 
 from gi.repository import GObject
 
-from .audio_backend import PlayerState
-
 log = logging.getLogger(__name__)
 
 #: 当前使用的后端工厂：独立 Rust 进程（core/rust_backend.py）。
@@ -95,6 +93,7 @@ class PlayerCore(GObject.Object):
     def _fwd_backend_lost(self, _b, message: str) -> None:
         self.emit("backend-lost", message)
 
+
     # ---- 播放控制（转发后端） ----
     def play_file(self, path: str) -> bool:
         return self._backend.play_file(path)
@@ -165,6 +164,7 @@ class PlayerCore(GObject.Object):
         fn = getattr(self._backend, "set_output_device", None)
         if callable(fn):
             fn(name)
+
 
     def list_output_devices(self) -> list:
         """枚举可用的 ALSA 硬件输出设备。

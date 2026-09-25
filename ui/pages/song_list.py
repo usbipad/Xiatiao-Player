@@ -31,54 +31,33 @@ def _build_track_menu(column_view: Gtk.ColumnView, actions: dict):
 
     ctx 用于在右键时记录当前曲目，菜单动作作用于它。
     """
-    menu = Gio.Menu()
-    menu.append(_("播放"), "row.play")
-    menu.append(_("下一首播放"), "row.play_next")
-    menu.append(_("添加到播放列表"), "row.append")
-    if actions.get("add_to_playlist"):
-        menu.append(_("添加到歌单…"), "row.add_to_playlist")
-    if actions.get("like"):
-        menu.append(_("喜欢 / 取消喜欢"), "row.like")
-    menu.append(_("复制歌名"), "row.copy")
-    if actions.get("search_artist"):
-        menu.append(_("查看歌手"), "row.search_artist")
-    menu.append(_("查看歌曲信息"), "row.info")
-    menu.append(_("复制文件路径"), "row.copy_path")
-    menu.append(_("在文件管理器中显示"), "row.reveal")
-    if actions.get("remove_from_list"):
-        menu.append(_("从列表移除"), "row.remove_from_list")
-    if actions.get("delete_file"):
-        menu.append(_("删除…"), "row.delete_file")
+    # 菜单项列表：(label, action_key)。
+    # 直接回调，不走 Gio 动作——ColumnView 单元格的 popover 无法可靠解析
+    # 挂在其祖先上的 Gio 动作组（菜单项会灰显 / 点击无反应）。
+    entries = []
 
-    state = {"track": None}
-    column_view._ctx_state = state
+    def _add(key, label):
+        if callable(actions.get(key)):
+            entries.append((label, key))
 
-    ag = Gio.SimpleActionGroup()
+    _add("play", _("播放"))
+    _add("play_next", _("下一首播放"))
+    _add("append", _("添加到播放列表"))
+    _add("add_to_playlist", _("添加到歌单…"))
+    _add("like", _("喜欢 / 取消喜欢"))
+    _add("copy", _("复制歌名"))
+    _add("search_artist", _("查看歌手"))
+    _add("info", _("查看歌曲信息"))
+    _add("copy_path", _("复制文件路径"))
+    _add("reveal", _("在文件管理器中显示"))
+    _add("remove_from_list", _("从列表移除"))
+    _add("delete_file", _("删除…"))
 
-    def _mk(name, fn):
-        if not callable(fn):
-            return
-        a = Gio.SimpleAction.new(name, None)
-        a.connect("activate", lambda *_: fn(state["track"]) if state["track"] else None)
-        ag.add_action(a)
-
-    _mk("play", actions.get("play"))
-    _mk("play_next", actions.get("play_next"))
-    _mk("append", actions.get("append"))
-    _mk("add_to_playlist", actions.get("add_to_playlist"))
-    _mk("copy", actions.get("copy"))
-    _mk("like", actions.get("like"))
-    _mk("search_artist", actions.get("search_artist"))
-    _mk("info", actions.get("info"))
-    _mk("copy_path", actions.get("copy_path"))
-    _mk("reveal", actions.get("reveal"))
-    _mk("remove_from_list", actions.get("remove_from_list"))
-    _mk("delete_file", actions.get("delete_file"))
-    column_view.insert_action_group("row", ag)
-    return menu, state
+    state = {"track": None, "actions": actions, "entries": entries}
+    return entries, state
 
 
-def _attach_cell_right_click(_factory, list_item, menu_model, ctx) -> None:
+def _attach_cell_right_click(_factory, list_item, menu_entries, ctx) -> None:
     """给单元格挂右键：在鼠标处弹出菜单（bind 阶段 child 已存在）。"""
     child = list_item.get_child()
     if child is None:
@@ -91,27 +70,62 @@ def _attach_cell_right_click(_factory, list_item, menu_model, ctx) -> None:
         if item is None:
             return
         ctx["track"] = item
-        popover = Gtk.PopoverMenu.new_from_model(menu_model)
-        popover.add_css_class("media-menu")
-        popover.set_parent(child)
-        popover.set_has_arrow(False)
-        popover.set_halign(Gtk.Align.START)
-        rect = Gdk.Rectangle()
-        rect.x = int(x)
-        rect.y = int(y)
-        rect.width = 1
-        rect.height = 1
-        popover.set_pointing_to(rect)
-        # 关闭即解父并销毁：临时 popover 若不 unparent，父控件（列表行）销毁时
-        # GTK 会访问已释放的 popover → SIGSEGV in gtk_widget_unparent()。
-        popover.connect("closed", lambda p: p.unparent())
-        popover.popup()
+        _popup_track_menu(child, x, y, ctx)
 
     g = Gtk.GestureClick()
     g.set_button(3)
     g.connect("pressed", on_right_click)
     child.add_controller(g)
     child._rclick = g
+
+
+def _popup_track_menu(parent, x, y, ctx) -> None:
+    """在 (x,y) 处弹出曲目菜单。
+
+    用 Gtk.Popover + 按钮直接连回调，不经 Gio 动作解析——ColumnView 单元格
+    的 popover 无法可靠解析挂在其祖先上的 Gio 动作组（菜单项点击无反应）。
+    """
+    entries = ctx.get("entries") or []
+    actions = ctx.get("actions") or {}
+    pop = Gtk.Popover()
+    pop.add_css_class("media-menu")
+    pop.set_parent(parent)
+    pop.set_has_arrow(False)
+    pop.set_halign(Gtk.Align.START)
+    rect = Gdk.Rectangle()
+    rect.x = int(x)
+    rect.y = int(y)
+    rect.width = 1
+    rect.height = 1
+    pop.set_pointing_to(rect)
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+    box.set_margin_top(6)
+    box.set_margin_bottom(6)
+    box.set_margin_start(6)
+    box.set_margin_end(6)
+    for label, key in entries:
+        btn = Gtk.Button()
+        btn.add_css_class("flat")
+        btn.set_halign(Gtk.Align.FILL)
+        lbl = Gtk.Label(label=label)
+        lbl.set_xalign(0.0)
+        lbl.set_hexpand(True)
+        btn.set_child(lbl)
+
+        def _cb(_b, _k=key):
+            pop.popdown()
+            fn = actions.get(_k)
+            if callable(fn) and ctx.get("track"):
+                fn(ctx["track"])
+
+        btn.connect("clicked", _cb)
+        box.append(btn)
+    pop.set_child(box)
+    # 关闭即解父：临时 popover 若不 unparent，父控件（列表行）销毁时
+    # GTK 会访问已释放的 popover → SIGSEGV in gtk_widget_unparent()。
+    pop.connect("closed", lambda p: p.unparent())
+    pop.popup()
 
 
 # ================================================================

@@ -265,6 +265,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_queue_activate=self._on_queue_activate,
             on_queue_action=self._on_queue_action,
             on_add_queue=self._on_add_current_to_playlist,
+            on_cast=self._on_cast_current,
         )
         # 主页音效按钮改为弹出模态对话框（6 个内置预设 + DSP 设置入口）
         self.player_panel.use_effect_dialog = True
@@ -1283,6 +1284,115 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self._on_add_tracks_to_playlist([track])
 
+    def _on_cast_current(self) -> None:
+        """投送当前曲目到局域网 DLNA 设备（弹出设备选择对话框）。"""
+        from .cast_dialog import CastDialog
+        track = self.playlist.current_track()
+        if track is None:
+            self._toast("当前没有播放曲目")
+            return
+        if not getattr(track, "filepath", ""):
+            self._toast("仅支持投送本地曲目")
+            return
+        try:
+            dlg = CastDialog(
+                self, track, on_toast=self._toast,
+                on_cast_started=self._on_cast_started,
+                on_cast_stopped=self._on_cast_stopped,
+            )
+            dlg.present(self)
+            self._cast_dlg = dlg
+        except Exception:
+            log.debug("打开投送对话框失败", exc_info=True)
+
+    def _on_cast_started(self) -> None:
+        """投送成功：进入投送模式，播放控制改道到远端设备。"""
+        self._dlna_casting = True
+        self._dlna_remote_playing = True
+        # 本机若正在播放，停掉（B1：本机不放）。
+        try:
+            self.player.stop()
+        except Exception:
+            pass
+        try:
+            self.player_panel.set_playing(True)
+            self.now_playing.set_playing(True)
+        except Exception:
+            pass
+        self._start_cast_poll()
+        self._toast("已进入投送模式：播放控制将发送到设备")
+
+    def _on_cast_stopped(self) -> None:
+        """停止投送：退出投送模式，控制恢复本机。"""
+        self._dlna_casting = False
+        self._dlna_remote_playing = False
+        self._stop_cast_poll()
+        try:
+            self.player_panel.set_playing(False)
+            self.now_playing.set_playing(False)
+        except Exception:
+            pass
+        self._toast("已退出投送模式")
+
+    def _start_cast_poll(self) -> None:
+        """启动投送位置轮询：每秒查询远端播放位置，更新进度条。"""
+        self._stop_cast_poll()
+        # 单独后台线程查询（SOAP 是阻塞网络调用），结果经 GLib.idle_add 回主线程。
+        import threading
+        stop_flag = threading.Event()
+        self._cast_poll_stop = stop_flag
+
+        def _loop():
+            while not stop_flag.is_set():
+                if not getattr(self, "_dlna_casting", False):
+                    break
+                try:
+                    from core.dlna_push import get_dlna_pusher
+                    pusher = get_dlna_pusher()
+                    # 仅同步进度；播放/暂停状态以本机操作为准，
+                    # 不让轮询覆盖（否则设备状态上报延迟会与本机意图
+                    # 打架，导致「点播放却发了暂停」的错乱）。
+                    info = pusher.get_position()
+                    if info:
+                        GLib.idle_add(self._apply_cast_position, info)
+                except Exception:
+                    pass
+                stop_flag.wait(1.0)
+
+        threading.Thread(target=_loop, daemon=True).start()
+
+    def _stop_cast_poll(self) -> None:
+        flag = getattr(self, "_cast_poll_stop", None)
+        if flag is not None:
+            try:
+                flag.set()
+            except Exception:
+                pass
+        self._cast_poll_stop = None
+
+    def _apply_cast_position(self, info: dict) -> bool:
+        """主线程：用远端查询到的位置/时长更新进度条。"""
+        if not getattr(self, "_dlna_casting", False):
+            return False
+        try:
+            pos = float(info.get("position", 0.0))
+            dur = float(info.get("duration", 0.0))
+        except Exception:
+            return False
+        # 标准 DLNA：进度直接采用设备上报的位置/时长（渲染器是权威）。
+        try:
+            self.player_panel.set_position(pos)
+            self.now_playing.set_position(pos)
+            if dur > 0:
+                self.player_panel.set_duration(dur)
+                self.now_playing.set_duration(dur)
+        except Exception:
+            pass
+        return False
+
+    # 注：不再用轮询同步播放/暂停状态（曾导致本机意图被设备延迟覆盖）。
+    # 播放/暂停/切歌状态一律由本机操作权威设置；轮询只负责进度。
+
     def _on_playlist_current_changed(self, _playlist, index: int) -> None:
         """当前曲目变化：协调 UI 更新、历史记录、播放启动、资产加载。"""
         track = self.playlist.current_track()
@@ -1292,8 +1402,41 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._update_now_playing_ui(track)
         self._record_play_history(track)
-        self._start_playback_if_needed(track, restoring)
+        # DLNA 投送模式：切歌时把新曲目推给远端设备，本机不播放。
+        if self._is_casting():
+            self._cast_track(track)
+        else:
+            self._start_playback_if_needed(track, restoring)
         self._dispatch_track_assets(track, restoring)
+
+    def _cast_track(self, track) -> None:
+        """把指定曲目推送到当前选中的 DLNA 设备。
+
+        保持当前播放/暂停状态：若处于暂停态，推完 URI 后立即暂停，
+        不强制出声；并同步播放按钮状态。
+        """
+        fp = getattr(track, "filepath", "") or ""
+        if not fp:
+            return
+        was_playing = bool(getattr(self, "_dlna_remote_playing", True))
+        try:
+            from core.dlna_push import get_dlna_pusher
+            pusher = get_dlna_pusher()
+            if pusher.current_device() is None:
+                return
+            # push() 内含 Play；暂停态时随后立即 Pause 收回。
+            pusher.push(fp, getattr(track, "title", "") or "",
+                        getattr(track, "artist", "") or "")
+            if not was_playing:
+                pusher.pause()
+            # 同步按钮：保持切歌前的播放/暂停状态。
+            try:
+                self.player_panel.set_playing(was_playing)
+                self.now_playing.set_playing(was_playing)
+            except Exception:
+                pass
+        except Exception:
+            log.debug("DLNA 投送切歌失败", exc_info=True)
 
     def _update_now_playing_ui(self, track) -> None:
         """同步两侧 UI 的曲目信息（轻量、立即响应）。"""
@@ -1579,7 +1722,33 @@ class MainWindow(Adw.ApplicationWindow):
     # ============================================================
     # 播放控制
     # ============================================================
+    def _is_casting(self) -> bool:
+        """当前是否处于 DLNA 投送模式（控制发给远端设备）。"""
+        return bool(getattr(self, "_dlna_casting", False))
+
     def _on_play_pause(self) -> None:
+        # DLNA 投送模式：控制发给远端设备（本机不放）。
+        if self._is_casting():
+            try:
+                from core.dlna_push import get_dlna_pusher
+                pusher = get_dlna_pusher()
+                # 状态完全由本机操作维护（轮询不再改它），方向判断可靠：
+                # 正在播放 → 本次暂停；已暂停 → 本次恢复。
+                is_playing = bool(getattr(self, "_dlna_remote_playing", True))
+                log.debug("[投送] 播放键: _dlna_remote_playing=%s → 发送 %s",
+                          is_playing, "Pause" if is_playing else "Play")
+                if is_playing:
+                    pusher.pause()
+                    new_state = False
+                else:
+                    pusher.resume()
+                    new_state = True
+                self._dlna_remote_playing = new_state
+                self.player_panel.set_playing(new_state)
+                self.now_playing.set_playing(new_state)
+            except Exception:
+                log.debug("DLNA 投送播放/暂停失败", exc_info=True)
+            return
         state = self.player.state()
         if state == "playing":
             self.player.pause()
@@ -1600,6 +1769,17 @@ class MainWindow(Adw.ApplicationWindow):
         self.playlist.next()
 
     def _on_seek(self, seconds: float) -> None:
+        # DLNA 投送模式：seek 发给远端设备（AVTransport Seek）。
+        if self._is_casting():
+            try:
+                from core.dlna_push import get_dlna_pusher
+                get_dlna_pusher().seek(seconds)
+                # 远端进度无法实时回读，本地进度条先跳到目标位置。
+                self.player_panel.set_position(seconds)
+                self.now_playing.set_position(seconds)
+            except Exception:
+                log.debug("DLNA 投送 seek 失败", exc_info=True)
+            return
         self.player.seek_seconds(seconds)
 
     def _on_volume(self, value: float) -> None:
@@ -2563,6 +2743,11 @@ class MainWindow(Adw.ApplicationWindow):
             self.player.stop()
 
     def _on_play_state_changed(self, _player, state: str) -> None:
+        # 投送模式下，本机后端不是播放源（已 stop），其后端的 state 事件
+        # （如 stop 触发的 stopped）不应覆盖投送按钮状态——否则设备在放、
+        # 按钮却显示未播放。投送状态由 _cast_track/_on_play_pause 自行维护。
+        if self._is_casting():
+            return
         playing = state == "playing"
         self.player_panel.set_playing(playing)
         self.now_playing.set_playing(playing)

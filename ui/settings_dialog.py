@@ -5,7 +5,7 @@ import logging
 import os
 from typing import List
 
-from gi.repository import Adw, Gdk, Gio, Gtk
+from gi.repository import Adw, Gdk, Gtk
 
 from config.settings import get_config
 from core.i18n import _, set_language

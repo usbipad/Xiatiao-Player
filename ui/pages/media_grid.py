@@ -9,7 +9,7 @@ from gi.repository import Gdk, GLib, Gtk
 
 from core.i18n import _
 from core.tasks import run_async
-from models import TrackItem, extract_cover, make_square_cover_bytes
+from models import extract_cover, make_square_cover_bytes
 
 from .common import MISS, cache_get, cache_put
 
