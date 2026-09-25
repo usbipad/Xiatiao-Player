@@ -215,13 +215,19 @@ class PlayerPanel(Gtk.Box):
         info_box.set_margin_top(4)
         info_box.set_margin_bottom(2)
         info_box.set_vexpand(False)
+        # 宽度对齐封面（280），不让跑马灯铺满整个面板宽：
+        # hexpand 的 MarqueeLabel 会占满父容器，若父容器是整面板宽，
+        # 长文本滚动区域过宽、观感松垮。限宽后与封面同宽，更紧凑。
+        info_box.set_halign(Gtk.Align.CENTER)
         # 歌名 / 艺术家用跑马灯标签：文本超长时循环滚动完整展示，
         # 且水平 natural 宽度恒为 0，绝不撑宽面板（此前长艺术家名
         # 会把面板顶宽，正方形封面被连带顶大）。
         self.label_track = MarqueeLabel(_("未播放"), css_classes=["heading"])
-        self.label_track.set_hexpand(True)
+        self.label_track.set_size_request(300, -1)   # 限宽，不铺满面板
+        self.label_track.set_hexpand(False)
         self.label_artist = MarqueeLabel("—", css_classes=["dim-label"])
-        self.label_artist.set_hexpand(True)
+        self.label_artist.set_size_request(300, -1)
+        self.label_artist.set_hexpand(False)
         info_box.append(self.label_track)
         info_box.append(self.label_artist)
         # 套 WindowHandle：拖动歌名/歌手区域也能移动窗口（纯文字，无交互冲突）
@@ -409,9 +415,9 @@ class PlayerPanel(Gtk.Box):
         # key → 按钮，供切换时更新 nav-active 选中态。
         self._tab_btn_by_key = {}
         for label, icon, key in (
+            ("Queue", "view-list-symbolic", "queue"),
             ("Player", "audio-x-generic-symbolic", "player"),
             ("Lyrics", "xiatiao-lyrics-symbolic", "lyrics"),
-            ("Queue", "view-list-symbolic", "queue"),
         ):
             btn = Gtk.Button()
             box = Gtk.Box(spacing=6)

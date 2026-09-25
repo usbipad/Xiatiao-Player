@@ -710,8 +710,10 @@ class MainWindow(Adw.ApplicationWindow):
         left_box.append(self._search_entry)
         header.pack_start(left_box)
 
-        menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic")
+        menu_btn = Gtk.MenuButton(icon_name="xiatiao-menu-symbolic")
         menu_btn.add_css_class("flat")
+        menu_btn.add_css_class("circular")   # 圆形按钮底
+        menu_btn.add_css_class("app-menu-btn")
         menu_btn.set_tooltip_text(_("菜单"))
         # 标准应用菜单（GNOME HIG：首选项 / 快捷键 / 关于 / 退出）
         menu = Gio.Menu()

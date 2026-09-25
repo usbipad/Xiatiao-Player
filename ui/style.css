@@ -412,6 +412,12 @@ popover.effect-popover preferencesgroup {
     box-shadow: none;
 }
 
+/* 右上角菜单按钮：图标颜色淡一些（降低与纯前景色的对比）。 */
+headerbar button.app-menu-btn image,
+headerbar menubutton.app-menu-btn image {
+    color: alpha(@window_fg_color, 0.62);
+}
+
 /* 顶部栏导航与分段控件胶囊（Segmented Control） */
 .nav-segmented-bar {
     background-color: alpha(currentColor, 0.045);
@@ -440,6 +446,14 @@ popover.effect-popover preferencesgroup {
     background: linear-gradient(135deg, @accent_bg_color, alpha(@accent_bg_color, 0.90));
     color: @accent_fg_color;
     box-shadow: 0 3px 12px alpha(@accent_bg_color, 0.36), inset 0 1px 1px alpha(white, 0.28);
+}
+
+/* 顶部导航选中项：与底部 Tab 一致——加粗 + 中性黑投影（不跟随强调色）。 */
+.nav-segmented-bar .nav-pill.nav-active {
+    font-weight: 700;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.20),
+                0 2px 5px rgba(0, 0, 0, 0.14),
+                inset 0 1px 1px alpha(white, 0.35);
 }
 
 /* 左侧播放面板：浅色背景，与右侧内容区分（Tonearm 风格）*/
@@ -511,12 +525,25 @@ overlay-split-view > border:dir(rtl) {
     opacity: 1;
 }
 
-/* 底部导航 Tab 胶囊容器（底槽深色沉淀感） */
+/* 底部导航 Tab 胶囊容器（底槽深色沉淀感 + 柔和浮起阴影） */
 .player-tab-bar {
     background-color: alpha(currentColor, 0.04);
     border-radius: 999px;
     padding: 3px;
     border: 1px solid alpha(currentColor, 0.05);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12),
+                0 1px 3px rgba(0, 0, 0, 0.10),
+                inset 0 1px 1px alpha(white, 0.28);
+}
+
+/* 底部 Tab 选中项：仅加强「视觉突出」（更强投影 + 加粗），
+   背景蓝色（系统强调色）沿用 .nav-pill.nav-active 原样，不改；
+   投影用中性黑（不跟随强调色，避免阴影泛蓝）。 */
+.player-tab-bar .nav-pill.nav-active {
+    font-weight: 700;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.20),
+                0 2px 5px rgba(0, 0, 0, 0.14),
+                inset 0 1px 1px alpha(white, 0.35);
 }
 
 /* 右侧内容区：视图底色（更亮），与左侧侧栏区分（Tonearm 风格）*/

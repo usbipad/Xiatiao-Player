@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- 菜单：竖排三个圆点（kebab），撑满容器。圆底由按钮 circular 样式提供。 -->
+  <g fill="currentColor">
+    <circle cx="8" cy="3.2" r="2.0"/>
+    <circle cx="8" cy="8.0" r="2.0"/>
+    <circle cx="8" cy="12.8" r="2.0"/>
+  </g>
+</svg>
