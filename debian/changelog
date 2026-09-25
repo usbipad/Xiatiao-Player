@@ -1,3 +1,18 @@
+xiatiao-player (1.0.3) unstable; urgency=medium
+
+  * DLNA 投送：扫描枚举网卡逐个发 SSDP（绕开代理抢路由）+ ssdp:all
+    查询兼容非标准设备（小爱音箱）+ 按 deviceType 过滤。
+  * DLNA 投送对话框：打开时立即显示已连接设备；刷新按 UDN 合并。
+  * 修复右键菜单点击无反应（歌曲列表 / 歌单卡片 / 队列行）：
+    改用 Gtk.Popover + 按钮直连回调，绕开 Gio 动作解析。
+  * 沉浸页歌名/歌手超长跑马灯；左侧面板跑马灯左右渐隐。
+  * 沉浸页歌词背景上下暗角（边缘隐去）；歌词渐隐单层化消色带。
+  * 底部 Tab 选中指示 + 容器阴影 + 顺序调整（Queue/Player/Lyrics）。
+  * 右上角菜单改圆底三圆点图标。
+  * 主页区块标题间距收紧、卡片顶部留白减小；去掉卡片 hover 整卡底色。
+
+ -- usbipad <1495941192+usbipad@users.noreply.github.com>  Thu, 25 Sep 2026 12:00:00 +0800
+
 xiatiao-player (1.0.2) unstable; urgency=medium
 
   * 修复切歌后歌词不显示：_apply_track_assets 引用了未定义变量抛异常，

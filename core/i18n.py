@@ -436,6 +436,89 @@ _EN: dict[str, str] = {
     # ---- 频谱窗口 / 封面 ----
     "音频频谱": "Audio Spectrum",
     "进入全屏播放": "Enter fullscreen playback",
+
+    # ---- 关于页（settings_dialog / window）----
+    "关于": "About",
+    "关于 Xiatiao": "About Xiatiao",
+    "版本": "Version",
+    "开发者": "Developer",
+    "网站": "Website",
+    "问题反馈": "Report Issue",
+    "版权": "Copyright",
+    "许可": "License",
+    "开源组件": "Open Source Components",
+    "鸣谢": "Acknowledgments",
+    "协助": "Contributors",
+    "应用": "Application",
+    "详细信息": "Details",
+    "本项目基于以下开源项目构建，谨致谢意":
+        "This project is built on the following open source projects. Our thanks to them.",
+    "虾条播放器": "Xiatiao Player",
+    "GTK4 本地音乐播放器，Rust 音频后端，支持 DSD 直通与 DSP":
+        "GTK4 local music player with a Rust audio backend, supporting DSD passthrough and DSP",
+
+    # ---- DSD / 输出设备（settings_dialog）----
+    "输出": "Output",
+    "输出设备": "Output Device",
+    "自动": "Auto",
+    "自动（系统默认）": "Auto (system default)",
+    "DSD 直通": "DSD Passthrough",
+    "DSD 输出模式": "DSD Output Mode",
+    "DSD 文件的输出方式；自动模式按 DAC 能力选择":
+        "How DSD files are output; Auto picks based on DAC capability",
+    "开启后，「DSD 输出模式」与「输出设备」生效；关闭则 DSD 走软解、输出走系统默认":
+        "When on, \"DSD Output Mode\" and \"Output Device\" take effect; when off, DSD is software-decoded and output uses the system default",
+    "自动=系统默认；选择具体设备则以 ALSA 独占直连硬件":
+        "Auto = system default; picking a device connects directly to hardware via exclusive ALSA",
+
+    # ---- 背景跟随 / 进度条跟随（settings_dialog）----
+    "主界面背景跟随封面": "Main Background Follows Cover",
+    "用当前封面的主色调着色主界面背景；关闭则使用主题色":
+        "Tint the main background with the current cover's dominant color; use theme color when off",
+    "进度条跟随封面取色": "Progress Bar Follows Cover Color",
+    "进度条已播段用当前封面主色；关闭则用默认深灰/白":
+        "Use the current cover's dominant color for the played portion; default dark gray/white when off",
+
+    # ---- 音效预设（player_panel）----
+    "内置音效": "Built-in Effects",
+    "我的预设": "My Presets",
+    "删除该预设": "Delete this preset",
+    "已删除预设：{name}": "Preset deleted: {name}",
+    "还没有自定义预设": "No custom presets yet",
+    "在「DSP 音效设置」中调好参数后保存":
+        "Tune the parameters in \"DSP Effect Settings\" and save",
+    "添加到歌单": "Add to playlist",
+
+    # ---- 音频增强（effect_page）----
+    "启用音频增强": "Enable Audio Enhancement",
+    "启用立体声处理": "Enable Stereo Processing",
+    "随音量动态补偿低/高频（小音量时更明显）":
+        "Dynamically compensate low/high frequencies with volume (more noticeable at low volume)",
+
+    # ---- DLNA 投送（cast_dialog）----
+    "投送到设备": "Cast to Device",
+    "停止投送": "Stop Casting",
+    "仅支持投送本地曲目": "Only local tracks can be cast",
+    "当前没有可投送的曲目": "No track available to cast",
+    "正在扫描…": "Scanning…",
+    "重新扫描": "Rescan",
+    "发现 {n} 个设备": "Found {n} device(s)",
+    "未发现设备，请确认音箱已开机并与本机同一网络":
+        "No devices found. Make sure the speaker is on and on the same network.",
+    "未知设备": "Unknown device",
+    "已投送到「{name}」": "Casting to \"{name}\"",
+    "已停止投送": "Casting stopped",
+    "投送失败，请重试": "Casting failed. Please try again.",
+
+    # ---- 托盘（tray）----
+    "显示主窗口": "Show Main Window",
+    "暂停": "Pause",
+    "退出": "Quit",
+
+    # ---- 窗口菜单（window）----
+    "播放控制": "Playback Controls",
+    "显示 / 隐藏播放器面板": "Show / Hide Player Panel",
+    "键盘快捷键": "Keyboard Shortcuts",
 }
 
 

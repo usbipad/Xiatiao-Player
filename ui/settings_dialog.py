@@ -290,7 +290,7 @@ class SettingsWindow(Adw.PreferencesWindow):
     _ABOUT = {
         "name": "虾条播放器",
         "name_en": "Xiatiao",
-        "version": "1.0.2",
+        "version": "1.0.3",
         "developer": "usbipad",
         "website": "https://github.com/usbipad/Xiatiao-Player",
         "issue": "https://github.com/usbipad/Xiatiao-Player/issues",
