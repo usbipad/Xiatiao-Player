@@ -219,7 +219,7 @@ def test_track_info_rows() -> None:
     check("位深格式", d.get("位深") == "24 bit")
     check("声道格式", d.get("声道") == "立体声 (2)")
     check("码率格式", d.get("码率") == "2304 kbps", f"got={d.get('码率')!r}")
-    check("编码格式", d.get("编码格式") == "FLAC")
+    check("编码格式", d.get("Codec") == "FLAC")
 
 
 def test_shortcuts() -> None:
