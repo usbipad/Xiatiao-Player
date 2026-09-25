@@ -32,7 +32,8 @@ class _CollapsibleSection(Gtk.Box):
 
     def __init__(self, title: str, content, expanded: bool = False,
                  on_toggle=None) -> None:
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        # 标题行与卡片间距：由 8 缩到 2，让区块更紧凑。
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self._content = content
         self._on_toggle = on_toggle
 

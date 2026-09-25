@@ -668,8 +668,10 @@ listview > row:hover {
 }
 
 .media-card:hover {
-    background-color: alpha(currentColor, 0.06);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+    /* 去掉 hover 时「铺满整卡片」的底色与阴影；仅保留封面自身的浮起
+       （.media-card:hover .media-card-cover）。 */
+    background-color: transparent;
+    box-shadow: none;
     transform: translateY(-2px);
 }
 

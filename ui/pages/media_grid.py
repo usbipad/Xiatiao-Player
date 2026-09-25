@@ -200,7 +200,8 @@ def make_group_card(name: str, items, on_enter_group) -> Gtk.Widget:
     # 四周留白：让阴影在左右与上方也有扩散空间（见 CARD_EDGE_GAP 说明）
     cover_frame.set_margin_start(CARD_EDGE_GAP)
     cover_frame.set_margin_end(CARD_EDGE_GAP)
-    cover_frame.set_margin_top(CARD_EDGE_GAP)
+    # 顶部留白减小（阴影主要向下，顶部无需 24px）；缩标题到卡片的间距。
+    cover_frame.set_margin_top(6)
     try:
         cover_frame.set_hexpand(False)
         cover_frame.set_vexpand(False)
@@ -280,7 +281,7 @@ def make_group_card(name: str, items, on_enter_group) -> Gtk.Widget:
         # 同第一页：四周留白供阴影扩散，否则轮播切过来的卡片没有悬浮感
         cover_b.set_margin_start(CARD_EDGE_GAP)
         cover_b.set_margin_end(CARD_EDGE_GAP)
-        cover_b.set_margin_top(CARD_EDGE_GAP)
+        cover_b.set_margin_top(6)
         try:
             cover_b.set_hexpand(False)
             cover_b.set_vexpand(False)
