@@ -34,8 +34,66 @@ ST_RENDERER = "urn:schemas-upnp-org:device:MediaRenderer:1"
 # ============================================================
 # 工具
 # ============================================================
+def _is_usable_lan_ip(ip: str) -> bool:
+    """是否是可用于局域网组播的真实地址。
+
+    排除：
+    - 回环 127.x
+    - 链路本地 169.254.x
+    - 保留/基准测试段 198.18.0.0/15（Clash/Mihomo 等代理的 fake-ip 网段）
+    这些都不是真实局域网地址，SSDP 从它们出去会扫不到设备。
+    """
+    try:
+        parts = [int(x) for x in ip.split(".")]
+        if len(parts) != 4:
+            return False
+        if ip.startswith("127.") or ip.startswith("169.254."):
+            return False
+        # 198.18.0.0/15：代理 fake-ip / RFC2544 基准测试段
+        if parts[0] == 198 and parts[1] in (18, 19):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def local_ip() -> str:
-    """获取本机局域网 IPv4 地址。"""
+    """获取本机局域网 IPv4 地址（跳过代理/虚拟网段）。
+
+    优先用「真实私有网段」的网卡地址（192.168/10/172.16）。
+    注意：不能只用 connect(8.8.8.8) 探测——若系统挂了代理（Clash/Mihomo
+    等），流量被接管，getsockname() 会拿到代理虚拟 IP（如 198.18.0.1），
+    导致 SSDP 组播从错误网卡出去、扫不到设备。
+    """
+    candidates = []
+    # 1) 枚举所有网卡地址
+    try:
+        import subprocess
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                             capture_output=True, text=True, timeout=3)
+        for line in out.stdout.splitlines():
+            # 形如：3: wlp0s20f3    inet 192.168.1.41/24 ...
+            toks = line.split()
+            for i, t in enumerate(toks):
+                if t == "inet" and i + 1 < len(toks):
+                    ip = toks[i + 1].split("/")[0]
+                    if _is_usable_lan_ip(ip):
+                        candidates.append(ip)
+    except Exception:
+        pass
+    # 优先私有网段
+    def _rank(ip: str) -> int:
+        if ip.startswith("192.168."):
+            return 0
+        if ip.startswith("10."):
+            return 1
+        if ip.startswith("172."):
+            return 2
+        return 3
+    if candidates:
+        candidates.sort(key=_rank)
+        return candidates[0]
+    # 2) 回退：connect 探测（可能拿到代理 IP，但聊胜于无）
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -49,30 +107,101 @@ def local_ip() -> str:
 # ============================================================
 # SSDP 发现
 # ============================================================
+def _lan_interfaces() -> List[str]:
+    """枚举可用于局域网组播的真实网卡地址（跳过代理/虚拟/回环段）。
+
+    运行期从 `ip addr` 读取，不硬编码网卡名——任何机器、任何代理都通用。
+    返回按「私有网段优先级」排序的地址列表（192.168 优先）。
+    """
+    addrs = []
+    try:
+        import subprocess
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                             capture_output=True, text=True, timeout=3)
+        for line in out.stdout.splitlines():
+            toks = line.split()
+            for i, t in enumerate(toks):
+                if t == "inet" and i + 1 < len(toks):
+                    ip = toks[i + 1].split("/")[0]
+                    if _is_usable_lan_ip(ip):
+                        addrs.append(ip)
+    except Exception:
+        pass
+
+    def _rank(ip: str) -> int:
+        if ip.startswith("192.168."):
+            return 0
+        if ip.startswith("10."):
+            return 1
+        if ip.startswith("172."):
+            return 2
+        return 3
+    addrs.sort(key=_rank)
+    # 去重保序
+    seen = set()
+    out_list = []
+    for a in addrs:
+        if a not in seen:
+            seen.add(a)
+            out_list.append(a)
+    return out_list
+
+
 def discover_renderers(timeout: float = 3.0) -> List[Dict[str, str]]:
     """SSDP 搜索局域网内的 MediaRenderer。
 
+    **对每张「可用局域网网卡」各发一次 M-SEARCH**（不硬编码网卡名，运行期
+    枚举）——这样即使系统挂了代理（Clash/Mihomo 等抢路由），也能从真实
+    网卡发出、收到响应。
+
     返回 [{"name", "location", "udn", "control_url", "ip"}, ...]。
     """
+    # 用 ssdp:all 查询：部分设备（如小爱音箱）不按标准 MediaRenderer ST
+    # 响应，只对 ssdp:all 响应。收全部设备后，再按设备描述的 deviceType
+    # 过滤出 MediaRenderer（见 _fetch_device_info）。
     msg = (
         "M-SEARCH * HTTP/1.1\r\n"
         f"HOST: {SSDP_ADDR}:{SSDP_PORT}\r\n"
         'MAN: "ssdp:discover"\r\n'
         "MX: 2\r\n"
-        f"ST: {ST_RENDERER}\r\n"
+        "ST: ssdp:all\r\n"
         "\r\n"
-    )
+    ).encode()
     found: Dict[str, Dict[str, str]] = {}
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.settimeout(timeout)
-        sock.sendto(msg.encode(), (SSDP_ADDR, SSDP_PORT))
-        deadline = time.time() + timeout
+
+    ifaces = _lan_interfaces()
+    if not ifaces:
+        # 无可枚举网卡：退回不绑定（系统默认路由）。
+        ifaces = [""]
+
+    deadline = time.time() + timeout
+    for bind_ip in ifaces:
+        remain = deadline - time.time()
+        if remain <= 0:
+            break
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # 关键：把组播出口绑到该网卡地址，绕开代理抢走的路由。
+            if bind_ip:
+                try:
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                                    socket.inet_aton(bind_ip))
+                except Exception:
+                    pass
+            sock.settimeout(max(0.2, min(remain, 1.0)))
+            sock.sendto(msg, (SSDP_ADDR, SSDP_PORT))
+        except Exception as exc:
+            log.debug("SSDP 发送失败（网卡 %s）: %s", bind_ip, exc)
+            continue
+
+        # 收该网卡的响应（收到本轮剩余时间用完为止）
         while time.time() < deadline:
             try:
                 data, addr = sock.recvfrom(4096)
             except socket.timeout:
+                break
+            except OSError:
                 break
             text = data.decode("utf-8", "ignore")
             headers = _parse_ssdp_headers(text)
@@ -85,9 +214,11 @@ def discover_renderers(timeout: float = 3.0) -> List[Dict[str, str]]:
             info["location"] = location
             info["ip"] = addr[0]
             found[location] = info
-        sock.close()
-    except Exception as exc:
-        log.warning("SSDP 发现失败: %s", exc)
+        try:
+            sock.close()
+        except Exception:
+            pass
+
     return list(found.values())
 
 
@@ -107,6 +238,12 @@ def _fetch_device_info(location: str, timeout: float = 3.0) -> Optional[Dict[str
             xml = resp.read().decode("utf-8", "ignore")
     except Exception as exc:
         log.debug("拉取设备描述失败 %s: %s", location, exc)
+        return None
+    # 显式按 deviceType 过滤：只保留 MediaRenderer。
+    # （用 ssdp:all 查询会收到多种设备，需据此剔除路由器/打印机等。）
+    dtype = _extract(xml, "deviceType")
+    if dtype and "MediaRenderer" not in dtype:
+        log.debug("跳过非 MediaRenderer 设备: %s", dtype)
         return None
     name = _extract(xml, "friendlyName") or "未知设备"
     udn = _extract(xml, "UDN") or ""
