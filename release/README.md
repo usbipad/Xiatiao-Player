@@ -36,4 +36,4 @@ GLIBC_2.34。由于 glibc 向上兼容，一个包即可覆盖：
 
     sudo apt install ./xiatiao-player_1.0.3_amd64.deb
 
-详见项目根目录 HANDOVER.md 第 9 节。
+详见 docs/HANDOVER.md 第 9 节。

@@ -61,6 +61,10 @@ reviews/
 # 测试代码（本地留存，不入库）
 tests/
 
+# 个人开发过程记录（本地留存，不入库）
+HANDOVER_DSD_SEEK.md
+docs/CHANGELOG-本地版对齐.md
+
 # 发布产物目录：产物不入库（可由构建脚本重建），仅保留目录本身
 release/*.deb
 release/*.AppImage
