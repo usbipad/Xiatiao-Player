@@ -99,7 +99,7 @@
 
 从 Releases 下载 .deb 后：
 
-    apt install ./xiatiao-player_1.0.2_amd64.deb
+    apt install ./xiatiao-player_1.0.3_amd64.deb
 
 （需要管理员权限；安装后程序在 /usr/lib/xiatiao-player/，启动器 /usr/bin/xiatiao-player，也可在应用菜单中找到「虾条播放器」。）
 
@@ -107,10 +107,12 @@
 
 系统依赖（Debian / Ubuntu）：
 
-    apt install python3-gi python3-gi-cairo python3-numpy python3-yaml \
-         python3-mutagen gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-gdkpixbuf-2.0 \
-         gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
-         ffmpeg pipewire pipewire-bin libasound2-dev
+    apt install python3-gi python3-gi-cairo python3-cairo python3-numpy \
+         python3-yaml python3-mutagen gir1.2-gtk-4.0 gir1.2-adw-1 \
+         gir1.2-gdkpixbuf-2.0 gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
+         librsvg2-common webp-pixbuf-loader \
+         ffmpeg pipewire pipewire-bin pulseaudio-utils \
+         iproute2 libglib2.0-bin xdg-utils dbus-bin
 
 构建并运行：
 
