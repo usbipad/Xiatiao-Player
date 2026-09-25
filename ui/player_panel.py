@@ -228,8 +228,10 @@ class PlayerPanel(Gtk.Box):
         self.label_artist = MarqueeLabel("—", css_classes=["dim-label"])
         self.label_artist.set_size_request(300, -1)
         self.label_artist.set_hexpand(False)
-        info_box.append(self.label_track)
-        info_box.append(self.label_artist)
+        # 左右渐隐遮罩：与歌词区 np-fade 同机制（覆盖条 + CSS 渐变）。
+        # 让跑马灯文字滚到两端时柔和淡出，而非硬切。
+        info_box.append(self._wrap_with_fade(self.label_track))
+        info_box.append(self._wrap_with_fade(self.label_artist))
         # 套 WindowHandle：拖动歌名/歌手区域也能移动窗口（纯文字，无交互冲突）
         info_handle = Gtk.WindowHandle()
         info_handle.set_child(info_box)
@@ -1207,6 +1209,22 @@ class PlayerPanel(Gtk.Box):
             return False
 
     # ---- 进度条交互 ----
+    def _wrap_with_fade(self, label: Gtk.Widget) -> Gtk.Widget:
+        """把跑马灯包进 Overlay，左右各叠一条渐隐遮罩（不挡交互）。"""
+        ov = Gtk.Overlay()
+        ov.set_hexpand(False)
+        ov.set_child(label)
+        for cls, align in (("marquee-fade-left", Gtk.Align.START),
+                           ("marquee-fade-right", Gtk.Align.END)):
+            fb = Gtk.Box()
+            fb.add_css_class(cls)
+            fb.set_halign(align)
+            fb.set_valign(Gtk.Align.FILL)
+            fb.set_size_request(24, -1)   # 渐隐宽 24px
+            fb.set_can_target(False)      # 不挡点击
+            ov.add_overlay(fb)
+        return ov
+
     def set_progress_color(self, rgb) -> None:
         """设置主界面进度条已播段颜色（跟随封面主色，加深版）；None 回退默认。"""
         try:

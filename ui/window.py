@@ -2608,6 +2608,15 @@ class MainWindow(Adw.ApplicationWindow):
                     f"background-image: linear-gradient(to top, {col_panel}, alpha({col_panel}, 0));"
                     "background-color: transparent;"
                     "}"
+                    # 跑马灯左右渐隐：跟随封面时用面板底色 col_panel。
+                    "window.main-bg-follow .marquee-fade-left {"
+                    f"background-image: linear-gradient(to right, {col_panel}, alpha({col_panel}, 0));"
+                    "background-color: transparent;"
+                    "}"
+                    "window.main-bg-follow .marquee-fade-right {"
+                    f"background-image: linear-gradient(to left, {col_panel}, alpha({col_panel}, 0));"
+                    "background-color: transparent;"
+                    "}"
                 )
             else:
                 self.remove_css_class("main-bg-follow")

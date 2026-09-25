@@ -856,13 +856,16 @@ def _round_corners_to_png(square, radius: int) -> bytes:
 
 def make_blurred_bg(image_bytes: bytes, out_w: int = 640, out_h: int = 480,
                     darken: float = 0.0, blur_px: int = 24,
-                    lighten: float = 0.28, min_seed: int = 12) -> bytes | None:
+                    lighten: float = 0.28, min_seed: int = 12,
+                    edge_vignette: float = 0.0) -> bytes | None:
     """用封面生成「模糊 + 遮罩」的背景图（Apple Music 风格）。
 
     做法：
     1. 缩到低分辨率矩阵（天然模糊）并覆盖式缩放裁剪；
     2. 叠加半透明白色亮度蒙层，增强通透感并保持前景字体对比度；
-    3. 导出 PNG 字节供主线程渲染。
+    3. 可选：叠加顶部/底部暗角（edge_vignette>0），使上下边缘渐暗，
+       让覆盖在其上的歌词在边缘「隐去」（沉浸页歌词渐隐）。
+    4. 导出 PNG 字节供主线程渲染。
     """
     if not image_bytes or out_w <= 0 or out_h <= 0:
         return None
@@ -925,6 +928,26 @@ def make_blurred_bg(image_bytes: bytes, out_w: int = 640, out_h: int = 480,
         if la > 0:
             cr.set_source_rgba(1.0, 1.0, 1.0, la)
             cr.paint()
+
+        # 上下暗角：顶部/底部各渐暗到透明，使边缘歌词「隐去」。
+        # 暗角高度取图高的 ~28%，强度由 edge_vignette 控制（0=不画）。
+        ev = max(0.0, min(1.0, edge_vignette))
+        if ev > 0:
+            vh = max(1.0, out_h * 0.28)
+            # 顶部：从黑（ev）渐变到透明
+            g_top = cairo.LinearGradient(0.0, 0.0, 0.0, vh)
+            g_top.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, ev)
+            g_top.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 0.0)
+            cr.set_source(g_top)
+            cr.rectangle(0.0, 0.0, float(out_w), vh)
+            cr.fill()
+            # 底部：从透明渐变到黑（ev）
+            g_bot = cairo.LinearGradient(0.0, out_h - vh, 0.0, float(out_h))
+            g_bot.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 0.0)
+            g_bot.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, ev)
+            cr.set_source(g_bot)
+            cr.rectangle(0.0, out_h - vh, float(out_w), vh)
+            cr.fill()
 
         out = io.BytesIO()
         surf.write_to_png(out)

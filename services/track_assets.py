@@ -95,7 +95,8 @@ def load_cover_assets(cover_raw: bytes | None,
                 from models.coverart import make_blurred_bg
                 png = make_blurred_bg(cover_raw, 640, 480,
                                       darken=0.0, blur_px=blur_px,
-                                      lighten=0.25)
+                                      lighten=0.25,
+                                      edge_vignette=0.55)   # 上下暗角→歌词边缘隐去
             else:
                 # 关闭背景功能：背景回退主题色；进度条仍跟随封面主色
                 out["bg_rgb"] = None

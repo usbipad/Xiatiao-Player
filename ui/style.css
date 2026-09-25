@@ -265,17 +265,17 @@ aspectframe,
  * 底端透明。与「加了阴影的左侧浮起面板」底色一致，不再出现比面板亮的色块。
  * 用两层 background-image 叠加复现面板色：底层 window_bg_color，
  * 顶层 5% 前景（与 .player-panel 的配方相同）。 */
+/* 紧凑歌词的顶/底渐隐：单层纯面板底色渐变到透明。
+ * 之前用「@window_bg_color + 5% 前景」两层叠加模拟面板底，
+ * 在多数主题下会叠出比面板亮/暗的色带（剪影）。改为单层纯背景色，
+ * 明暗自适应；「背景跟随封面」时由 window._apply_main_bg 注入封面色覆盖。 */
 .np-lyrics-compact .np-fade-top {
-    background-image:
-        linear-gradient(to bottom, alpha(@window_fg_color, 0.05), alpha(@window_fg_color, 0)),
-        linear-gradient(to bottom, @window_bg_color, alpha(@window_bg_color, 0));
+    background-image: linear-gradient(to bottom, @window_bg_color, alpha(@window_bg_color, 0));
     background-color: transparent;
 }
 
 .np-lyrics-compact .np-fade-bottom {
-    background-image:
-        linear-gradient(to top, alpha(@window_fg_color, 0.05), alpha(@window_fg_color, 0)),
-        linear-gradient(to top, @window_bg_color, alpha(@window_bg_color, 0));
+    background-image: linear-gradient(to top, @window_bg_color, alpha(@window_bg_color, 0));
     background-color: transparent;
 }
 
@@ -454,6 +454,19 @@ headerbar menubutton.app-menu-btn image {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.20),
                 0 2px 5px rgba(0, 0, 0, 0.14),
                 inset 0 1px 1px alpha(white, 0.35);
+}
+
+/* 跑马灯（歌名/歌手）左右渐隐遮罩：与歌词区 np-fade 同机制。
+   基础用 @window_bg_color 渐变到透明，自动适配明暗主题；
+   「背景跟随封面」时由 window._apply_main_bg 动态覆盖为封面主色。 */
+.marquee-fade-left {
+    background-image: linear-gradient(to right, @window_bg_color, alpha(@window_bg_color, 0));
+    background-color: transparent;
+}
+
+.marquee-fade-right {
+    background-image: linear-gradient(to left, @window_bg_color, alpha(@window_bg_color, 0));
+    background-color: transparent;
 }
 
 /* 左侧播放面板：浅色背景，与右侧内容区分（Tonearm 风格）*/
