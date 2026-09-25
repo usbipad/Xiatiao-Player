@@ -58,6 +58,9 @@ squashfs-root/
 # 代码审查/体检记录（本地留存，不入库）
 reviews/
 
+# 测试代码（本地留存，不入库）
+tests/
+
 # 发布产物目录：产物不入库（可由构建脚本重建），仅保留目录本身
 release/*.deb
 release/*.AppImage
