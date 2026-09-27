@@ -79,7 +79,7 @@ _MENU_XML = """
       <arg direction="in" type="i" name="recursionDepth"/>
       <arg direction="in" type="as" name="propertyNames"/>
       <arg direction="out" type="u" name="revision"/>
-      <arg direction="out" type="(ia{sv}av)" name="layout"/>
+      <arg direction="out" type="a(ia{sv}av)" name="layout"/>
     </method>
     <method name="GetGroupProperties">
       <arg direction="in" type="ai" name="ids"/>
@@ -303,9 +303,15 @@ class Tray:
                 # DBus 方法返回值必须是「元组」，其元素依次对应 out 参数。
                 # 用 new_tuple(revision, layout) 显式组装，避免把已打包的
                 # variant 当普通值再序列化（否则类型不符 -> GLib-CRITICAL）。
+                # dbusmenu 标准：GetLayout 的 layout 出参是「结构数组」
+                # a(ia{sv}av)，而非单个 (ia{sv}av)。GNOME Shell 按标准解析，
+                # 若返回单个结构会类型不符 -> GLib 崩溃（段错误）。
                 layout = GLib.Variant.new_tuple(
                     GLib.Variant("u", self._revision),
-                    self._layout(),
+                    GLib.Variant.new_array(
+                        GLib.VariantType.new("(ia{sv}av)"),
+                        [self._layout()],
+                    ),
                 )
                 inv.return_value(layout)
                 return
