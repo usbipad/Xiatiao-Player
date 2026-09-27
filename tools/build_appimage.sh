@@ -242,7 +242,9 @@ driver_excluded
 
 # 10) 打包成 AppImage
 echo "==> 打包 AppImage"
-OUT="$PROJ/Xiatiao-Player-${ARCH}.AppImage"
+# 输出到 release/，与 deb/rpm 产物统一管理（release/ 产物不入库）。
+mkdir -p "$PROJ/release"
+OUT="$PROJ/release/Xiatiao-Player-${ARCH}.AppImage"
 cd "$BUILD"
 ARCH="$ARCH" "$APPIMAGETOOL" "$APPDIR" "$OUT"
 
