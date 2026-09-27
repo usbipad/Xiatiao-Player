@@ -30,7 +30,9 @@ Requires:       pipewire-libs
 Requires:       python3-mutagen
 Requires:       python3-numpy
 Requires:       python3-pyyaml
-Requires:       ffmpeg-free
+# 完整 ffmpeg（含 DSD 解码器）。Fedora 官方 ffmpeg-free 不含 DSD
+# 解码器，故依赖 RPM Fusion 的完整 ffmpeg。用户需先启用 RPM Fusion。
+Requires:       ffmpeg
 Requires:       pipewire
 Requires:       pipewire-utils
 Requires:       pulseaudio-utils
@@ -54,6 +56,9 @@ rm -f audio_backend_rs/.cargo/config.toml
 
 %build
 cd audio_backend_rs
+# 清增量缓存：避免 target 里残留的 .rlib 与本次编译不一致，
+# 导致链接时找不到 libalsa-*.rlib（ld.bfd: cannot find ...）。
+cargo clean
 cargo build --release
 cd ..
 
