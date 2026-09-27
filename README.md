@@ -162,8 +162,8 @@
     data/                运行时资源（图标 / desktop）
     audio_backend_rs/    Rust 音频后端
     debian/              Debian 打包配置
+    rpm/                 RPM 打包配置（spec）
     docs/                文档与界面截图
-    tests/               冒烟测试
     release/             发布产物（.deb / .rpm，不入库）
     tools/               构建脚本（打包 / 图标生成 / 调试入口）
 
@@ -325,8 +325,8 @@ See [docs/DEBUG.md](docs/DEBUG.md).
     data/                runtime resources (icons / desktop)
     audio_backend_rs/    Rust audio backend
     debian/              Debian packaging config
+    rpm/                 RPM packaging config (spec)
     docs/                docs & screenshots
-    tests/               smoke tests
     release/             release artifacts (.deb / .rpm, not tracked)
     tools/               build scripts (packaging / icon gen / debug entry)
 
