@@ -7,8 +7,9 @@
 
 | 文件 | 说明 |
 |---|---|
-| xiatiao-player_1.0.3_amd64.deb | 主安装包 |
-| xiatiao-player-dbgsym_1.0.3_amd64.deb | 调试符号（可选） |
+| xiatiao-player_1.0.4_amd64.deb | Debian / Ubuntu 主安装包 |
+| xiatiao-player-dbgsym_1.0.4_amd64.deb | 调试符号（可选，不发布） |
+| xiatiao-player-1.0.4-1.fc44.x86_64.rpm | Fedora 44 安装包 |
 
 ## 覆盖范围
 
@@ -34,6 +35,12 @@ GLIBC_2.34。由于 glibc 向上兼容，一个包即可覆盖：
 
 ## 安装
 
-    sudo apt install ./xiatiao-player_1.0.3_amd64.deb
+Debian / Ubuntu：
+
+    sudo apt install ./xiatiao-player_1.0.4_amd64.deb
+
+Fedora 44（需先启用 RPM Fusion）：
+
+    sudo dnf install ./xiatiao-player-1.0.4-1.fc44.x86_64.rpm
 
 详见 docs/HANDOVER.md 第 9 节。
