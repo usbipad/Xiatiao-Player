@@ -1412,6 +1412,7 @@ class MainWindow(Adw.ApplicationWindow):
         if not getattr(self, "_dlna_casting", False):
             return False
         try:
+            before = self.playlist.current_track()
             nxt = self.playlist.next(auto=True)
             if nxt is None:
                 # 播放列表结束：停止远端设备。
@@ -1423,6 +1424,10 @@ class MainWindow(Adw.ApplicationWindow):
                     self.now_playing.set_playing(False)
                 except Exception:
                     pass
+            elif nxt is before:
+                # 单曲循环：曲目未变，_on_playlist_current_changed 不会触发，
+                # 这里手动重推同一首（并复位「已播完」标志）。
+                self._cast_track(nxt)
         except Exception:
             log.debug("投送自动下一首失败", exc_info=True)
         return False
