@@ -65,6 +65,13 @@ tests/
 HANDOVER_DSD_SEEK.md
 docs/CHANGELOG-本地版对齐.md
 docs/HANDOVER_SESSION.md
+# 内部交接文档（面向开发，开源项目不留）
+docs/HANDOVER.md
+# 个人调试工具
+tools/audit_undef.py
+
+# 发行说明（放 GitHub Release，不入库）
+release/*.md
 
 # 发布产物目录：产物不入库（可由构建脚本重建），仅保留目录本身
 release/*.deb
