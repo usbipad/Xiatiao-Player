@@ -1398,6 +1398,33 @@ class MainWindow(Adw.ApplicationWindow):
                 self.now_playing.set_duration(dur)
         except Exception:
             pass
+        # 自动下一首：投送模式下本机后端不在播放，收不到 end-of-stream，
+        # 只能靠轮询到的远端位置判断是否播完。留 1.5s 容差（轮询 1s + 网络
+        # 延迟），并用标志防重复触发；dur<=0（设备未上报时长）时不判断。
+        if dur > 0 and pos >= dur - 1.5:
+            if not getattr(self, "_cast_ended_handled", False):
+                self._cast_ended_handled = True
+                GLib.idle_add(self._on_cast_track_ended)
+        return False
+
+    def _on_cast_track_ended(self) -> bool:
+        """投送曲目播完：按播放列表推进到下一首（投送模式）。"""
+        if not getattr(self, "_dlna_casting", False):
+            return False
+        try:
+            nxt = self.playlist.next(auto=True)
+            if nxt is None:
+                # 播放列表结束：停止远端设备。
+                from core.dlna_push import get_dlna_pusher
+                get_dlna_pusher().stop()
+                self._dlna_remote_playing = False
+                try:
+                    self.player_panel.set_playing(False)
+                    self.now_playing.set_playing(False)
+                except Exception:
+                    pass
+        except Exception:
+            log.debug("投送自动下一首失败", exc_info=True)
         return False
 
     # 注：不再用轮询同步播放/暂停状态（曾导致本机意图被设备延迟覆盖）。
@@ -1429,6 +1456,8 @@ class MainWindow(Adw.ApplicationWindow):
         if not fp:
             return
         was_playing = bool(getattr(self, "_dlna_remote_playing", True))
+        # 切歌：清除「已播完」标志，让新曲目的轮询重新可触发自动下一首。
+        self._cast_ended_handled = False
         try:
             from core.dlna_push import get_dlna_pusher
             pusher = get_dlna_pusher()

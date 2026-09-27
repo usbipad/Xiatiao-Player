@@ -336,6 +336,17 @@ class _FileHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(size - start))
             self.send_header("Accept-Ranges", "bytes")
+            # DLNA 专用头：部分设备（如小爱音箱）据此判断流类型与
+            # 传输模式，缺失时可能不播或反复重连。
+            #   transferMode.dlna.org=Streaming：边下边播
+            #   contentFeatures.dlna.org：DLNA.ORG_OP=01 支持 Range
+            self.send_header("transferMode.dlna.org", "Streaming")
+            self.send_header(
+                "contentFeatures.dlna.org",
+                "DLNA.ORG_OP=01;DLNA.ORG_CI=0;"
+                "DLNA.ORG_FLAGS=01700000000000000000000000000000")
+            # 用 close：实测 keep-alive 对部分设备（如小爱音箱）
+            # 反而导致播放异常；短连接更稳。
             self.send_header("Connection", "close")
             self.end_headers()
             if head_only:
