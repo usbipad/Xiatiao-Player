@@ -73,3 +73,6 @@ release/*.buildinfo
 release/*.changes
 release/*.dsc
 release/*.build
+
+# RPM 打包配置（本地留存，不入库）
+rpm/
