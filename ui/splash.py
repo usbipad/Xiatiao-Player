@@ -60,10 +60,12 @@ class SplashController:
         self._timeout_id = 0
         self._want_fade = False
         self._idle_ticks = 0
-        # 保活淡出动画对象：Adw.TimedAnimation 播放后若无 Python 引用会被
-        # GC 回收，而 libadwaita 内部仍在跑 → 动画 done 时访问已释放对象，
-        # 触发 SIGSEGV（gtk_widget_unparent）。存 self 引用直到动画结束。
-        self._fade_anim = None
+        # 手动淡出状态：不用 Adw.TimedAnimation。libadwaita 1.9.2 在动画
+        # skip/done 时会对已 remove_overlay 的 widget 调 gtk_widget_unparent，
+        # 触发 SIGSEGV（栈顶 adw_animation_skip）。改为 GLib 逐帧改 opacity，
+        # 完全不碰 libadwaita 动画子系统。
+        self._fade_step_id = 0
+        self._fade_elapsed = 0
 
     # ------------------------------------------------------------
     # 构建
@@ -171,7 +173,7 @@ class SplashController:
 
     def cancel(self) -> None:
         """取消所有定时器（窗口关闭时调用）。"""
-        for attr in ("_fade_id", "_timeout_id"):
+        for attr in ("_fade_id", "_timeout_id", "_fade_step_id"):
             tid = getattr(self, attr, 0)
             if tid:
                 try:
@@ -224,29 +226,56 @@ class SplashController:
         return False
 
     def _start_fade(self) -> bool:
-        """开始淡出；结束后移除。"""
+        """开始淡出；结束后移除。
+
+        手动逐帧淡出（不用 Adw.TimedAnimation），规避 libadwaita 1.9.2
+        在动画 skip/done 时访问已释放 widget 的 SIGSEGV。
+        """
         self._fade_id = 0
         splash = self._widget
         if splash is None:
             return False
         try:
-            anim = Adw.TimedAnimation.new(
-                splash, 1.0, 0.0, self.FADE_MS,
-                Adw.PropertyAnimationTarget.new(splash, "opacity"),
-            )
-            anim.connect("done", self._on_faded)
-            # 关键：保活 anim（防 Python GC 回收），否则 libadwaita 内部
-            # 仍在跑动画，done 时访问已释放对象 -> SIGSEGV。
-            self._fade_anim = anim
-            anim.play()
+            self._fade_elapsed = 0
+            # 约 60fps 步进；最短 16ms 一帧。
+            step_ms = max(16, self.FADE_MS // 25)
+            self._fade_step_id = GLib.timeout_add(step_ms, self._fade_step)
         except Exception:
             log.debug("启动闪屏淡出失败，直接移除", exc_info=True)
-            self._on_faded(None)
+            self._on_faded()
         return False
+
+    def _fade_step(self) -> bool:
+        """手动淡出的一帧：按已过时间线性降低 opacity，结束后移除。"""
+        splash = self._widget
+        if splash is None:
+            self._fade_step_id = 0
+            return False
+        self._fade_elapsed += max(16, self.FADE_MS // 25)
+        if self._fade_elapsed >= self.FADE_MS:
+            self._fade_step_id = 0
+            try:
+                splash.set_opacity(0.0)
+            except Exception:
+                pass
+            self._on_faded()
+            return False
+        ratio = 1.0 - (self._fade_elapsed / self.FADE_MS)
+        try:
+            splash.set_opacity(max(0.0, ratio))
+        except Exception:
+            self._fade_step_id = 0
+            return False
+        return True
 
     def _on_faded(self, *_args) -> None:
         """淡出完成：从 overlay 移除 splash。"""
-        self._fade_anim = None   # 动画结束，释放保活引用
+        if self._fade_step_id:
+            try:
+                GLib.source_remove(self._fade_step_id)
+            except Exception:
+                pass
+            self._fade_step_id = 0
         try:
             if self._timeout_id:
                 GLib.source_remove(self._timeout_id)
