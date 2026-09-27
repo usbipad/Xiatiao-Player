@@ -1,3 +1,11 @@
+xiatiao-player (1.0.4) unstable; urgency=medium
+
+  * DLNA 投送：播放结束后按播放列表（含循环/随机）自动下一首。
+  * DLNA 投送：单曲循环时重播当前曲目。
+  * DLNA 投送：补 transferMode/contentFeatures 响应头。
+
+ -- usbipad <1495941192+usbipad@users.noreply.github.com>  Sun, 27 Sep 2026 12:00:00 +0800
+
 xiatiao-player (1.0.3) unstable; urgency=medium
 
   * DLNA 投送：扫描枚举网卡逐个发 SSDP（绕开代理抢路由）+ ssdp:all
