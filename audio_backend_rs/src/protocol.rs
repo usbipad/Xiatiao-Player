@@ -30,10 +30,7 @@ pub enum Request {
     SetOutputDevice { name: String },
     /// 枚举可用的 ALSA 硬件输出设备。
     ListOutputDevices,
-    /// 加载卷积 IR（wav 文件路径），后续播放生效。
-
-    /// 清除已加载的卷积 IR。
-
+    // 注：卷积 IR 不设独立命令，统一经 SetCamillaYaml 下发 Conv filter。
     QueryState,
     Shutdown,
 }
