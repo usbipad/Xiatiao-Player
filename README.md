@@ -90,11 +90,18 @@
 
 从 Releases 下载 .deb 后：
 
-    apt install ./xiatiao-player_1.0.3_amd64.deb
+    apt install ./xiatiao-player_1.0.4_amd64.deb
 
 （需要管理员权限；安装后程序在 /usr/lib/xiatiao-player/，启动器 /usr/bin/xiatiao-player，也可在应用菜单中找到「虾条播放器」。）
 
-#### 方式二：从源码运行
+#### 方式二：Fedora 包（RPM）
+
+需先启用 **RPM Fusion**（依赖完整 ffmpeg 以支持 DSD 解码）：
+
+    sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+    sudo dnf install ./xiatiao-player-1.0.4-1.fc44.x86_64.rpm
+
+#### 方式三：从源码运行
 
 系统依赖（Debian / Ubuntu）：
 
@@ -124,7 +131,7 @@
 
 为何不在本机直接 dpkg-buildpackage：较新系统（如 Debian sid，glibc 2.43）编译出的二进制要求 GLIBC_2.43，无法在 Debian 12 / Ubuntu 22.04 运行。必须在目标最低版本环境里构建，glibc 需求才会降下来。
 
-打包配置位于 debian/：control（元信息与依赖）、rules（编译 + 组装）、changelog（版本历史）、postinst（刷新图标 / desktop 缓存）。
+打包配置位于 debian/：control（元信息与依赖）、rules（编译 + 组装）、changelog（版本历史）、postinst / postrm（刷新图标 / desktop 缓存）。
 
 ### 🧪 测试
 
@@ -157,7 +164,7 @@
     debian/              Debian 打包配置
     docs/                文档与界面截图
     tests/               冒烟测试
-    release/             发布产物（.deb，不入库）
+    release/             发布产物（.deb / .rpm，不入库）
     tools/               构建脚本（打包 / 图标生成 / 调试入口）
 
 ### 📄 许可证
@@ -246,11 +253,18 @@ Frontend in Python + PyGObject (GTK4 / libadwaita); backend is a separate Rust p
 
 Download the `.deb` from Releases, then:
 
-    sudo apt install ./xiatiao-player_1.0.3_amd64.deb
+    sudo apt install ./xiatiao-player_1.0.4_amd64.deb
 
 (Requires admin rights. Installed to /usr/lib/xiatiao-player/, launcher at /usr/bin/xiatiao-player, also available in the app menu as "Xiatiao Player".)
 
-#### Option 2: Run from source
+#### Option 2: Fedora package (RPM)
+
+Requires **RPM Fusion** (for the full ffmpeg with DSD decoding):
+
+    sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+    sudo dnf install ./xiatiao-player-1.0.4-1.fc44.x86_64.rpm
+
+#### Option 3: Run from source
 
 System dependencies (Debian / Ubuntu):
 
@@ -280,7 +294,7 @@ Recommended: build on a **Debian 12 baseline**. The resulting binary requires on
 
 Why not build directly with dpkg-buildpackage on the host: on newer systems (e.g. Debian sid, glibc 2.43) the binary requires GLIBC_2.43 and cannot run on Debian 12 / Ubuntu 22.04. Building in the lowest target environment lowers the glibc requirement.
 
-Packaging config lives in debian/: control (metadata & dependencies), rules (build + install tree), changelog (version history), postinst (refresh icon/desktop cache).
+Packaging config lives in debian/: control (metadata & dependencies), rules (build + install tree), changelog (version history), postinst / postrm (refresh icon/desktop cache).
 
 ### 🧪 Testing
 
@@ -313,7 +327,7 @@ See [docs/DEBUG.md](docs/DEBUG.md).
     debian/              Debian packaging config
     docs/                docs & screenshots
     tests/               smoke tests
-    release/             release artifacts (.deb, not tracked)
+    release/             release artifacts (.deb / .rpm, not tracked)
     tools/               build scripts (packaging / icon gen / debug entry)
 
 ### 📄 License
