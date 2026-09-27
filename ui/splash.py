@@ -60,6 +60,10 @@ class SplashController:
         self._timeout_id = 0
         self._want_fade = False
         self._idle_ticks = 0
+        # 保活淡出动画对象：Adw.TimedAnimation 播放后若无 Python 引用会被
+        # GC 回收，而 libadwaita 内部仍在跑 → 动画 done 时访问已释放对象，
+        # 触发 SIGSEGV（gtk_widget_unparent）。存 self 引用直到动画结束。
+        self._fade_anim = None
 
     # ------------------------------------------------------------
     # 构建
@@ -231,6 +235,9 @@ class SplashController:
                 Adw.PropertyAnimationTarget.new(splash, "opacity"),
             )
             anim.connect("done", self._on_faded)
+            # 关键：保活 anim（防 Python GC 回收），否则 libadwaita 内部
+            # 仍在跑动画，done 时访问已释放对象 -> SIGSEGV。
+            self._fade_anim = anim
             anim.play()
         except Exception:
             log.debug("启动闪屏淡出失败，直接移除", exc_info=True)
@@ -239,6 +246,7 @@ class SplashController:
 
     def _on_faded(self, *_args) -> None:
         """淡出完成：从 overlay 移除 splash。"""
+        self._fade_anim = None   # 动画结束，释放保活引用
         try:
             if self._timeout_id:
                 GLib.source_remove(self._timeout_id)
