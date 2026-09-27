@@ -234,7 +234,7 @@ class Tray:
                 # 由面板自行弹出菜单，无需处理
                 pass
             elif method == "Scroll":
-                delta, orientation = _params.unpack()
+                delta, _orientation = _params.unpack()
                 self._fire("next" if delta < 0 else "prev")
         except Exception:
             log.debug("托盘：SNI 方法 %s 失败", method, exc_info=True)

@@ -457,12 +457,6 @@ def _square_cover_via_cairo(image_bytes: bytes, size: int, radius: int) -> bytes
     if w <= 0 or h <= 0:
         return image_bytes
 
-    # 直接把 pixbuf 像素拷进 cairo surface（ARGB32），避免走 PNG
-    n_ch = pixbuf.get_n_channels()
-    has_alpha = pixbuf.get_has_alpha()
-    rowstride = pixbuf.get_rowstride()
-    data = pixbuf.get_pixels()
-
     # 先缩到接近目标尺寸（用 pixbuf 的快速缩放，比 cairo 大比例缩放快）
     scale = max(size / w, size / h)
     nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))

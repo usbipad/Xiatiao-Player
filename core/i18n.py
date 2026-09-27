@@ -115,7 +115,6 @@ _EN: dict[str, str] = {
     "已选": "Selected",
     # 菜单
     "退出程序": "Quit",
-    "设置": "Settings",
     "复制歌名": "Copy title",
     "查看歌手": "View artist",
     "历史播放": "Recently Played",
@@ -155,7 +154,6 @@ _EN: dict[str, str] = {
     "此键位已被「{conflict}」使用":
         "This key is already used by \"{conflict}\"",
     "加入歌单（{n} 首）": "Add to playlist ({n} tracks)",
-    "个": "",
     # Toast 提示
     "已新建「{name}」并加入 {n} 首": "Created \"{name}\" with {n} tracks",
     "已加入「{name}」{n} 首": "Added {n} tracks to \"{name}\"",
@@ -182,8 +180,6 @@ _EN: dict[str, str] = {
     "显示沉浸式页面的频谱；关闭可省 CPU":
         "Show the spectrum on the Now Playing page; disable to save CPU",
     "频谱参数": "Spectrum Parameters",
-    "调整可视化刷新率与频率分辨率":
-        "Adjust the refresh rate and frequency resolution",
     "采样 FPS": "Sample FPS",
     "越高越流畅，但更耗电/占 CPU":
         "Higher is smoother, but uses more CPU / battery",
@@ -271,7 +267,6 @@ _EN: dict[str, str] = {
     "启用响度补偿": "Enable Loudness",
     "小音量下提升低频": "Boost low frequencies at low volume",
     "响度强度": "Loudness Amount",
-    "立体声": "Stereo",
     "启用立体声宽度": "Enable Stereo Width",
     "宽度": "Width",
     "0=单声道, 1=原始, 2=加宽": "0=Mono, 1=Original, 2=Widened",
@@ -338,7 +333,7 @@ _EN: dict[str, str] = {
     "点击后按下新按键录制": "Click, then press a new key to record",
     "清除此快捷键": "Clear this shortcut",
     "按下新快捷键": "Press a new shortcut",
-    "播放": "Playback",
+    "播放设置": "Playback",
     "播放行为": "Playback Behavior",
     "启动时恢复上次播放会话": "Restore last session on startup",
     "恢复上次的播放队列、当前歌曲、进度、音量与播放模式":
@@ -358,7 +353,6 @@ _EN: dict[str, str] = {
     "轮播速度": "Rotation Speed",
     "音源": "Sources",
     "本地音源": "Local Sources",
-    "添加音乐目录": "Add Music Folder",
     "选择音乐目录": "Choose Music Folder",
     "已启用，重启应用后生效": "Enabled. Restart the app to take effect.",
 

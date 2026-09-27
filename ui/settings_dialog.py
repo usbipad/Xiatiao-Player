@@ -522,7 +522,7 @@ class SettingsWindow(Adw.PreferencesWindow):
     # ------------------------------------------------------------
     def _build_playback_page(self) -> None:
         page = Adw.PreferencesPage()
-        page.set_title(_("播放"))
+        page.set_title(_("播放设置"))
         page.set_icon_name("media-playback-start-symbolic")
         self.add(page)
         cfg = get_config()
