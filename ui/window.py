@@ -3359,8 +3359,8 @@ class MainWindow(Adw.ApplicationWindow):
                 ctrl.cancel()
         except Exception:
             pass
-        # 窗口自身定时器
-        for attr in ("_dsp_yaml_timer",):
+        # 窗口自身定时器（新增定时器时记得同步补进这里）
+        for attr in ("_dsp_yaml_timer", "_state_push_timer"):
             tid = getattr(self, attr, 0)
             if tid:
                 try:

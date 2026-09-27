@@ -80,6 +80,11 @@ class RustBackend(AudioBackend):
         self._reader_thread: Optional[threading.Thread] = None
         self._alive = False
         self._send_lock = threading.Lock()
+        # 保护「读线程是否活跃」标志：防止 _start_backend 与 _try_reconnect
+        # 并发启动两个 _read_loop 读同一 socket（buf 各自累积→事件重复/错乱）。
+        # 锁只覆盖标志读写，不跨 _read_loop 的阻塞循环，故不会死锁。
+        self._reader_lock = threading.Lock()
+        self._reader_active = False
         # 主动关闭标志：shutdown 时置 True，_read_loop 断开不再触发自愈。
         self._closing = False
         # 上次自愈重启的时间戳（单调时钟，秒），用于限流。
@@ -112,6 +117,14 @@ class RustBackend(AudioBackend):
                 [binary], env=env,
                 stdout=_out, stderr=_out,
             )
+            # Popen 已把 fd dup 给子进程，父进程不再需要 _out；
+            # 显式关闭避免频繁自愈重启时累积文件描述符。
+            # _out 可能是 DEVNULL 整数（无 close），故先判断。
+            if hasattr(_out, "close"):
+                try:
+                    _out.close()
+                except Exception:
+                    pass
         except Exception as exc:
             log.warning("启动 Rust 后端失败: %s", exc)
             return
@@ -136,6 +149,15 @@ class RustBackend(AudioBackend):
             return
         log.info("已连接后端: %s", self._socket_path)
 
+        self._start_reader()
+
+    def _start_reader(self) -> None:
+        """启动读线程；若已有活跃 reader 则跳过（防重复）。"""
+        with self._reader_lock:
+            if self._reader_active:
+                log.debug("读线程已活跃，跳过重复启动")
+                return
+            self._reader_active = True
         self._reader_thread = threading.Thread(
             target=self._read_loop, daemon=True
         )
@@ -232,6 +254,9 @@ class RustBackend(AudioBackend):
                     continue
                 GLib.idle_add(self._dispatch, evt)
         self._alive = False
+        # 读线程退出：清活跃标志，允许后续重连再起新 reader。
+        with self._reader_lock:
+            self._reader_active = False
         # 非主动关闭 → 后端意外断开：通知 UI 并尝试自愈重启。
         if not self._closing:
             self._handle_disconnect()
@@ -407,9 +432,8 @@ class RustBackend(AudioBackend):
             except Exception:
                 pass
             log.info("已重连后端: %s", self._socket_path)
-            # 重启读线程
-            t = threading.Thread(target=self._read_loop, daemon=True)
-            t.start()
+            # 重启读线程（_start_reader 内部防重复）
+            self._start_reader()
             return True
         except Exception as exc:
             log.debug("重连后端失败: %s", exc)
@@ -424,7 +448,13 @@ class RustBackend(AudioBackend):
                 return
         try:
             with self._send_lock:
-                self._sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
+                # 锁内取本地引用：避免 self._sock 在检查后、发送前被
+                # 后台 _restart_backend 置 None（TOCTOU），导致 AttributeError。
+                sock = self._sock
+                if sock is None:
+                    log.warning("[IPC→] 丢弃(连接已关闭): %s", obj.get("cmd"))
+                    return
+                sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
         except Exception as exc:
             log.warning("发送 IPC 命令失败: %s", exc)
 
