@@ -88,79 +88,37 @@ aspectframe,
    ============================================================ */
 .now-playing-root {
     background-color: @window_bg_color;
+    /* 沉浸页前景色变量：由 now_playing.py 的 _apply_fg_colors 按背景色注入。
+       未注入时回退主题前景色，保证首帧可读。 */
+    --np-fg: @window_fg_color;
+    --np-fg-dim: alpha(@window_fg_color, 0.60);
+    --np-fg-faint: alpha(@window_fg_color, 0.34);
+}
+
+/* 前景切换过渡：切歌瞬间背景色变化时，文字/图标颜色平滑过渡，
+   避免黑白硬切闪一下。歌词行自身已有 transition，此处不重复。 */
+.np-content,
+.np-content label,
+.np-skip-btn,
+.np-play-btn {
+    transition: color 220ms ease, background-color 220ms ease;
 }
 
 /* 前景内容跟随主题前景色，深浅自动适配 */
 .np-content {
-    color: @window_fg_color;
+    color: var(--np-fg);
 }
 
+/* 前景统一走 --np-fg 变量（由 now_playing.py 注入）；
+   不再有 .np-dark-bg 类——明暗/带色前景全由变量决定。 */
 .np-content label {
-    color: @window_fg_color;
+    color: var(--np-fg);
 }
-
-/* 背景偏暗时（模糊封面图较暗），前景整体切亮色，保证可读性。
-   由 now_playing.py 的 _set_dark_bg 动态增删 .np-dark-bg 类。 */
-.now-playing-root.np-dark-bg .np-content,
-.now-playing-root.np-dark-bg .np-content label {
-    color: #ffffff;
-}
-
-.now-playing-root.np-dark-bg .np-track-name {
-    color: #ffffff;
-}
-
-.now-playing-root.np-dark-bg .np-secondary,
-.now-playing-root.np-dark-bg .np-content .dim-label {
-    color: alpha(#ffffff, 0.65);
-}
-
-.now-playing-root.np-dark-bg .np-content .lyric-line {
-    color: alpha(#ffffff, 0.45);
-}
-
-.now-playing-root.np-dark-bg .np-content .lyric-active {
-    color: #ffffff;
-}
-
-.now-playing-root.np-dark-bg .np-skip-btn,
-.now-playing-root.np-dark-bg .np-skip-btn.np-aux-btn,
-.now-playing-root.np-dark-bg .np-play-btn {
-    color: #ffffff;
-}
-
-.now-playing-root.np-dark-bg .np-skip-btn.np-aux-btn {
-    color: alpha(#ffffff, 0.75);
-}
-
-.now-playing-root.np-dark-bg .np-skip-btn:hover {
-    background-color: alpha(#ffffff, 0.12);
-}
-
-/* 播放按钮：默认精致微透悬浮纽扣，动态强调色注入时跟随封面主色 */
-.now-playing-root.np-dark-bg .np-play-btn {
-    color: #ffffff;
-}
-
-/* 播放模式激活态：暗背景下也保持强调色，不额外加背景框。
- *
- * 此处原先把 color 覆盖为 #ffffff 并加了 alpha(#ffffff, 0.25) 的背景，
- * 但它的特异性 (0,5,0) 高于下方的激活态规则 (0,3,0)，
- * 导致暗背景时随机按钮变成「白图标 + 灰底」，与浅色背景下的
- * 「强调色图标、无背景」不一致。
- * 这里只保留「暗背景下不启用白前景」这一意图，改为继承下方规则。 */
-.now-playing-root.np-dark-bg .np-skip-btn.np-toggle-on,
-.now-playing-root.np-dark-bg .np-skip-btn.np-aux-btn.np-toggle-on {
-    color: @accent_bg_color;
-    background: none;
-    box-shadow: none;
-}
-
 
 /* 次要文字：歌手、时间、参数 */
 .np-secondary,
 .np-content .dim-label {
-    color: alpha(@window_fg_color, 0.55);
+    color: var(--np-fg-dim);
     font-size: 16px;
 }
 
@@ -184,7 +142,7 @@ aspectframe,
 .np-track-name {
     font-size: 28px;
     font-weight: 700;
-    color: @window_fg_color;
+    color: var(--np-fg);
 }
 
 /* 歌词区顶/底渐隐遮罩。
@@ -197,21 +155,29 @@ aspectframe,
 
 
 
-/* 歌词行：平滑过渡（模拟聚焦）*/
+/* 歌词行：三档强度（远处 lyric-line / 相邻 lyric-adjacent / 当前 lyric-active）。
+   颜色改用 --np-fg 变量：由背景对比度决策，切歌不硬跳。 */
 .np-content .lyric-line {
     font-size: 20px;
     font-weight: 500;
-    color: alpha(@window_fg_color, 0.38);
-    transition: font-size 260ms cubic-bezier(0.2, 0.8, 0.2, 1), color 260ms ease;
+    color: var(--np-fg-faint);
+    transition: font-size 300ms cubic-bezier(0.2, 0.8, 0.2, 1), color 300ms ease;
     padding: 4px 0;
 }
 
+/* 相邻行：比远处清晰，比当前行弱，形成焦点景深 */
+.np-content .lyric-adjacent {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--np-fg-dim);
+}
+
 .np-content .lyric-active {
-    font-size: 28px;
+    font-size: 26px;
     font-weight: 750;
     letter-spacing: -0.4px;
-    color: @window_fg_color;
-    text-shadow: 0 2px 16px alpha(@window_fg_color, 0.20);
+    color: var(--np-fg);
+    text-shadow: 0 2px 16px alpha(currentColor, 0.20);
 }
 
 /* 歌词滚动条：完全隐藏。歌词本来就随播放自动滚动，
@@ -252,13 +218,18 @@ aspectframe,
 
 .np-lyrics-compact .lyric-line {
     font-size: 14px;
-    color: alpha(@window_fg_color, 0.5);
+    color: var(--np-fg-faint);
+}
+
+.np-lyrics-compact .lyric-adjacent {
+    font-size: 15px;
+    color: var(--np-fg-dim);
 }
 
 .np-lyrics-compact .lyric-active {
     font-size: 16px;
     font-weight: 600;
-    color: @window_fg_color;
+    color: var(--np-fg);
 }
 
 /* 紧凑歌词的顶/底渐隐：顶端 = 面板卡片复合底色（@window_bg_color + 5% 前景），
@@ -283,7 +254,7 @@ aspectframe,
 .np-skip-btn.np-aux-btn {
     min-width: 32px;
     min-height: 32px;
-    color: alpha(@window_fg_color, 0.65);
+    color: var(--np-fg-dim);
     -gtk-icon-size: 17px;
 }
 
@@ -293,7 +264,7 @@ aspectframe,
     background: none;
     border: none;
     box-shadow: none;
-    color: @window_fg_color;
+    color: var(--np-fg);
     min-width: 42px;
     min-height: 42px;
     padding: 0;
@@ -371,7 +342,7 @@ popover.effect-popover preferencesgroup {
    收敛至 48px，微透基底与轻柔外框，既保持主焦点又与切歌键协调呼吸 */
 .np-play-btn {
     background-color: alpha(currentColor, 0.08);
-    color: @window_fg_color;
+    color: var(--np-fg);
     border: 1px solid alpha(currentColor, 0.09);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
     min-width: 48px;

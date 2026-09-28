@@ -139,11 +139,18 @@ def load_cover_assets(cover_raw: bytes | None,
 
 
 def _is_dark_background(png_bytes: bytes, threshold: float):
-    """计算模糊背景的平均亮度，判断是否偏暗；失败返回 None。"""
+    """计算模糊背景的 WCAG 相对亮度，判断是否偏暗；失败返回 None。
+
+    与 models.coverart / core.color_contrast 的前景决策使用同一套亮度公式
+    （含 sRGB 伽马校正），避免「背景判暗、前景却按亮算」的两套逻辑打架。
+    阈值默认 0.38（旧版是 299/587/114 近似公式 + 0.65，两者不可比）。
+    """
     try:
         import gi
         gi.require_version("GdkPixbuf", "2.0")
         from gi.repository import GdkPixbuf, Gio, GLib
+
+        from core.color_contrast import relative_luminance
         st = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(png_bytes))
         pb = GdkPixbuf.Pixbuf.new_from_stream(st, None)
         w, h = pb.get_width(), pb.get_height()
@@ -162,11 +169,16 @@ def _is_dark_background(png_bytes: bytes, threshold: float):
                 n += 1
         if not n:
             return None
-        lum = (sr * 299 + sg * 587 + sb * 114) / (n * 255000.0)
+        avg = (sr // n, sg // n, sb // n)
+        lum = relative_luminance(avg)
         try:
             thr = float(threshold)
         except Exception:
-            thr = 0.65
+            thr = 0.38
+        # 兼容旧配置：旧默认 0.65 是按 299/587/114 公式定的，
+        # 换到 WCAG 公式后量纲不同，若仍是旧值则映射到 0.38。
+        if thr > 0.55:
+            thr = 0.38
         return lum < thr
     except Exception:
         return None

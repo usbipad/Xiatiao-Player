@@ -9,6 +9,8 @@ from gi.repository import Gdk, GLib, Gtk
 
 from core.i18n import _
 
+from core.color_contrast import decide_foreground, rgb_to_css
+
 from models import extract_dominant_color, make_square_cover_bytes
 
 from .widgets.lyrics_view import LyricsView
@@ -56,6 +58,12 @@ class NowPlayingPage(Gtk.Overlay):
         # 当前背景色 / 是否封面色（供前景明暗判定）。
         self._bg_color_rgb = None
         self._bg_is_cover_color = False
+        # 复用前景色 CSS provider（替代逐控件切 np-dark-bg 类）
+        self._fg_provider = Gtk.CssProvider()
+        self._fg_provider_installed = False
+        self._fg_css_last = None
+        # 最近一次前景决策（供调试/复用）
+        self._fg_decision = None
 
         # ============ 背景：封面模糊图拉伸铺满（Apple Music 风格）============
         # 用 Picture 铺满整页；模糊+暗化在后台线程生成，主线程只设纹理。
@@ -535,7 +543,10 @@ class NowPlayingPage(Gtk.Overlay):
         # 记录模糊图的真实明暗（供进入沉浸页时重算前景）。
         if dark is not None:
             self._bg_tex_dark = bool(dark)
-            self._set_dark_bg(bool(dark))
+            # 沉浸页实际显示的是模糊图，故**以模糊图明暗为准**决定前景方向；
+            # 提亮纯色（bg_rgb）只是模糊图缺失时的回退，不能反客为主——
+            # 否则深色封面的模糊图会被判成浅色，前景不切白。
+            self._apply_plain_fg(bool(dark))
 
     def set_cover_texture(self, texture, bg_rgb=None, seekbar_rgb=None) -> None:
         """直接设置已解码的 GdkTexture（后台线程建好），主线程零解码。
@@ -543,6 +554,9 @@ class NowPlayingPage(Gtk.Overlay):
         bg_rgb / seekbar_rgb 为 None 时「不改动」现有背景色（避免主界面切歌
         误重置沉浸页已设好的颜色）；只有显式传入颜色才更新。
         """
+        # 切歌：先清空上一首的模糊图明暗，避免 _apply_fg_colors 的闸门
+        # 用旧明暗覆盖当前歌前景。新的 set_bg_texture 到来时会重新设。
+        self._bg_tex_dark = None
         if texture is not None:
             try:
                 self._cover.set_paintable(texture)
@@ -645,16 +659,21 @@ class NowPlayingPage(Gtk.Overlay):
         self._bg_is_cover_color = bool(color)
         # 记录当前背景 RGB，供进入沉浸页时重算前景明暗（reapply_dark_bg）。
         self._bg_color_rgb = tuple(color) if color else None
+        # 前景决策：仅当「没有模糊背景图」时才按纯色 bg_rgb 判。
+        # 若已有模糊图（沉浸页实际显示的就是它），前景由 set_bg_texture /
+        # reapply_dark_bg 按模糊图明暗决定，这里不能覆盖。
+        has_blur = getattr(self, "_bg_tex_dark", None) is not None
+        if not has_blur:
+            if color:
+                self._apply_fg_colors(tuple(color))
+            else:
+                # 无封面 / 关闭背景取色：回退主题色，跟随系统明暗。
+                self._apply_fg_colors(None)
         if color:
             r, g, b = color
             bg_css = f"rgb({r}, {g}, {b})"
-            self._set_dark_bg(self._is_dark(r, g, b))
         else:
-            # 无封面 / 关闭背景取色：回退主题色，与主界面一致。
-            # 前景明暗**跟随系统主题**（而非固定亮色）——背景是主题色，
-            # 系统暗则需亮色前景、系统亮则需深色前景。
             bg_css = "@window_bg_color"
-            self._set_dark_bg(self._current_theme_dark())
         css = f".now-playing-root {{ background-color: {bg_css}; }}"
         # 颜色没变则跳过：load_from_data 会让 GTK 重新解析样式表并 restyle
         # 整棵控件树，开销可观。进入沉浸页时会重设同一颜色，属于纯浪费。
@@ -694,54 +713,139 @@ class NowPlayingPage(Gtk.Overlay):
         """
         if getattr(self, "_bg_is_cover_color", False):
             return
-        self._set_dark_bg(self._current_theme_dark())
+        self._apply_fg_colors(None)
 
     def reapply_dark_bg(self) -> None:
-        """进入沉浸页时无条件重算一次前景明暗。
+        """进入沉浸页时无条件重算一次前景。
 
         首次进入时，切歌阶段的前景应用可能早于栈切过来，导致控件仍是
-        默认色（封面暗却显示黑字/黑图标）。这里按当前背景重新判定：
-        - 背景是封面色：按封面主色判定；
-        - 背景是主题色：按系统明暗判定。
+        默认色（封面暗却显示黑字/黑图标）。这里按当前背景重新决策：
+        - 背景是封面色：按封面主色决策；
+        - 无纯色但有模糊图明暗：按模糊图明暗用纯黑白；
+        - 都没有（背景是主题色）：跟随系统明暗。
         """
         try:
-            # 优先用「模糊背景图的真实明暗」——沉浸页实际显示的是模糊图，
-            # 而非提亮后的纯色，故判定应以模糊图为准（否则深色封面的歌
-            # 因提亮纯色判成浅色，前景不切白）。
+            # 优先级：模糊图真实明暗 > 封面主色纯色 > 系统主题。
+            # 模糊图是沉浸页实际背景，最能代表前景该配什么色。
             tex_dark = getattr(self, "_bg_tex_dark", None)
             if tex_dark is not None:
-                self._set_dark_bg(bool(tex_dark))
+                self._apply_plain_fg(bool(tex_dark))
                 return
-            # 无模糊图（关闭背景模糊）：按封面主色纯色判定。
             if getattr(self, "_bg_is_cover_color", False):
                 col = getattr(self, "_bg_color_rgb", None)
                 if col:
-                    self._set_dark_bg(self._is_dark(*col))
+                    self._apply_fg_colors(tuple(col))
                     return
-            self._set_dark_bg(self._current_theme_dark())
+            self._apply_fg_colors(None)
         except Exception:
             pass
 
-    @staticmethod
-    def _is_dark(r: int, g: int, b: int, threshold: float = 0.65) -> bool:
-        """按感知亮度判断颜色是否偏暗（暗则前景需切亮色）。"""
-        lum = (r * 299 + g * 587 + b * 114) / 255000.0
-        return lum < threshold
+    def _apply_plain_fg(self, dark: bool) -> None:
+        """按明暗注入纯黑白前景（无封面主色可依据时使用）。
 
-    def _set_dark_bg(self, dark: bool) -> None:
-        """切换沉浸页明暗前景：背景暗时给根节点加 np-dark-bg 类。
-
-        进度条是自绘的（CSS 管不到），需单独通知它切白色系。
+        与 _apply_fg_colors 的区别：不做对比度选色，直接按 dark 用黑/白，
+        适用于「背景是模糊图，只能判明暗、拿不到主色」的场景。
         """
+        primary = (255, 255, 255) if dark else (26, 26, 26)
+        dec = {"is_dark": dark, "primary": primary, "dim": primary,
+               "faint": primary, "on_primary": primary}
+        self._fg_decision = dec
+        if dark:
+            dim_a, faint_a = 0.82, 0.68
+        else:
+            dim_a, faint_a = 0.75, 0.58
+        css = (
+            ".now-playing-root {\n"
+            f"    --np-fg: {rgb_to_css(primary)};\n"
+            f"    --np-fg-dim: {rgb_to_css(primary, dim_a)};\n"
+            f"    --np-fg-faint: {rgb_to_css(primary, faint_a)};\n"
+            "}\n"
+        )
+        if css == self._fg_css_last:
+            return
+        self._fg_css_last = css
         try:
-            if dark:
-                self.add_css_class("np-dark-bg")
-            else:
-                self.remove_css_class("np-dark-bg")
+            self._fg_provider.load_from_data(css.encode("utf-8"))
+            if not self._fg_provider_installed:
+                display = Gdk.Display.get_default()
+                if display is not None:
+                    # 必须高于 style.css 的 USER 级——否则 `.now-playing-root`
+                    # 在 style.css 里定义的 --np-fg 默认值会覆盖本注入（同名变量
+                    # 高优先级 provider 胜）。用 USER+1000 与项目其它动态
+                    # provider（气泡底色等）保持一致。
+                    Gtk.StyleContext.add_provider_for_display(
+                        display, self._fg_provider,
+                        Gtk.STYLE_PROVIDER_PRIORITY_USER + 1000,
+                    )
+                    self._fg_provider_installed = True
         except Exception:
             pass
         try:
             self._progress.set_dark(bool(dark))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _is_dark(r: int, g: int, b: int) -> bool:
+        """按 WCAG 相对亮度判断颜色是否偏暗（保留兼容旧调用）。"""
+        from core.color_contrast import relative_luminance
+        return relative_luminance((r, g, b)) < 0.35
+
+    def _apply_fg_colors(self, bg_rgb: tuple[int, int, int] | None) -> None:
+        """按背景色计算并注入沉浸页前景色（歌词/控件/次要文字）。
+
+        与旧的「加/去 np-dark-bg 类 + 固定黑白」相比：
+        - 前景是「带色中性色」，按背景对比度选出，临界不跳变；
+        - 歌词三档强度（primary / dim / faint）一次性注入 CSS 变量，
+          歌词行只切类名，不各自解析样式。
+        进度条是自绘的（CSS 管不到），单独通知它切明暗。
+        """
+        if bg_rgb is not None:
+            dec = decide_foreground(tuple(bg_rgb))
+        else:
+            # 无封面 → 背景是主题色，前景跟随系统明暗，用纯黑/白
+            dark = self._current_theme_dark()
+            if dark:
+                dec = {"is_dark": True, "primary": (255, 255, 255),
+                       "dim": (255, 255, 255), "faint": (255, 255, 255),
+                       "on_primary": (255, 255, 255)}
+            else:
+                dec = {"is_dark": False, "primary": (26, 26, 26),
+                       "dim": (26, 26, 26), "faint": (26, 26, 26),
+                       "on_primary": (26, 26, 26)}
+        self._fg_decision = dec
+        # 次要/远处文字的 alpha：取值经对比度校验——
+        # 远处行（faint）实际对比度 >= 3.0、相邻行（dim）>= 4.0，
+        # 否则彩色模糊背景上会糊到不可读（此前 faint=0.34 实测仅 1.86）。
+        if dec["is_dark"]:
+            dim_a, faint_a = 0.82, 0.68
+        else:
+            dim_a, faint_a = 0.75, 0.58
+        css = (
+            ".now-playing-root {\n"
+            f"    --np-fg: {rgb_to_css(dec['primary'])};\n"
+            f"    --np-fg-dim: {rgb_to_css(dec['dim'], dim_a)};\n"
+            f"    --np-fg-faint: {rgb_to_css(dec['faint'], faint_a)};\n"
+            "}\n"
+        )
+        if css == self._fg_css_last:
+            return
+        self._fg_css_last = css
+        try:
+            self._fg_provider.load_from_data(css.encode("utf-8"))
+            if not self._fg_provider_installed:
+                display = Gdk.Display.get_default()
+                if display is not None:
+                    # 同上：必须高于 style.css 的 USER 级，否则默认变量覆盖注入。
+                    Gtk.StyleContext.add_provider_for_display(
+                        display, self._fg_provider,
+                        Gtk.STYLE_PROVIDER_PRIORITY_USER + 1000,
+                    )
+                    self._fg_provider_installed = True
+        except Exception:
+            pass
+        try:
+            self._progress.set_dark(bool(dec["is_dark"]))
         except Exception:
             pass
 
@@ -794,8 +898,10 @@ class NowPlayingPage(Gtk.Overlay):
             self._btn_play_css.load_from_data(b"")
             return
         r, g, b = rgb
-        lum = (r * 299 + g * 587 + b * 114) / 255000.0
-        fg = "#1a1a1a" if lum > 0.65 else "#ffffff"
+        # 前景用统一决策的 on_primary（带色中性色），与控件体系一致
+        dec = getattr(self, "_fg_decision", None) or decide_foreground((r, g, b))
+        fr, fg_, fb = dec["on_primary"]
+        fg = f"rgb({fr}, {fg_}, {fb})"
         # 注意：GTK CSS 不支持 !important——写了会被当作非法值，
         # 导致整条规则被丢弃（沉浸页播放键染色曾因此完全失效）。
         # 这里通过「重复类名提高特异性」来压过 style.css 的基础规则。

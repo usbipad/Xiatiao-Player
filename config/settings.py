@@ -54,8 +54,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "nowplaying_blur_bg": True,
     # 模糊强度（越小越糊）
     "nowplaying_blur_px": 6,
-    # 背景亮度自适应阈值（低于此亮度时前景切亮色）
-    "nowplaying_dark_threshold": 0.65,
+    # 背景亮度自适应阈值（WCAG 相对亮度，低于此值时前景切亮色）。
+    # 旧值 0.65 基于 299/587/114 近似公式，换成 WCAG 公式后等价约 0.38。
+    "nowplaying_dark_threshold": 0.38,
     # 主界面背景是否跟随当前封面主色调（关闭则用主题色 @view_bg_color）
     "main_bg_follow_cover": False,
     # 进度条已播段是否跟随当前封面主色（关闭则用默认深灰/白）
