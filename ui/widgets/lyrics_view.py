@@ -30,8 +30,6 @@ class LyricsView(Gtk.Overlay):
         self._current_line = -1
         self._row_widgets: list[Gtk.Label] = []
         self._scroll_anim_id = 0
-        # 已加过高亮类的行号集合（当前/相邻/远处三档），用于增量更新
-        self._styled_lines: set[int] = set()
 
         if compact:
             self.add_css_class("np-lyrics-compact")
@@ -91,7 +89,6 @@ class LyricsView(Gtk.Overlay):
         self._times = [t for t, _ in lyrics]
         self._current_line = -1
         self._hl_idx = -1
-        self._styled_lines.clear()
         self._row_widgets.clear()
 
         # 只删除歌词行，保留首尾 spacer 和 empty_label
@@ -141,50 +138,22 @@ class LyricsView(Gtk.Overlay):
 
     # ---- 内部 ----
     def _apply_highlight(self, idx: int) -> None:
-        """三档高亮：当前行 lyric-active、相邻行 lyric-adjacent、远处行无类。
-
-        性能：只更新「旧的受影响行」与「新的受影响行」差集，
-        不遍历全部歌词行；长歌词（上百行）时每次切行仅动常数个控件。
-        相邻行范围 = idx ± 1（可调 _ADJACENT_RANGE）。
-        """
-        if getattr(self, "_hl_idx", -1) == idx:
+        # 只改「上一行」和「当前行」两个控件。
+        # 遍历全部歌词行逐行 add/remove_css_class，长歌词（上百行）时
+        # 每次切行都会产生大量样式失效；而该方法在进入沉浸页的
+        # set_position 链路上也会被调用，直接拖慢首帧。
+        prev = getattr(self, "_hl_idx", -1)
+        if prev == idx:
             return
         self._hl_idx = idx
-        n = len(self._row_widgets)
-        if n == 0:
-            return
-        rng = self._ADJACENT_RANGE
-        # 新的受影响行：当前 + 相邻
-        new_lines = set()
-        for d in range(-rng, rng + 1):
-            j = idx + d
-            if 0 <= j < n:
-                new_lines.add(j)
-        # 旧集合里不再受影响的，去掉高亮类
-        for j in self._styled_lines - new_lines:
-            self._set_line_style(j, None)
-        # 新的受影响行：当前行 active、其余相邻行 adjacent
-        for j in new_lines:
-            self._set_line_style(j, "lyric-active" if j == idx else "lyric-adjacent")
-        self._styled_lines = new_lines
-        if 0 <= idx < n:
-            GLib.idle_add(self._scroll_to, self._row_widgets[idx])
-
-    #: 相邻行高亮范围（当前行上下各几行视为「相邻」）
-    _ADJACENT_RANGE = 1
-
-    def _set_line_style(self, j: int, active_cls: str | None) -> None:
-        """把第 j 行设为指定高亮类（None = 无高亮），先清旧类再加新类。"""
-        if not (0 <= j < len(self._row_widgets)):
-            return
-        w = self._row_widgets[j]
         try:
-            w.remove_css_class("lyric-active")
-            w.remove_css_class("lyric-adjacent")
-            if active_cls:
-                w.add_css_class(active_cls)
+            if 0 <= prev < len(self._row_widgets):
+                self._row_widgets[prev].remove_css_class("lyric-active")
         except Exception:
             pass
+        if 0 <= idx < len(self._row_widgets):
+            self._row_widgets[idx].add_css_class("lyric-active")
+            GLib.idle_add(self._scroll_to, self._row_widgets[idx])
 
     def _scroll_to(self, widget: Gtk.Widget) -> bool:
         adj = self._lyrics_scroll.get_vadjustment()

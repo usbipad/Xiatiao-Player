@@ -155,25 +155,18 @@ aspectframe,
 
 
 
-/* 歌词行：三档强度（远处 lyric-line / 相邻 lyric-adjacent / 当前 lyric-active）。
-   颜色改用 --np-fg 变量：由背景对比度决策，切歌不硬跳。 */
+/* 歌词行：平滑过渡（模拟聚焦）
+   颜色走 --np-fg 变量：由背景明暗决策，切歌不硬跳。 */
 .np-content .lyric-line {
     font-size: 20px;
     font-weight: 500;
     color: var(--np-fg-faint);
-    transition: font-size 300ms cubic-bezier(0.2, 0.8, 0.2, 1), color 300ms ease;
+    transition: font-size 260ms cubic-bezier(0.2, 0.8, 0.2, 1), color 260ms ease;
     padding: 4px 0;
 }
 
-/* 相邻行：比远处清晰，比当前行弱，形成焦点景深 */
-.np-content .lyric-adjacent {
-    font-size: 22px;
-    font-weight: 600;
-    color: var(--np-fg-dim);
-}
-
 .np-content .lyric-active {
-    font-size: 26px;
+    font-size: 28px;
     font-weight: 750;
     letter-spacing: -0.4px;
     color: var(--np-fg);
@@ -219,11 +212,6 @@ aspectframe,
 .np-lyrics-compact .lyric-line {
     font-size: 14px;
     color: var(--np-fg-faint);
-}
-
-.np-lyrics-compact .lyric-adjacent {
-    font-size: 15px;
-    color: var(--np-fg-dim);
 }
 
 .np-lyrics-compact .lyric-active {
