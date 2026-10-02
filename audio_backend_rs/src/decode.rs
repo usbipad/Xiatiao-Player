@@ -36,6 +36,14 @@ fn do_seek(
 /// 解码线程：用 symphonia 解码并写入输出层。
 pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
                 output: Arc<crate::output::AudioOut>) -> Result<(), String> {
+    // ---- 网络流分流 ----
+    // http/https 是网络流：symphonia 不处理网络，直接交给 ffmpeg 拉流解码。
+    // ffmpeg/ffprobe 原生支持 URL（-i http://...）。
+    if path.starts_with("http://") || path.starts_with("https://") {
+        eprintln!("[engine] network stream → ffmpeg: {path}");
+        return run_playback_ffmpeg(path, shared, output);
+    }
+
     // ---- DSD 分流 ----
     // dsf/dff 在 native / dop 模式下，绕过 ffmpeg，直接读取原始 DSD 位流
     // 交给 ALSA 独占后端（DoP 封装或 Native 直通）。

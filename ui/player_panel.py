@@ -110,6 +110,7 @@ class PlayerPanel(Gtk.Box):
         on_queue_action: Callable[[str, object], None] | None = None,
         on_add_queue: Callable[[], None] | None = None,
         on_cast: Callable[[], None] | None = None,
+        on_download: Callable[[], None] | None = None,
     ) -> None:
         self._on_add_queue = on_add_queue
         self._on_queue_activate = on_queue_activate
@@ -186,6 +187,7 @@ class PlayerPanel(Gtk.Box):
         self._on_effect = on_effect
         self._on_effect_settings = on_effect_settings
         self._on_cast = on_cast
+        self._on_download = on_download
 
         # ---- 封面 / 歌词 切换区（底部 Tab：Player 显示封面，Lyrics 显示歌词）----
         self._cover_area = Gtk.Stack()
@@ -401,6 +403,14 @@ class PlayerPanel(Gtk.Box):
         self._cast_btn.connect("clicked", lambda *_: self._on_cast and self._on_cast())
         func_box.append(self._cast_btn)
 
+        # 下载：把当前在线曲目下载到本地目录
+        self._download_btn = Gtk.Button(icon_name="xiatiao-download-symbolic")
+        self._download_btn.add_css_class("flat")
+        self._download_btn.add_css_class("np-skip-btn")
+        self._download_btn.set_tooltip_text(_("下载"))
+        self._download_btn.connect("clicked", lambda *_: self._on_download and self._on_download())
+        func_box.append(self._download_btn)
+
         self._func_box = func_box
         inner.append(func_box)
 
@@ -569,20 +579,22 @@ class PlayerPanel(Gtk.Box):
         except Exception:
             pass
 
-        # 封面：仅本地曲目按 filepath 读取；在线曲目（有 cover_bytes/url）暂用占位
+        # 封面：本地按 filepath 读内嵌；在线（filepath 空）按 cover_url 下载
         filepath = getattr(track, "filepath", "") or ""
-        if not filepath:
+        cover_url = getattr(track, "cover_url", "") or ""
+        if not filepath and not cover_url:
             return overlay
+        ckey = filepath if filepath else ("url::" + cover_url)
         try:
             from ui.pages import _cache_get, _cache_put, _load_cover_bytes, _MISS
         except Exception:
             return overlay
-        cached = _cache_get(filepath)
+        cached = _cache_get(ckey)
         if cached is not _MISS and cached is not None:
             pic.set_paintable(cached)
             return overlay
         if cached is _MISS:
-            # 未缓存：异步加载（复用 pages 的后台读图 + 缓存）
+            # 未缓存：异步加载（复用 pages 的后台读图/下载 + 缓存）
             from core.tasks import run_async
 
             def _done(png_bytes) -> None:
@@ -592,7 +604,7 @@ class PlayerPanel(Gtk.Box):
                         tex = Gdk.Texture.new_from_bytes(GLib.Bytes.new(png_bytes))
                     except Exception:
                         tex = None
-                _cache_put(filepath, tex)
+                _cache_put(ckey, tex)
                 if tex is not None:
                     try:
                         pic.set_paintable(tex)
@@ -600,7 +612,11 @@ class PlayerPanel(Gtk.Box):
                         pass
 
             try:
-                run_async(work=lambda: _load_cover_bytes(filepath), on_done=_done)
+                if filepath:
+                    run_async(work=lambda: _load_cover_bytes(filepath), on_done=_done)
+                else:
+                    from .pages.common import load_cover_from_url as _load_url_cover
+                    run_async(work=lambda: _load_url_cover(cover_url), on_done=_done)
             except Exception:
                 pass
         return overlay

@@ -253,25 +253,35 @@ def _on_cover_bind(_factory, list_item) -> None:
     if item is None:
         return
 
-    # 本地曲目：按 filepath 后台读内嵌封面
+    # 决定封面来源：本地按 filepath 读内嵌封面；在线按 cover_url 下载
     filepath = getattr(item, "filepath", "")
-    if not filepath:
+    cover_url = getattr(item, "cover_url", "")
+    if not filepath and not cover_url:
         return
-    cached = cache_get(filepath)
+    # 缓存键：本地用 filepath，在线用 "url::<cover_url>"（避免与本地键冲突）
+    ckey = filepath if filepath else ("url::" + cover_url)
+    cached = cache_get(ckey)
     if cached is not MISS:
         pic.set_paintable(cached)
         if ph is not None:
             ph.set_visible(cached is None)
         return
     loading = cover_loading_map()
-    if filepath in loading:
-        loading[filepath].append((list_item, pic, "file"))
+    if ckey in loading:
+        loading[ckey].append((list_item, pic, "file"))
         return
-    loading[filepath] = []
+    loading[ckey] = []
     cover_activity.mark_busy()
 
+    def _item_matches(t) -> bool:
+        if t is None:
+            return False
+        if filepath:
+            return getattr(t, "filepath", "") == filepath
+        return getattr(t, "cover_url", "") == cover_url
+
     def on_done(png_bytes) -> None:
-        waiters = loading.pop(filepath, [])
+        waiters = loading.pop(ckey, [])
         cover_activity.mark_idle()
         tex = None
         if png_bytes:
@@ -279,18 +289,18 @@ def _on_cover_bind(_factory, list_item) -> None:
                 tex = Gdk.Texture.new_from_bytes(GLib.Bytes.new(png_bytes))
             except Exception:
                 tex = None
-        cache_put(filepath, tex)
+        cache_put(ckey, tex)
         cur = list_item.get_item()
-        if cur is not None and getattr(cur, "filepath", "") == filepath:
+        if _item_matches(cur):
             pic.set_paintable(tex)
             _ph = getattr(list_item, "_cover_ph", None)
             if _ph is not None:
                 _ph.set_visible(tex is None)
-        # 回填所有等待同一 filepath 的其它列表项（曲库/历史/歌单可能同屏）
+        # 回填所有等待同一封面的其它列表项（曲库/历史/歌单可能同屏）
         for w_item, w_pic, _kind in waiters:
             try:
                 wc = w_item.get_item()
-                if wc is not None and getattr(wc, "filepath", "") == filepath:
+                if _item_matches(wc):
                     w_pic.set_paintable(tex)
                     _wph = getattr(w_item, "_cover_ph", None)
                     if _wph is not None:
@@ -298,7 +308,11 @@ def _on_cover_bind(_factory, list_item) -> None:
             except Exception:
                 pass
 
-    run_async(work=lambda: _load_cover_bytes(filepath), on_done=on_done)
+    if filepath:
+        run_async(work=lambda: _load_cover_bytes(filepath), on_done=on_done)
+    else:
+        from .common import load_cover_from_url as _load_url_cover
+        run_async(work=lambda: _load_url_cover(cover_url), on_done=on_done)
 
 
 # ================================================================

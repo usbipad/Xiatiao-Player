@@ -433,7 +433,7 @@ headerbar menubutton.app-menu-btn image {
  * 面板与底色同色（不加暗一档叠加），层级靠圆角/阴影/边界区分。 */
 .player-panel {
     background-color: @window_bg_color;
-    border-radius: 16px;
+    border-radius: 10px;
     border: none;
     /* 悬浮阴影：参考专辑卡片但收敛扩散范围（偏移/模糊更小），
      * 使阴影更贴边、不外扩，便于把侧栏 padding 收窄。 */
@@ -460,7 +460,7 @@ overlay-split-view .sidebar-pane.end:dir(rtl) {
     background-color: @view_bg_color;
     border: none;
     box-shadow: none;
-    padding: 2px;
+    padding: 6px;
 }
 /* overlay-split-view 的 border 节点：侧栏与内容区的分隔线（淡前景色）。 */
 overlay-split-view > border,
@@ -657,6 +657,60 @@ listview > row:hover {
     border-radius: 18px;
 }
 
+/* 右上角「头像 + 菜单」：两个独立圆钮（不再是药丸胶囊）。
+   显式去掉阴影，避免 Adwaita 默认 headerbar 按钮阴影被容器边界裁切。 */
+headerbar menubutton.avatar-btn,
+headerbar menubutton.app-menu-btn,
+headerbar menubutton.avatar-btn > button,
+headerbar menubutton.app-menu-btn > button {
+    /* 强制 34×34 纯圆：min+max 双锁，超大 radius 不受宽高比影响。 */
+    border-radius: 9999px;
+    background: none;
+    box-shadow: none;
+    min-width: 34px;
+    min-height: 34px;
+    max-width: 34px;
+    max-height: 34px;
+    padding: 0;
+    margin: 0;
+}
+headerbar menubutton.avatar-btn:hover,
+headerbar menubutton.app-menu-btn:hover,
+headerbar menubutton.avatar-btn > button:hover,
+headerbar menubutton.app-menu-btn > button:hover {
+    background-color: alpha(currentColor, 0.10);
+    box-shadow: none;
+}
+
+/* 首字母圆形头像（无图时的占位） */
+.acct-role-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 8px;
+    background-color: alpha(currentColor, 0.08);
+    color: alpha(currentColor, 0.75);
+}
+
+.avatar-initial {
+    min-width: 22px;
+    min-height: 22px;
+    border-radius: 50%;
+    background-color: alpha(@accent_bg_color, 0.9);
+    color: @accent_fg_color;
+    font-weight: bold;
+    font-size: 13px;
+    padding: 2px;
+}
+.avatar-lg {
+    min-width: 48px;
+    min-height: 48px;
+    font-size: 22px;
+    padding: 4px;
+}
+.avatar-round {
+    border-radius: 50%;
+}
+
 /* hover 时封面额外浮起 + 轻微放大 */
 .media-card:hover .media-card-cover {
     box-shadow: 0 11px 13px rgba(0, 0, 0, 0.32),
@@ -836,6 +890,42 @@ button.np-skip-btn.liked-active:disabled {
 /* 卡片无封面时的占位图标 */
 .media-card-placeholder {
     color: alpha(currentColor, 0.25);
+}
+
+/* 「连接」卡片：柔和底色 + 圆角（现代播放器风） */
+.subsonic-connect-card {
+    background-color: alpha(currentColor, 0.06);
+    border-radius: 12px;
+    padding: 18px 16px;
+}
+
+/* 连接按钮：已连接 = 绿色 */
+button.subsonic-btn-ok {
+    background-color: #2ec27e;
+    background-image: none;
+    color: #ffffff;
+}
+
+/* 连接按钮：失败 = 红色 */
+button.subsonic-btn-err {
+    background-color: #e01b24;
+    background-image: none;
+    color: #ffffff;
+}
+
+/* 「连接」成功：绿色文字 */
+.success {
+    color: #2ec27e;
+}
+
+/* 「连接」失败：红色文字 */
+.error {
+    color: #e01b24;
+}
+row.success subtitle,
+row.success .subtitle,
+.success subtitle {
+    color: #2ec27e;
 }
 
 

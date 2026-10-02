@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 # 候选 Provider 模块；import 失败会被静默跳过（解耦要求）
 _PROVIDER_MODULES = [
     ("providers.local", "LocalProvider"),
+    ("providers.subsonic", "SubsonicProvider"),
 ]
 
 _registry: Dict[str, Type[BaseMusicProvider]] = {}

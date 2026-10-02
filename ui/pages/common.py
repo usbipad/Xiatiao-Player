@@ -61,6 +61,30 @@ def cover_loading_map() -> dict:
     return _COVER_LOADING
 
 
+def load_cover_from_url(url: str, size: int = COVER_SIZE, radius: int = 6):
+    """后台线程：从 URL 下载封面并缩放为正方形 PNG bytes（不碰 UI）。
+
+    用于在线曲目（filepath 为空、cover_url 有值）。
+    下载失败返回 None。
+    """
+    if not url:
+        return None
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        from models import make_square_cover_bytes
+        return make_square_cover_bytes(raw, size, radius=radius)
+    except Exception:
+        return None
+
+
 def load_cover_bytes(filepath: str, size: int = COVER_SIZE, radius: int = 6):
     """后台线程：读取内嵌封面并缩放为正方形 PNG bytes（不碰 UI）。
 
@@ -100,13 +124,15 @@ class _CoverActivity(GObject.Object):
     def __init__(self) -> None:
         super().__init__()
         self._busy = False
+        #: 手动引用计数：调用方 mark_busy/mark_idle 配对（如在线卡片封面）。
+        self._manual = 0
 
     @property
     def busy(self) -> bool:
         return self._busy
 
     def _refresh(self) -> None:
-        busy = bool(_COVER_LOADING)
+        busy = bool(_COVER_LOADING) or self._manual > 0
         if busy != self._busy:
             self._busy = busy
             try:
@@ -115,9 +141,11 @@ class _CoverActivity(GObject.Object):
                 pass
 
     def mark_busy(self) -> None:
+        self._manual += 1
         self._refresh()
 
     def mark_idle(self) -> None:
+        self._manual = max(0, self._manual - 1)
         self._refresh()
 
 

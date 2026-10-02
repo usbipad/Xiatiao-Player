@@ -44,9 +44,20 @@ class HistoryStore(SqliteStore):
                         source_type TEXT,
                         source_id TEXT,
                         cover_url TEXT,
+                        sample_rate INTEGER,
+                        bit_depth INTEGER,
+                        channels INTEGER,
+                        bitrate INTEGER,
                         played_at REAL
                     )"""
                 )
+                # 旧库迁移：补充技术字段列（已存在则忽略）
+                for col, typ in (("sample_rate", "INTEGER"), ("bit_depth", "INTEGER"),
+                                 ("channels", "INTEGER"), ("bitrate", "INTEGER")):
+                    try:
+                        conn.execute(f"ALTER TABLE history_tracks ADD COLUMN {col} {typ}")
+                    except sqlite3.Error:
+                        pass
                 conn.commit()
         except sqlite3.Error as exc:
             log.warning("初始化历史库失败: %s", exc)
@@ -65,8 +76,9 @@ class HistoryStore(SqliteStore):
                 conn.execute(
                     """INSERT OR REPLACE INTO history_tracks
                     (key,title,artist,album,duration,duration_seconds,filepath,
-                     source_type,source_id,cover_url,played_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                     source_type,source_id,cover_url,sample_rate,bit_depth,
+                     channels,bitrate,played_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         self._key(track),
                         getattr(track, "title", ""),
@@ -78,6 +90,10 @@ class HistoryStore(SqliteStore):
                         getattr(track, "source_type", "") or "",
                         getattr(track, "source_id", "") or "",
                         getattr(track, "cover_url", "") or "",
+                        int(getattr(track, "sample_rate", 0) or 0),
+                        int(getattr(track, "bit_depth", 0) or 0),
+                        int(getattr(track, "channels", 0) or 0),
+                        int(getattr(track, "bitrate", 0) or 0),
                         time.time(),
                     ),
                 )

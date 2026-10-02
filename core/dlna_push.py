@@ -381,6 +381,81 @@ def _guess_mime(path: str) -> str:
 # ============================================================
 # SOAP 控制
 # ============================================================
+def _local_lan_ip() -> str:
+    """取本机局域网 IPv4（用于让 DLNA 设备访问）。失败返回空串。
+
+    注意：不能简单用 connect(8.8.8.8)（挂了代理时会被选到虚拟网卡，
+    如 Clash 的 198.18.0.1）。这里优先取真实私有网段地址。
+    """
+    import socket as _socket
+    import subprocess as _sp
+    import re as _re
+    cands = []
+    # 方法 1：解析 `ip -4 addr`（最可靠，能看到所有网卡）
+    for cmd in (("ip", "-4", "addr"), ("ip", "-4", "-o", "addr")):
+        try:
+            out = _sp.run(cmd, capture_output=True, text=True, timeout=3).stdout
+            for m in _re.finditer(r"inet\s+(\d+\.\d+\.\d+\.\d+)", out):
+                ip = m.group(1)
+                if ip and ip not in cands:
+                    cands.append(ip)
+            if cands:
+                break
+        except Exception:
+            continue
+    # 方法 2：UDP connect 兜底
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            if ip and ip not in cands:
+                cands.append(ip)
+        finally:
+            s.close()
+    except Exception:
+        pass
+
+    def _is_private(ip: str) -> bool:
+        if ip.startswith("192.168.") or ip.startswith("10."):
+            return True
+        if ip.startswith("172."):
+            try:
+                return 16 <= int(ip.split(".")[1]) <= 31
+            except Exception:
+                return False
+        return False
+
+    # 优先真实私有网段；排除 127.* 和代理虚拟段 198.18.*/198.19.*
+    for ip in cands:
+        if ip.startswith("127.") or ip.startswith("198.18.") or ip.startswith("198.19."):
+            continue
+        if _is_private(ip):
+            return ip
+    # 退而求其次：任意非回环/非虚拟
+    for ip in cands:
+        if not ip.startswith(("127.", "198.18.", "198.19.")):
+            return ip
+    return ""
+
+
+def _rewrite_loopback(url: str) -> str:
+    """把 URL 里的 127.0.0.1 / localhost / 0.0.0.0 替换为本机局域网 IP。
+
+    DLNA 设备在另一台机器上，回环地址指向设备自己而非本机，必须替换。
+    拿不到局域网 IP 时原样返回。
+    """
+    try:
+        import re as _re
+        ip = _local_lan_ip()
+        if not ip:
+            return url
+        return _re.sub(r"(https?://)(?:127\.0\.0\.1|localhost|0\.0\.0\.0)(?=[:/])",
+                       r"\g<1>" + ip, url)
+    except Exception:
+        return url
+
+
 def _soap_call(control_url: str, service: str, action: str, args: str,
                timeout: float = 5.0) -> bool:
     """向渲染器发一条 SOAP 控制命令。成功返回 True。"""
@@ -485,11 +560,18 @@ class DlnaPusher:
         if not ctrl:
             log.warning("DLNA 推送：未选择设备")
             return False
-        if self._http is None:
-            self.start_http()
-        if self._http is None:
-            return False
-        url = self._file_url(filepath)
+        # 在线歌：filepath 本身就是 http(s) URL → 直接投递，不走内置文件服务。
+        is_remote = filepath.startswith("http://") or filepath.startswith("https://")
+        if is_remote:
+            # DLNA 设备在别的机器上，访问不到 127.0.0.1/localhost；
+            # 把回环地址换成本机局域网 IP，设备才能拉流。
+            url = _rewrite_loopback(filepath)
+        else:
+            if self._http is None:
+                self.start_http()
+            if self._http is None:
+                return False
+            url = self._file_url(filepath)
         meta = _didl_metadata(url, title or os.path.basename(filepath), artist,
                               _guess_mime(filepath))
         escaped_url = html.escape(url)

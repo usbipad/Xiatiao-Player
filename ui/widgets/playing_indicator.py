@@ -15,6 +15,8 @@ from gi.repository import GLib, Gtk
 
 #: 全局「当前播放行键」；由播放列表页在切歌时设置。
 _CURRENT_KEY = ""
+#: 全局「是否暂停」；暂停时指示器可见但不跳动（不跑定时器）。
+_PAUSED = False
 #: 存活指示器实例（弱引用），仅用于切歌时快速通知显隐。
 import weakref as _weakref
 _INSTANCES = _weakref.WeakSet()
@@ -33,6 +35,20 @@ def set_current_key(key: str) -> None:
 
 def get_current_key() -> str:
     return _CURRENT_KEY
+
+
+def set_paused(paused: bool) -> None:
+    """设置全局暂停态并通知所有存活指示器。
+
+    暂停时指示器保持可见但停止跳动动画（不消耗 CPU）。
+    """
+    global _PAUSED
+    _PAUSED = bool(paused)
+    for ind in list(_INSTANCES):
+        try:
+            ind.sync_now()
+        except Exception:
+            pass
 
 
 class NowPlayingIcon(Gtk.Image):
@@ -111,14 +127,18 @@ class PlayingIndicator(Gtk.DrawingArea):
         self._row_key = key or ""
 
     def sync_now(self, *_args) -> None:
-        """按全局当前键决定显隐、动画，并给所在行加/去高亮类。"""
+        """按全局当前键决定显隐、动画，并给所在行加/去高亮类。
+
+        - 键匹配 → 可见；
+        - 仅「可见 + 未暂停」才跑跳动动画（暂停时可见但静止，不占 CPU）。
+        """
         should = bool(_CURRENT_KEY) and self._row_key == _CURRENT_KEY
         try:
             if self.get_visible() != should:
                 self.set_visible(should)
         except Exception:
             pass
-        if should:
+        if should and not _PAUSED:
             self._start_timer()
         else:
             self._stop_timer()

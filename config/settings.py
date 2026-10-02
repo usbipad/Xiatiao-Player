@@ -27,6 +27,20 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "dsd_output_mode": "auto",
     # 输出设备名（ALSA hw 设备名）；空=系统默认（PipeWire）
     "output_device": "",
+    # ---- 下载 ----
+    # 在线歌曲下载目录（空=默认 ~/下载）
+    "download_dir": "",
+    # ---- 在线音源（Subsonic 通用客户端）----
+    # 在线音源总开关：关闭后不主动连接/显示在线音乐（默认启用）
+    "subsonic_enabled": True,
+    # 服务端地址（如 http://127.0.0.1:4533 指向 Navidrome/自建服务）
+    "subsonic_url": "",
+    "subsonic_user": "",
+    "subsonic_password": "",
+    # 认证方式：True=标准 token（md5(password+salt)）；False=明文 p=（兼容部分服务端）
+    "subsonic_use_token": True,
+    # 额外查询参数（形如 a=1&b=2），留给特殊服务端
+    "subsonic_extra_params": "",
     # ---- 音效 ----
     "audio_effect": "off",
     # 全局 DSP 开关（Rust 内置链）

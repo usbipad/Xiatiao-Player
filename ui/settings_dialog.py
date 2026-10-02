@@ -19,7 +19,8 @@ class SettingsWindow(Adw.PreferencesWindow):
     def __init__(self, parent, on_dirs_changed=None, on_dsp_changed=None,
                  on_convolution_ir=None, on_convolution_cleared=None,
                  on_viz_changed=None, on_open_viz_window=None,
-                 on_coloring=None) -> None:
+                 on_coloring=None, on_subsonic_toggled=None,
+                 on_subsonic_tested=None) -> None:
         super().__init__()
         # 保存父窗口：构建期 self.get_root() 可能为 None，
         # 因此统一通过 _get_window() 获取主窗口（用于访问 player）。
@@ -35,8 +36,11 @@ class SettingsWindow(Adw.PreferencesWindow):
         self._on_viz_changed = on_viz_changed
         self._on_open_viz_window = on_open_viz_window
         self._on_coloring = on_coloring
+        self._on_subsonic_toggled = on_subsonic_toggled
+        self._on_subsonic_tested = on_subsonic_tested
 
         self._build_local_group()
+        self._build_subsonic_group()
         self._build_playback_page()
         self._build_shortcuts_page()
         self._build_effect_page()
@@ -51,6 +55,251 @@ class SettingsWindow(Adw.PreferencesWindow):
         构建期 self.get_root() 可能为 None，故优先用构造时保存的 parent。
         """
         return self._parent if self._parent is not None else self.get_root()
+
+    # ------------------------------------------------------------
+    # 在线音源（Subsonic）分组
+    # ------------------------------------------------------------
+    def _build_subsonic_group(self) -> None:
+        """在「音源」页追加「在线音源（Subsonic）」分组（不新建独立页）。"""
+        cfg = get_config()
+        # 复用「音源」页（_build_local_group 已建并存入 self._page）
+        page = getattr(self, "_page", None)
+        if page is None:
+            page = Adw.PreferencesPage()
+            page.set_title(_("音源"))
+            self.add(page)
+            self._page = page
+
+        group = Adw.PreferencesGroup()
+        group.set_title(_("在线音源（Subsonic）"))
+        group.set_description(
+            _("连接任意兼容 Subsonic 协议的音乐服务（Navidrome / Airsonic / 自建服务）"))
+
+        # 总开关：放在分组标题右侧（启用 / 关闭在线音源）
+        enabled_switch = Gtk.Switch()
+        enabled_switch.set_valign(Gtk.Align.CENTER)
+        enabled_switch.set_active(cfg.get_bool("subsonic_enabled", True))
+        enabled_switch.set_tooltip_text(
+            _("启用在线音源；关闭后不再连接在线服务、隐藏在线音乐入口"))
+
+        def _on_enabled_toggled(r, _p):
+            val = r.get_active()
+            cfg.set_bool("subsonic_enabled", val)
+            # 关闭时禁用底下的在线相关行
+            self._apply_subsonic_rows_sensitive(val)
+            cb = getattr(self, "_on_subsonic_toggled", None)
+            if callable(cb):
+                try:
+                    cb(val)
+                except Exception:
+                    pass
+
+        enabled_switch.connect("notify::active", _on_enabled_toggled)
+        try:
+            group.set_header_suffix(enabled_switch)
+        except Exception:
+            # 老版本 Adw 不支持 header_suffix 时降级为列表行
+            row = Adw.ActionRow()
+            row.set_title(_("启用在线音源"))
+            row.add_suffix(enabled_switch)
+            row.set_activatable_widget(enabled_switch)
+            group.add(row)
+        page.add(group)
+
+        # 服务地址
+        url_row = Adw.EntryRow()
+        url_row.set_title(_("服务地址"))
+        url_row.set_text(cfg.get_str("subsonic_url", ""))
+        url_row.set_tooltip_text(_("例如 http://127.0.0.1:4533"))
+        url_row.connect("changed", lambda r: (cfg.set_str("subsonic_url", r.get_text().strip()), self._reset_subsonic_state()))
+        group.add(url_row)
+        self._subsonic_rows = [url_row]
+
+        # 用户名
+        user_row = Adw.EntryRow()
+        user_row.set_title(_("用户名"))
+        user_row.set_text(cfg.get_str("subsonic_user", ""))
+        user_row.connect("changed", lambda r: (cfg.set_str("subsonic_user", r.get_text().strip()), self._reset_subsonic_state()))
+        group.add(user_row)
+        self._subsonic_rows.append(user_row)
+
+        # 密码
+        pwd_row = Adw.PasswordEntryRow()
+        pwd_row.set_title(_("密码"))
+        pwd_row.set_text(cfg.get_str("subsonic_password", ""))
+        pwd_row.connect("changed", lambda r: (cfg.set_str("subsonic_password", r.get_text()), self._reset_subsonic_state()))
+        group.add(pwd_row)
+        self._subsonic_rows.append(pwd_row)
+
+        # 认证方式
+        token_row = Adw.SwitchRow()
+        token_row.set_title(_("使用令牌认证"))
+        token_row.set_subtitle(_("标准 token（md5(密码+salt)）；关闭则用明文密码兼容特殊服务端"))
+        token_row.set_active(cfg.get_bool("subsonic_use_token", True))
+        token_row.connect(
+            "notify::active",
+            lambda r, _p: (cfg.set_bool("subsonic_use_token", r.get_active()),
+                           self._reset_subsonic_state()))
+        group.add(token_row)
+        self._subsonic_rows.append(token_row)
+
+        # 连接卡片：柔和底色 + 居中主色按钮 + 居中结果文字
+        test_row = Adw.ActionRow()
+        test_row.set_activatable(False)
+        test_row.set_activatable_widget(None)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        card.add_css_class("subsonic-connect-card")
+        self._subsonic_card = card
+        test_btn = Gtk.Button(label=_("连接"))
+        test_btn.add_css_class("suggested-action")
+        test_btn.set_halign(Gtk.Align.CENTER)
+        test_btn.set_valign(Gtk.Align.CENTER)
+        test_btn.set_size_request(180, -1)
+        test_btn.connect("clicked", self._on_test_subsonic)
+        self._subsonic_connect_btn = test_btn
+        card.append(test_btn)
+        result_lbl = Gtk.Label(label="")
+        result_lbl.set_halign(Gtk.Align.CENTER)
+        result_lbl.set_wrap(True)
+        result_lbl.add_css_class("dim-label")
+        result_lbl.set_visible(False)
+        card.append(result_lbl)
+        test_row.set_child(card)
+        group.add(test_row)
+        self._subsonic_test_row = test_row
+        self._subsonic_result_lbl = result_lbl
+        self._subsonic_rows.append(test_row)
+        # 按当前开关状态设置一次可用性
+        self._apply_subsonic_rows_sensitive(
+            cfg.get_bool("subsonic_enabled", True))
+
+    def _apply_subsonic_rows_sensitive(self, enabled: bool) -> None:
+        """总开关关闭时，底下的在线设置行与连接卡片一并禁用。"""
+        for row in getattr(self, "_subsonic_rows", []) or []:
+            try:
+                row.set_sensitive(bool(enabled))
+            except Exception:
+                pass
+
+    def _set_subsonic_btn_state(self, ok) -> None:
+        """设置连接按钮配色：True=绿，False=红，None=默认蓝。"""
+        btn = getattr(self, "_subsonic_connect_btn", None)
+        if btn is None:
+            return
+        try:
+            btn.remove_css_class("subsonic-btn-ok")
+            btn.remove_css_class("subsonic-btn-err")
+            if ok is True:
+                btn.add_css_class("subsonic-btn-ok")
+            elif ok is False:
+                btn.add_css_class("subsonic-btn-err")
+        except Exception:
+            pass
+
+    def _reset_subsonic_state(self) -> None:
+        """编辑连接项后：状态复位（默认底色、按钮回「连接」、清提示）。"""
+        try:
+            self._set_subsonic_btn_state(None)
+            btn = getattr(self, "_subsonic_connect_btn", None)
+            if btn is not None:
+                btn.set_label(_("连接"))
+            lbl = getattr(self, "_subsonic_result_lbl", None)
+            if lbl is not None:
+                lbl.set_text("")
+                lbl.set_visible(False)
+        except Exception:
+            pass
+
+    def _on_test_subsonic(self, _btn) -> None:
+        """测试 Subsonic 连接（后台请求，结果显示在行副标题 + 对话框）。"""
+        import urllib.request
+        cfg = get_config()
+        url = cfg.get_str("subsonic_url", "").rstrip("/")
+        user = cfg.get_str("subsonic_user", "")
+
+        try:
+            self._subsonic_result_lbl.set_text(_("正在连接…"))
+            self._subsonic_result_lbl.set_visible(True)
+            self._subsonic_result_lbl.add_css_class("dim-label")
+            self._set_subsonic_btn_state(None)   # 连接中：默认蓝
+        except Exception:
+            pass
+
+        def _work():
+            from providers.subsonic import SubsonicProvider
+            p = SubsonicProvider()
+            return p.ping()
+
+        from core.tasks import run_async
+
+        def _finish(ok, detail):
+            try:
+                self._subsonic_result_lbl.set_text(detail)
+                self._subsonic_result_lbl.set_visible(True)
+                # 提示始终灰色
+                self._subsonic_result_lbl.add_css_class("dim-label")
+                # 按钮背景色区分状态
+                self._set_subsonic_btn_state(ok)
+                # 按钮：成功 → 已连接；失败 → 连接
+                self._subsonic_connect_btn.set_label(
+                    _("已连接") if ok else _("连接"))
+            except Exception:
+                pass
+            # 通知主窗口：更新入口态 + 刷新在线页
+            cb = getattr(self, "_on_subsonic_tested", None)
+            if callable(cb):
+                try:
+                    cb(bool(ok))
+                except Exception:
+                    pass
+            self._show_result_dialog(ok, detail)
+
+        def _done(result):
+            ver = result.get("version", "?") if isinstance(result, dict) else "?"
+            _finish(True, _("连接成功（版本 {ver}）").format(ver=ver))
+
+        def _err(exc):
+            _finish(False, self._friendly_net_error(exc))
+
+        if not url or not user:
+            _finish(False, _("请先填写服务地址和用户名"))
+            return
+        run_async(work=_work, on_done=_done, on_error=_err)
+
+    def _show_result_dialog(self, ok: bool, detail: str) -> None:
+        """用模态对话框显示测试结果。"""
+        try:
+            dlg = Adw.MessageDialog(
+                transient_for=self,
+                modal=True,
+                heading=_("连接成功") if ok else _("连接失败"),
+                body=detail,
+            )
+            dlg.add_response("ok", _("确定"))
+            dlg.set_default_response("ok")
+            dlg.set_close_response("ok")
+            dlg.present()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _friendly_net_error(exc) -> str:
+        """把网络异常翻译成用户能看懂的中文提示。"""
+        text = str(exc)
+        low = text.lower()
+        if "connection refused" in low or "errno 111" in low:
+            return _("无法连接到服务：请确认服务已启动，且地址和端口正确")
+        if isinstance(exc, ValueError) or "unknown url type" in low \
+                or "no host supplied" in low or "invalid url" in low:
+            return _("服务地址格式不正确，请检查")
+        if "timed out" in low or "timeout" in low:
+            return _("连接超时：服务无响应，请稍后重试")
+        if "name or service not known" in low or "getaddrinfo" in low:
+            return _("无法解析服务地址：请检查主机名是否正确")
+        # Subsonic 认证失败 / 服务端错误
+        if "服务端错误" in text:
+            return text
+        return _("连接失败：{err}").format(err=text)
 
     # ------------------------------------------------------------
     # 快捷键页

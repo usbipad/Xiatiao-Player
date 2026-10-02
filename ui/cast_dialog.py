@@ -207,15 +207,17 @@ class CastDialog(Adw.Dialog):
         if self._track is None:
             self._toast(_("当前没有可投送的曲目"))
             return
-        filepath = getattr(self._track, "filepath", "") or ""
-        if not filepath:
-            self._toast(_("仅支持投送本地曲目"))
+        # 本地用 filepath；在线歌用 stream_url（http）
+        src = (getattr(self._track, "filepath", "")
+               or getattr(self._track, "stream_url", "")) or ""
+        if not src:
+            self._toast(_("该曲目无可投送地址"))
             return
         pusher = get_dlna_pusher()
         pusher.set_device(dev)
         title = getattr(self._track, "title", "") or ""
         artist = getattr(self._track, "artist", "") or ""
-        ok = pusher.push(filepath, title, artist)
+        ok = pusher.push(src, title, artist)
         if ok:
             if callable(self._on_cast_started):
                 self._on_cast_started()

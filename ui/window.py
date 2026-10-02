@@ -120,6 +120,7 @@ def _write_mpris_cover(image_bytes: bytes, token: int) -> Optional[str]:
 #: 导航项：(显示名 key, 页面 key)；显示名经 _() 翻译
 NAV_ITEMS = [
     ("主页", "home"),
+    ("在线", "online"),
     ("歌单", "playlists"),
     ("曲库", "local"),
     ("收藏", "liked"),
@@ -266,6 +267,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_queue_action=self._on_queue_action,
             on_add_queue=self._on_add_current_to_playlist,
             on_cast=self._on_cast_current,
+            on_download=self._on_download_current,
         )
         # 主页音效按钮改为弹出模态对话框（6 个内置预设 + DSP 设置入口）
         self.player_panel.use_effect_dialog = True
@@ -416,6 +418,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         # ---- 首屏：窗口先显示，重活丢到主循环空闲时做（避免启动卡半拍）----
         self._switch_page("home")
+        # 在线音源：按开关初始化入口，并异步检测连通性
+        GLib.idle_add(self._init_subsonic_entry)
         GLib.idle_add(self._apply_cache_async)
         GLib.idle_add(self._initial_scan)
         if get_config().get_bool("restore_playback", False):
@@ -658,6 +662,130 @@ class MainWindow(Adw.ApplicationWindow):
     # ============================================================
     # HeaderBar
     # ============================================================
+    def _build_account_popover(self) -> None:
+        """账号卡片：头像 + 昵称 + 平台 + 退出登录。"""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_size_request(200, -1)
+        self._acct_avatar = Gtk.Image.new_from_icon_name("avatar-default-symbolic")
+        self._acct_avatar.set_pixel_size(48)
+        self._acct_avatar.set_halign(Gtk.Align.CENTER)
+        box.append(self._acct_avatar)
+        self._acct_name = Gtk.Label(label=_("未登录"))
+        self._acct_name.add_css_class("heading")
+        box.append(self._acct_name)
+        self._acct_sub = Gtk.Label(label="")
+        self._acct_sub.add_css_class("dim-label")
+        box.append(self._acct_sub)
+        # 服务端信息区
+        self._acct_server_lbl = Gtk.Label(label="")
+        self._acct_server_lbl.add_css_class("dim-label")
+        self._acct_server_lbl.add_css_class("caption")
+        self._acct_server_lbl.set_wrap(True)
+        box.append(self._acct_server_lbl)
+        # 权限标签容器（垂直 Box：内部按每行 3 个横排标签手动换行）
+        self._acct_roles_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._acct_roles_box.set_margin_top(6)
+        self._acct_roles_box.set_halign(Gtk.Align.CENTER)
+        box.append(self._acct_roles_box)
+        self._header_avatar.set_popover(Gtk.Popover())
+        try:
+            self._header_avatar.get_popover().set_child(box)
+        except Exception:
+            pass
+
+    def _update_account_ui(self, profile: dict, avatar_pixbuf=None) -> None:
+        """更新右上角头像 + 账号卡片（登录后调用）。
+
+        有头像图 → 显示图片；无图 → 首字母圆形。
+        """
+        try:
+            if profile is None and avatar_pixbuf is None:
+                self._header_avatar.set_visible(False)
+                return
+            self._header_avatar.set_visible(True)
+            name = (profile or {}).get("nickname") or (profile or {}).get("username") or ""
+            if avatar_pixbuf is not None:
+                # 有图：右上角用 Gtk.Image（set_pixel_size 控大小）
+                try:
+                    img = Gtk.Image.new_from_pixbuf(avatar_pixbuf)
+                    img.set_pixel_size(32)
+                    self._header_avatar.set_child(img)
+                except Exception:
+                    pass
+                # 账号卡头像
+                try:
+                    self._acct_avatar.set_from_pixbuf(avatar_pixbuf)
+                    self._acct_avatar.set_pixel_size(48)
+                except Exception:
+                    pass
+            else:
+                # 无图：人形小图标
+                try:
+                    self._header_av_label.set_from_icon_name("avatar-default-symbolic")
+                    self._header_av_label.set_pixel_size(32)
+                except Exception:
+                    pass
+            if name:
+                self._acct_name.set_text(name)
+            # 副标题：管理员 + 服务端类型
+            server = (profile or {}).get("server") or {}
+            roles = (profile or {}).get("roles") or {}
+            is_admin = bool(roles.get("adminRole"))
+            stype = str(server.get("type", "") or "").strip()
+            sub_parts = []
+            if is_admin:
+                sub_parts.append(_("管理员"))
+            if stype:
+                sub_parts.append(stype.capitalize())
+            self._acct_sub.set_text(" · ".join(sub_parts))
+            # 服务端信息
+            sver = str(server.get("version", "") or "")
+            sapi = str(server.get("api", "") or "")
+            s_lines = []
+            if stype:
+                s_lines.append(f"{stype.capitalize()} {sver}".strip())
+            if sapi:
+                s_lines.append(_("API {v}").format(v=sapi))
+            self._acct_server_lbl.set_text("  ·  ".join(s_lines))
+            self._acct_server_lbl.set_visible(bool(s_lines))
+            # 权限标签（只显示有的，每行 3 个手动换行）
+            try:
+                ch = self._acct_roles_box.get_first_child()
+                while ch is not None:
+                    nxt = ch.get_next_sibling()
+                    self._acct_roles_box.remove(ch)
+                    ch = nxt
+            except Exception:
+                pass
+            _role_labels = [
+                ("adminRole", "管理员"),
+                ("downloadRole", "下载"),
+                ("streamRole", "播放"),
+                ("coverArtRole", "封面"),
+                ("shareRole", "分享"),
+                ("playlistRole", "歌单"),
+                ("scrobblingEnabled", "Scrobble"),
+                ("uploadRole", "上传"),
+            ]
+            active = [(k, l) for k, l in _role_labels if roles.get(k)]
+            per_row = 3
+            for i in range(0, len(active), per_row):
+                row_box = Gtk.Box(spacing=6)
+                row_box.set_halign(Gtk.Align.CENTER)
+                for key, label in active[i:i + per_row]:
+                    tag = Gtk.Label(label=_(label))
+                    tag.add_css_class("acct-role-tag")
+                    row_box.append(tag)
+                self._acct_roles_box.append(row_box)
+            self._acct_roles_box.set_visible(bool(active))
+        except Exception:
+            pass
+
     def _build_headerbar(self) -> Adw.HeaderBar:
         header = Adw.HeaderBar()
         header.set_title_widget(Gtk.Box())
@@ -673,6 +801,7 @@ class MainWindow(Adw.ApplicationWindow):
         # 导航项：显示名 → symbolic 图标（窄屏图标化用）。
         _nav_icons = {
             "home": "go-home-symbolic",
+            "online": "network-wireless-symbolic",
             "playlists": "view-list-symbolic",
             "local": "media-optical-symbolic",
             "liked": "xiatiao-heart-outline-symbolic",
@@ -695,6 +824,13 @@ class MainWindow(Adw.ApplicationWindow):
             btn.set_child(_inner)
             btn.set_tooltip_text(_(label))
             btn.connect("clicked", self._on_nav_clicked, key)
+            # 在线音源关闭时隐藏「在线」入口
+            if key == "online":
+                try:
+                    if not get_config().get_bool("subsonic_enabled", True):
+                        btn.set_visible(False)
+                except Exception:
+                    pass
             nav_container.append(btn)
             self._nav_buttons[key] = btn
             self._nav_labels[key] = _lbl
@@ -715,6 +851,10 @@ class MainWindow(Adw.ApplicationWindow):
         menu_btn.add_css_class("circular")   # 圆形按钮底
         menu_btn.add_css_class("app-menu-btn")
         menu_btn.set_tooltip_text(_("菜单"))
+        try:
+            menu_btn.set_size_request(34, 34)
+        except Exception:
+            pass
         # 标准应用菜单（GNOME HIG：首选项 / 快捷键 / 关于 / 退出）
         menu = Gio.Menu()
         menu.append(_("设置"), "app.settings")
@@ -761,8 +901,34 @@ class MainWindow(Adw.ApplicationWindow):
                 app.set_accels_for_action("app.quit", ["<Ctrl>q"])
         except Exception:
             log.debug("设置应用快捷键失败", exc_info=True)
-        header.pack_end(menu_btn)
+        # 右上角账号头像（菜单左侧）：已登录显示头像，未登录隐藏。
+        self._header_avatar = Gtk.MenuButton()
+        self._header_avatar.add_css_class("flat")
+        self._header_avatar.add_css_class("avatar-btn")
+        self._header_avatar.set_tooltip_text(_("账号"))
+        # 锁定正方形：主题的 padding 撑不成椭圆。
+        try:
+            self._header_avatar.set_size_request(34, 34)
+        except Exception:
+            pass
+        # 头像：有图显示图片，无图显示人形小图标（set_pixel_size 控大小）
+        self._header_av_label = Gtk.Image.new_from_icon_name("avatar-default-symbolic")
+        self._header_av_label.set_pixel_size(24)
+        self._header_avatar.set_child(self._header_av_label)
+        self._header_avatar.set_visible(False)
+        self._build_account_popover()
 
+        # 头像与菜单：两个独立按钮，横向排列（有间距，不再合并为药丸）。
+        # 头像默认隐藏；隐藏时只剩菜单按钮。
+        self._header_pill = Gtk.Box(spacing=8)
+        self._header_pill.set_valign(Gtk.Align.CENTER)
+        self._header_pill.set_margin_start(6)
+        self._header_pill.set_margin_end(6)
+        self._header_pill.append(self._header_avatar)
+        self._header_pill.append(menu_btn)
+        header.pack_end(self._header_pill)
+
+        # 兼容：保留对左侧面板头像的引用（未用，留接口）
         self._user_avatar = self.player_panel.user_avatar
         return header
 
@@ -796,14 +962,29 @@ class MainWindow(Adw.ApplicationWindow):
             track_actions=_track_actions,
         )
         self.stack.add_named(self.home_page, "home")
-        # 曲库（本地歌曲列表）
-        self.local_page = LocalLibraryPage(
-            on_track_activated=self._on_local_track_activated,
-            track_actions=_track_actions,
-            on_refresh=self._on_local_refresh,
+        # 曲库（本地 / 在线 切换）
+        from .library_page import LibraryPage
+        self.library_page = LibraryPage(
+            on_local_track=self._on_local_track_activated,
+            on_online_track=self._on_online_library_track,
+            on_local_refresh=self._on_local_refresh,
             on_add_to_playlist=self._on_add_tracks_to_playlist,
+            on_online_load_more=self._on_online_library_load,
+            track_actions=_track_actions,
         )
-        self.stack.add_named(self.local_page, "local")
+        # 兼容：原 local_page 引用指向本地列表
+        self.local_page = self.library_page.local_list
+        self.stack.add_named(self.library_page, "local")
+        # 在线页（歌单浏览 + 歌单详情 + 搜索结果）
+        from .online_search_page import OnlineSearchPage
+        self.online_page = OnlineSearchPage(
+            on_playlist_click=self._on_online_playlist_click,
+            on_track_activated=self._on_online_track_activated,
+            track_actions=_track_actions,
+            on_load_more=self._online_load_more,
+            on_section_more=self._online_section_more,
+        )
+        self.stack.add_named(self.online_page, "online")
         # 收藏（原「我喜欢」）
         self.liked_page = LocalLibraryPage(
             on_track_activated=self._on_liked_track_activated,
@@ -850,12 +1031,188 @@ class MainWindow(Adw.ApplicationWindow):
     # ============================================================
     # 导航
     # ============================================================
+    def _apply_subsonic_enabled(self, enabled: bool) -> None:
+        """在线音源开关变化：
+
+        - 关：直接隐藏「在线」入口（若停在在线页则切回主页）；
+        - 开：显示入口并触发连通检测（不通则置灰 + 提示）。
+        已在播的在线歌不受影响。
+        """
+        self._subsonic_enabled = bool(enabled)
+        try:
+            btn = self._nav_buttons.get("online")
+        except Exception:
+            btn = None
+        if not enabled:
+            try:
+                if btn is not None:
+                    btn.set_visible(False)
+            except Exception:
+                pass
+            # 关闭在线音源：一并隐藏右上角账号头像
+            try:
+                self._header_avatar.set_visible(False)
+            except Exception:
+                pass
+            try:
+                if getattr(self, "_active_source", "") == "online":
+                    self._switch_page("home")
+            except Exception:
+                pass
+            return
+        # 开启：先显示，再异步检测连通性
+        try:
+            if btn is not None:
+                btn.set_visible(True)
+        except Exception:
+            pass
+        # 重新拉账号资料（有账号则显示头像）
+        try:
+            self._load_account()
+        except Exception:
+            pass
+        self._subsonic_online = None   # 未知（检测中）
+        self._update_online_nav_state()
+        self._check_subsonic_online()
+
+    def _init_subsonic_entry(self) -> bool:
+        """启动时初始化在线入口：开关关→隐藏；开→显示并按检测结果更新。"""
+        try:
+            enabled = get_config().get_bool("subsonic_enabled", True)
+        except Exception:
+            enabled = True
+        self._subsonic_enabled = enabled
+        if enabled:
+            self._subsonic_online = None
+            self._update_online_nav_state()
+            self._check_subsonic_online()
+        else:
+            self._subsonic_online = None
+            self._update_online_nav_state()
+            # 在线音源关闭：确保账号头像隐藏
+            try:
+                self._header_avatar.set_visible(False)
+            except Exception:
+                pass
+        return False
+
+    def _on_subsonic_tested(self, ok: bool) -> None:
+        """设置页「测试连接」结果回调：更新入口态，成功则刷新在线页。"""
+        self._subsonic_online = bool(ok)
+        self._update_online_nav_state()
+        if not ok:
+            return
+        # 连接成功：强制重新拉取在线数据（清掉「已加载」标记）
+        self._online_loaded = False
+        try:
+            if getattr(self, "_active_source", "") == "online":
+                self.online_page.show_loading()
+                self._refresh_home_online()
+        except Exception:
+            pass
+
+    def _subsonic_usable(self) -> bool:
+        """在线音源是否启用（总开关开）。关闭时一切在线请求都不应发起。"""
+        try:
+            return bool(get_config().get_bool("subsonic_enabled", True))
+        except Exception:
+            return True
+
+    def _check_subsonic_online(self) -> None:
+        """后台检测在线音源连通性 → 更新入口状态与在线页提示。"""
+        from core.tasks import run_async
+        from providers.subsonic import SubsonicProvider
+
+        if not self._subsonic_usable():
+            return
+        if not SubsonicProvider.is_configured():
+            self._subsonic_online = False
+            self._update_online_nav_state()
+            return
+
+        def _work():
+            p = SubsonicProvider()
+            try:
+                # 直接请求 ping，用较短超时避免卡顿
+                return p._request("ping", timeout=5.0)
+            except Exception:
+                return None
+
+        def _done(result):
+            self._subsonic_online = bool(result)
+            self._update_online_nav_state()
+            # 启动预加载：连通且尚未加载过 → 后台拉在线数据，
+            # 这样用户进「在线」页时即已就绪（无需等待）。
+            if result and not getattr(self, "_online_loaded", False):
+                self._online_loaded = True
+                try:
+                    self._refresh_home_online()
+                except Exception:
+                    pass
+            # 若正停在在线页，刷新提示
+            try:
+                if getattr(self, "_active_source", "") == "online":
+                    self._refresh_online_offline_hint()
+            except Exception:
+                pass
+
+        run_async(work=_work, on_done=_done)
+
+    def _update_online_nav_state(self) -> None:
+        """按（开关 + 连通性）更新「在线」入口外观。
+
+        - 开关关：隐藏；
+        - 开 + 通：正常；
+        - 开 + 不通：可点但置灰，tooltip 提示连接失败。
+        """
+        try:
+            btn = self._nav_buttons.get("online")
+        except Exception:
+            btn = None
+        if btn is None:
+            return
+        enabled = getattr(self, "_subsonic_enabled", True)
+        if not enabled:
+            btn.set_visible(False)
+            return
+        btn.set_visible(True)
+        online = getattr(self, "_subsonic_online", None)
+        if online is False:
+            # 置灰但仍可点（点进去看提示）
+            btn.set_tooltip_text(_("在线音源连接失败，请检查设置"))
+            try:
+                btn.add_css_class("dim-label")
+            except Exception:
+                pass
+        else:
+            btn.set_tooltip_text(_("在线"))
+            try:
+                btn.remove_css_class("dim-label")
+            except Exception:
+                pass
+
+    def _refresh_online_offline_hint(self) -> None:
+        """在线页：连通失败时显示提示。"""
+        try:
+            page = self.online_page
+        except Exception:
+            return
+        if getattr(self, "_subsonic_online", None) is False:
+            try:
+                page.show_status(_("在线音源连接失败，请检查设置"))
+            except Exception:
+                pass
+
     def _on_nav_clicked(self, _btn, key: str) -> None:
         self._switch_page(key)
 
     def _on_global_search(self, entry) -> None:
-        """HeaderBar 搜索框：过滤当前页。"""
+        """HeaderBar 搜索框：在线页走异步搜索，其他页过滤当前页。"""
         text = entry.get_text().strip()
+        # 在线页：搜索走 Subsonic 异步（防抖在 provider 侧无，这里直接用）
+        if getattr(self, "_active_source", None) == "online":
+            self._online_search_input(text)
+            return
         page = None
         if self._active_source == "local":
             page = getattr(self, "local_page", None)
@@ -910,6 +1267,28 @@ class MainWindow(Adw.ApplicationWindow):
                 self._refresh_home_page()
             if key == "liked":
                 self._refresh_liked_page()
+            if key == "online":
+                # 未配置 → 明确提示，不留空白。
+                from providers.subsonic import SubsonicProvider
+                if not SubsonicProvider.is_configured():
+                    self._online_loaded = False
+                    self._subsonic_online = False
+                    self._update_online_nav_state()
+                    try:
+                        self.online_page.show_status(
+                            _("在线音源未配置，请在设置中填写服务地址和用户名"))
+                    except Exception:
+                        pass
+                    return False
+                # 已预加载（启动时拉过）→ 直接显示，不重复请求
+                if getattr(self, "_online_loaded", False):
+                    self.online_page.show_content()
+                    return False
+                # 未加载 → 拉取
+                self._check_subsonic_online()
+                self._online_loaded = True
+                self.online_page.show_loading()
+                self._refresh_home_online()
             if key == "playlists":
                 try:
                     self.playlists_page.refresh()
@@ -1079,7 +1458,12 @@ class MainWindow(Adw.ApplicationWindow):
                         filepath=fp,
                         source_type=r.get("source_type") or SOURCE_LOCAL,
                         source_id=sid,
+                        stream_url=self._row_stream_url(r),
                         cover_url=r.get("cover_url") or "",
+                        sample_rate=int(r.get("sample_rate") or 0),
+                        bit_depth=int(r.get("bit_depth") or 0),
+                        channels=int(r.get("channels") or 0),
+                        bitrate=int(r.get("bitrate") or 0),
                     ))
                 except Exception:
                     continue
@@ -1167,7 +1551,12 @@ class MainWindow(Adw.ApplicationWindow):
                         filepath=fp,
                         source_type=r.get("source_type") or SOURCE_LOCAL,
                         source_id=sid,
+                        stream_url=self._row_stream_url(r),
                         cover_url=r.get("cover_url") or "",
+                        sample_rate=int(r.get("sample_rate") or 0),
+                        bit_depth=int(r.get("bit_depth") or 0),
+                        channels=int(r.get("channels") or 0),
+                        bitrate=int(r.get("bitrate") or 0),
                     ))
                 except Exception:
                     continue
@@ -1178,6 +1567,718 @@ class MainWindow(Adw.ApplicationWindow):
                 self.home_page.set_history(hist)
         except Exception as exc:
             log.debug("主页历史填充失败: %s", exc)
+        # 注：在线歌单已挪到「在线」页，主页不再拉取（见 _fill_page_data）
+
+    def _online_search_input(self, text: str) -> None:
+        """顶栏搜索框在「在线」页输入：空→回歌单浏览；非空→防抖后异步搜索。"""
+        # 取消上一次防抖
+        tid = getattr(self, "_online_search_timer", 0)
+        if tid:
+            try:
+                GLib.source_remove(tid)
+            except Exception:
+                pass
+            self._online_search_timer = 0
+        if not text:
+            try:
+                self.online_page.show_browse()
+            except Exception:
+                pass
+            return
+        # 500ms 防抖
+        self._online_search_timer = GLib.timeout_add(500, self._online_search_fire, text)
+
+    def _online_search_fire(self, text: str) -> bool:
+        self._online_search_timer = 0
+        if not self._subsonic_usable():
+            return False
+        try:
+            p = self._get_provider("subsonic")
+            if p is None:
+                self.online_page.show_status(_("在线音源未配置"))
+                return False
+            if not getattr(self, "_online_search_connected", False):
+                p.connect("search-finished", self._on_online_search_finished)
+                self._online_search_connected = True
+            self.online_page.show_status(_("搜索中…"))
+            p.search_async(text)
+        except Exception as exc:
+            log.debug("在线搜索失败: %s", exc)
+        return False
+
+    def _on_online_search_finished(self, _p, query: str, result) -> None:
+        try:
+            self.online_page.show_results(query, result)
+        except Exception:
+            pass
+
+    def _on_online_search_track(self, track) -> None:
+        """点在线搜索结果：设为播放队列（当前搜索结果）并播放。"""
+        try:
+            lib = self.online_page.result_page._all_tracks or [track]
+        except Exception:
+            lib = [track]
+        self._play_from_list(track, lib)
+
+    def _on_online_library_load(self, offset: int, count: int) -> None:
+        """在线曲库分页加载：search3 空查询，offset/count 分页。"""
+        from core.tasks import run_async
+
+        def _work():
+            p = self._get_provider("subsonic")
+            if p is None:
+                return ([], -1)
+            return (p.all_songs(offset, count), -1)
+
+        def _done(result):
+            try:
+                tracks, total = result
+                self.library_page.append_online(tracks, total)
+            except Exception as exc:
+                log.debug("在线曲库加载失败: %s", exc)
+
+        run_async(work=_work, on_done=_done)
+
+    def _load_online_lyrics(self, track) -> list:
+        """在线歌歌词：调 Subsonic getLyricsBySongId，转成 [(秒, 文本)]。
+
+        在后台线程调用（网络请求，不碰 UI）。失败返回 []。
+        兼容：结构化歌词（line[].value/start）；无结构化则回退纯文本歌词。
+        """
+        try:
+            sid = getattr(track, "source_id", "") or ""
+            if not sid or getattr(track, "source_type", "") != "subsonic":
+                return []
+            p = self._get_provider("subsonic")
+            if p is None:
+                return []
+            # 优先结构化歌词
+            try:
+                body = p.get_lyrics_by_song_id(sid)
+                node = body.get("lyricsList")
+                items = []
+                if isinstance(node, dict):
+                    sl = node.get("structuredLyrics")
+                    if isinstance(sl, dict):
+                        sl = [sl]
+                    if isinstance(sl, list):
+                        for one in sl:
+                            lines = one.get("line") if isinstance(one, dict) else None
+                            if isinstance(lines, dict):
+                                lines = [lines]
+                            if not isinstance(lines, list):
+                                continue
+                            for ln in lines:
+                                if not isinstance(ln, dict):
+                                    continue
+                                val = ln.get("value", "")
+                                start = ln.get("start", 0) or 0
+                                try:
+                                    ms = float(start)
+                                except Exception:
+                                    ms = 0.0
+                                items.append((ms / 1000.0, str(val)))
+                if items:
+                    return items
+            except Exception:
+                pass
+            # 回退：传统 getLyrics（纯文本，无时间轴 → 全部 0 秒）
+            try:
+                body = p.get_lyrics(
+                    artist=getattr(track, "artist", "") or "",
+                    title=getattr(track, "title", "") or "")
+                lyr = body.get("lyrics")
+                if isinstance(lyr, dict):
+                    lyr = lyr.get("value", "") or ""
+                if isinstance(lyr, str) and lyr.strip():
+                    return [(0.0, line) for line in lyr.splitlines()]
+            except Exception:
+                pass
+        except Exception as exc:
+            log.debug("在线歌词加载失败: %s", exc)
+        return []
+
+    def _on_download_current(self) -> None:
+        """下载当前播放曲目到本地（在线歌）。"""
+        track = self.playlist.current_track()
+        if track is None:
+            self._toast(_("当前没有播放曲目"))
+            return
+        if track.is_local:
+            self._toast(_("本地曲目无需下载"))
+            return
+        url = getattr(track, "play_url", "") or getattr(track, "stream_url", "")
+        if not url:
+            self._toast(_("该曲目无下载地址"))
+            return
+        # 目标目录
+        import os as _os
+        d = get_config().get_str("download_dir", "").strip()
+        if not d:
+            d = _os.path.join(_os.path.expanduser("~"), "下载")
+        # 文件名：歌手 - 歌名.扩展名（扩展名从 URL/标题猜，默认 flac）
+        safe = self._safe_filename(f"{track.artist} - {track.title}")
+        self._toast(_("开始下载：{name}").format(name=safe))
+        from core.tasks import run_async
+
+        def _work():
+            import urllib.request as _ur
+            _os.makedirs(d, exist_ok=True)
+            # 先看响应头 Content-Type 决定扩展名
+            req = _ur.Request(url, method="GET")
+            with _ur.urlopen(req, timeout=30) as resp:
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                ext = "flac"
+                if "mpeg" in ctype or "mp3" in ctype:
+                    ext = "mp3"
+                elif "flac" in ctype:
+                    ext = "flac"
+                elif "wav" in ctype:
+                    ext = "wav"
+                elif "ogg" in ctype:
+                    ext = "ogg"
+                elif "mp4" in ctype or "m4a" in ctype or "aac" in ctype:
+                    ext = "m4a"
+                path = _os.path.join(d, f"{safe}.{ext}")
+                with open(path, "wb") as fp:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        fp.write(chunk)
+            return path
+
+        def _done(path):
+            self._toast(_("下载完成：{path}").format(path=path))
+
+        def _err(exc):
+            log.warning("下载失败: %s", exc)
+            self._toast(_("下载失败：{err}").format(err=exc))
+
+        run_async(work=_work, on_done=_done, on_error=_err)
+
+    @staticmethod
+    def _safe_filename(name: str) -> str:
+        """把歌名里的非法文件名字符替换掉。"""
+        import re as _re
+        s = _re.sub(r'[\\/:*?"<>|]', "_", name or "")
+        return s.strip() or "download"
+
+    def _on_online_playlist_click(self, pl) -> None:
+        """点击在线歌单卡片：异步拉歌曲，填详情页并切换过去。"""
+        from core.tasks import run_async
+
+        def _work():
+            try:
+                p = self._get_provider("subsonic")
+                if p is None:
+                    return []
+                return p.playlist_tracks(pl.id)
+            except Exception as exc:
+                log.debug("歌单歌曲拉取失败: %s", exc)
+                return []
+
+        def _done(tracks):
+            try:
+                self._online_detail_tracks = list(tracks or [])
+                self.online_page.show_playlist_detail(getattr(pl, "name", ""), tracks or [])
+            except Exception:
+                pass
+
+        run_async(work=_work, on_done=_done)
+
+    def _play_from_list(self, track, tracks) -> None:
+        """把 tracks 设为播放队列，从 track（按 source_id/title 匹配）开始播。
+
+        供各在线入口复用（曲库/歌单/搜索/历史/收藏）。
+        """
+        lib = list(tracks or [])
+        if not lib:
+            lib = [track]
+        key = getattr(track, "source_id", "") or getattr(track, "title", "")
+        index = 0
+        for i, t in enumerate(lib):
+            if (getattr(t, "source_id", "") or getattr(t, "title", "")) == key:
+                index = i
+                break
+        self.playlist.set_tracks(lib, autoplay_index=index)
+
+    def _play_online_single(self, track) -> None:
+        """在线歌单独播放（历史/收藏等混合列表里点在线歌）。
+
+        队列 = 该歌所在的历史列表（本地+在线混合，播放逻辑按 play_url 区分）。
+        """
+        try:
+            hist = list(getattr(self.home_page.history_page, "_all_tracks", []) or [])
+        except Exception:
+            hist = []
+        self._play_from_list(track, hist)
+
+    def _on_online_library_track(self, track) -> None:
+        """在线曲库点歌：把整个在线曲库列表设为播放队列，从该首开始。"""
+        try:
+            lib = list(getattr(self.library_page.online_list, "_all_tracks", []) or [])
+        except Exception:
+            lib = []
+        self._play_from_list(track, lib)
+
+    def _on_online_track_activated(self, track) -> None:
+        """点歌单里的在线歌：把整个歌单设为播放队列，从该首开始播。"""
+        try:
+            lib = getattr(self, "_online_detail_tracks", None) or []
+        except Exception:
+            lib = []
+        self._play_from_list(track, lib)
+
+    def _refresh_home_online(self) -> None:
+        """异步拉取在线歌单喂给主页；未配置/失败/空 → 隐藏区块。"""
+        if not self._subsonic_usable():
+            return
+        try:
+            from providers.subsonic import SubsonicProvider
+            if not SubsonicProvider.is_configured():
+                self._online_loaded = False
+                try:
+                    self.online_page.set_playlists([])
+                    self.online_page.set_newest([])
+                    self.online_page.set_random([])
+                    self.online_page.set_artists([])
+                    self.online_page.set_random_songs([])
+                    self.online_page.show_status(
+                        _("在线音源未配置，请在设置中填写服务地址和用户名"))
+                except Exception:
+                    pass
+                return
+        except Exception:
+            return
+
+        from core.tasks import run_async
+
+        def _work():
+            p = self._get_provider("subsonic")
+            if p is None:
+                return ([], [], [], [], [])
+            # 并发拉取 5 个区块：总耗时 ≈ 最慢的一个（而非串行之和）。
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _safe(fn, default):
+                try:
+                    return fn()
+                except Exception as exc:
+                    log.debug("在线页子请求失败: %s", exc)
+                    return default
+
+            tasks = {
+                "playlists": lambda: p.get_playlists_info(),
+                "newest": lambda: p.get_album_list2("newest", size=30).get("albumList2", {}).get("album", []),
+                "rand": lambda: p.get_album_list2("alphabeticalByArtist", size=30).get("albumList2", {}).get("album", []),
+                "artists": lambda: p.all_artists(),
+                "rand_songs": lambda: p.random_songs(30),
+            }
+            out = {}
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                futs = {k: ex.submit(_safe, fn, [] if k != "playlists" else []) for k, fn in tasks.items()}
+                for k, fut in futs.items():
+                    out[k] = fut.result()
+            return (out.get("playlists", []), out.get("newest", []),
+                    out.get("rand", []), out.get("artists", []),
+                    out.get("rand_songs", []))
+
+        def _done(result):
+            try:
+                playlists, newest, rand, artists, rand_songs = result
+                self.online_page.set_playlists(playlists or [])
+                newest_cards = self._album_nodes_to_cards(newest)
+                rand_cards = self._album_nodes_to_cards(rand)
+                artist_cards = self._artist_nodes_to_cards(artists)
+                song_cards = self._song_nodes_to_cards(rand_songs)
+                self.online_page.set_newest(newest_cards)
+                self.online_page.set_random(rand_cards)
+                # 艺术家全拿（几百个），首次只显示前 30（避免建几百 widget）
+                self.online_page.set_artists(artist_cards[:30])
+                self.online_page.set_random_songs(song_cards)
+                # 等封面加载完（cover_activity 空闲）再切内容：
+                # 事件驱动，自适应机器性能（不写死时长）。
+                self._online_show_when_idle()
+                # 状态表：供滚动加载更多（本地有则追加，没有则拉下一批）
+                # artists: 一次全拿（getArtists），本地切；其余可 offset/重拉。
+                self._online_state = {
+                    "newest": {"all": newest_cards, "shown": len(newest_cards),
+                               "kind": "album", "offset": len(newest_cards)},
+                    "random": {"all": rand_cards, "shown": len(rand_cards),
+                               "kind": "album", "offset": len(rand_cards)},
+                    "artists": {"all": artist_cards, "shown": min(30, len(artist_cards)),
+                                "kind": "local"},
+                    "rand_songs": {"all": song_cards, "shown": len(song_cards),
+                                   "kind": "random"},
+                }
+            except Exception as exc:
+                log.debug("在线页填充失败: %s", exc)
+
+        run_async(work=_work, on_done=_done)
+        # 账号头像/昵称（扩展端点；标准服务端不支持则隐藏）
+        self._load_account()
+
+    def _online_show_when_idle(self) -> None:
+        """等封面加载空闲后显示在线页内容（自适应）。
+
+        封面仍在加载则挂一次 busy-changed 监听，转空闲时切内容。
+        同时设一个兜底超时（封面异常卡住时也能显示）。
+        """
+        try:
+            from ui.pages import cover_activity
+        except Exception:
+            try:
+                self.online_page.show_content()
+            except Exception:
+                pass
+            return
+        self._online_pending_show = True
+
+        def _try_show() -> bool:
+            if not getattr(self, "_online_pending_show", False):
+                return False
+            try:
+                log.info("[在线loading] busy=%s pending=%s", cover_activity.busy, self._online_pending_show)
+                if not cover_activity.busy:
+                    self._online_pending_show = False
+                    self.online_page.show_content()
+                    return False
+            except Exception:
+                pass
+            return False
+
+        try:
+            # 若已空闲 → 立即显示
+            if not cover_activity.busy:
+                self._online_pending_show = False
+                self.online_page.show_content()
+                return
+            cover_activity.connect("busy-changed", lambda _o, busy: _try_show())
+        except Exception:
+            self._online_pending_show = False
+            try:
+                self.online_page.show_content()
+            except Exception:
+                pass
+        # 兜底：最多等 3 秒（封面异常时不至于永远 spinner）
+        GLib.timeout_add(3000, lambda: (self._try_show_now(), False)[1])
+
+    def _try_show_now(self) -> None:
+        if getattr(self, "_online_pending_show", False):
+            self._online_pending_show = False
+            try:
+                self.online_page.show_content()
+            except Exception:
+                pass
+
+    def _load_account(self) -> None:
+        """拉账号信息（getUserProfile + getAvatar）更新右上角。
+
+        两者都是扩展端点：标准 Navidrome 不支持 → 降级（不显示/默认图）。
+        """
+        try:
+            from providers.subsonic import SubsonicProvider
+            if not SubsonicProvider.is_configured():
+                return
+        except Exception:
+            return
+        from core.tasks import run_async
+
+        def _work():
+            p = self._get_provider("subsonic")
+            if p is None:
+                return (None, None)
+            profile = None
+            pixbuf = None
+            # 优先标准 getUser（Navidrome 支持）：用户名 + 角色权限。
+            roles = {}
+            username = ""
+            try:
+                body = p.get_user()
+                u = body.get("user")
+                if isinstance(u, dict):
+                    username = str(u.get("username", "") or "")
+                    for k, v in u.items():
+                        if k.endswith("Role"):
+                            roles[k] = bool(v)
+            except Exception:
+                pass
+            # 服务端信息（ping）
+            server = {}
+            try:
+                pbody = p.ping()
+                server = {
+                    "type": str(pbody.get("type", "") or ""),
+                    "version": str(pbody.get("serverVersion", "") or ""),
+                    "api": str(pbody.get("version", "") or ""),
+                }
+            except Exception:
+                pass
+            if username or roles or server:
+                profile = {
+                    "username": username or get_config().get_str("subsonic_user", ""),
+                    "roles": roles,
+                    "server": server,
+                    "connected": True,
+                }
+            # 头像（URL 下载）
+            try:
+                url = (profile or {}).get("avatarUrl") or p.get_avatar_url()
+                if url:
+                    import urllib.request as _ur
+                    with _ur.urlopen(_ur.Request(url, method="GET"), timeout=10) as r:
+                        raw = r.read()
+                    if raw:
+                        from gi.repository import GdkPixbuf, GLib
+                        loader = GdkPixbuf.PixbufLoader.new()
+                        loader.write(raw)
+                        loader.close()
+                        pixbuf = loader.get_pixbuf()
+            except Exception:
+                pixbuf = None
+            return (profile, pixbuf)
+
+        def _done(result):
+            try:
+                profile, pixbuf = result
+                # 兜底：用配置里的用户名
+                if profile is None:
+                    profile = {"username": get_config().get_str("subsonic_user", "")}
+                if profile.get("nickname") or profile.get("username") or pixbuf is not None:
+                    self._update_account_ui(profile, pixbuf)
+            except Exception:
+                pass
+
+        run_async(work=_work, on_done=_done)
+
+    def _online_section_more(self, name: str, offset: int) -> None:
+        """section 视图（完整列表）分页拉取：拉该区块 offset 起的 N 张。
+
+        artists 用本地状态表切片（getArtists 一次全给）；
+        其余用 offset 请求。offset=0 且有缓存 → 直接用缓存（避免重拉卡顿）。
+        """
+        from core.tasks import run_async
+        if not self._subsonic_usable():
+            return
+        step = 48
+        # 首批（offset=0）命中缓存 → 直接显示，不重拉
+        if offset == 0:
+            cache = getattr(self, "_section_cache", {})
+            if name in cache:
+                try:
+                    self.online_page.show_section_cards(name, cache[name], 0)
+                except Exception:
+                    pass
+                return
+
+        def _work():
+            # 艺术家：本地切片
+            if name == "artists":
+                st = getattr(self, "_online_state", {}).get("artists")
+                all_cards = (st or {}).get("all", [])
+                return all_cards[offset:offset + step]
+            p = self._get_provider("subsonic")
+            if p is None:
+                return []
+            if name == "newest":
+                nodes = p.get_album_list2("newest", size=step, offset=offset).get("albumList2", {}).get("album", [])
+                return self._album_nodes_to_cards(nodes)
+            if name == "random":
+                nodes = p.get_album_list2("alphabeticalByArtist", size=step, offset=offset).get("albumList2", {}).get("album", [])
+                return self._album_nodes_to_cards(nodes)
+            return []
+
+        def _done(cards):
+            try:
+                cards = list(cards or [])
+                # 首批结果写入缓存（供再次进入秒开）
+                if offset == 0 and cards:
+                    try:
+                        self._section_cache = getattr(self, "_section_cache", {})
+                        self._section_cache[name] = cards
+                    except Exception:
+                        pass
+                self.online_page.show_section_cards(name, cards, offset)
+            except Exception as exc:
+                log.debug("section 加载失败: %s", exc)
+
+        run_async(work=_work, on_done=_done)
+
+    def _online_load_more(self, name: str) -> None:
+        """某区块滚动到底：本地还有→追加；否则拉下一批（专辑 offset / 随机重拉）。"""
+        st = getattr(self, "_online_state", {}).get(name)
+        sec = self.online_page.section(name)
+        if st is None or sec is None:
+            return
+        all_cards = st.get("all", [])
+        shown = st.get("shown", 0)
+        # 本地还有未显示的 → 直接追加（不请求）
+        if shown < len(all_cards):
+            nxt = all_cards[shown:shown + 30]
+            sec.append_cards(nxt)
+            st["shown"] = shown + len(nxt)
+            return
+        # 本地没了 → 拉下一批
+        kind = st.get("kind")
+        if kind == "exhausted":
+            sec.append_cards([])   # 标记耗尽
+            return
+        self._online_fetch_more(name, st, sec)
+
+    def _online_fetch_more(self, name: str, st: dict, sec) -> None:
+        """拉下一批（后台）并按 kind 追加。"""
+        from core.tasks import run_async
+        offset = st.get("offset", st.get("shown", 0))
+
+        def _work():
+            p = self._get_provider("subsonic")
+            if p is None:
+                return []
+            if name == "newest":
+                nodes = p.get_album_list2("newest", size=30, offset=offset).get("albumList2", {}).get("album", [])
+                return self._album_nodes_to_cards(nodes)
+            if name == "random":
+                nodes = p.get_album_list2("random", size=30, offset=offset).get("albumList2", {}).get("album", [])
+                return self._album_nodes_to_cards(nodes)
+            if name == "rand_songs":
+                return self._song_nodes_to_cards(p.random_songs(30))
+            return []
+
+        def _done(cards):
+            try:
+                cards = list(cards or [])
+                if not cards:
+                    st["kind"] = "exhausted"
+                    sec.append_cards([])
+                    return
+                st.setdefault("all", []).extend(cards)
+                sec.append_cards(cards)
+                st["shown"] = st.get("shown", 0) + len(cards)
+                st["offset"] = offset + 30
+            except Exception as exc:
+                log.debug("加载更多失败: %s", exc)
+
+        run_async(work=_work, on_done=_done)
+
+    def _album_nodes_to_cards(self, albums) -> list:
+        """把 Subsonic 专辑节点转成横滑卡片（name/封面/副标题/点击）。"""
+        out = []
+        for a in (albums or []):
+            if not isinstance(a, dict):
+                continue
+            aid = str(a.get("id", ""))
+            name = str(a.get("name", "") or a.get("title", "") or "")
+            if not aid or not name:
+                continue
+            cover_id = str(a.get("coverArt", "") or aid)
+            artist = str(a.get("artist", "") or "")
+            try:
+                cover_url = self._get_provider("subsonic").cover_art_url(cover_id)
+            except Exception:
+                cover_url = ""
+            out.append({
+                "name": name,
+                "subtitle": artist,
+                "cover_url": cover_url,
+                "click": (lambda _aid=aid, _nm=name: self._on_album_clicked(_aid, _nm)),
+            })
+        return out
+
+    def _artist_nodes_to_cards(self, artists) -> list:
+        """艺术家节点 → 卡片（无封面，点开看艺术家歌曲）。
+
+        不截断（首次只显示前 30，滚到底再显示更多；见 _online_state）。
+        """
+        out = []
+        for a in (artists or []):
+            if not isinstance(a, dict):
+                continue
+            aid = str(a.get("id", ""))
+            name = str(a.get("name", "") or "")
+            if not aid or not name:
+                continue
+            cnt = int(a.get("album_count", 0) or 0)
+            out.append({
+                "name": name,
+                "subtitle": ("%d %s" % (cnt, _("张专辑"))) if cnt else "",
+                "cover_url": str(a.get("cover_url", "") or ""),
+                "click": (lambda _aid=aid, _nm=name: self._on_artist_clicked(_aid, _nm)),
+            })
+        return out
+
+    def _on_artist_clicked(self, artist_id: str, name: str) -> None:
+        """点艺术家卡片：拉艺术家歌曲，显示在在线页详情视图。"""
+        from core.tasks import run_async
+
+        def _work():
+            p = self._get_provider("subsonic")
+            if p is None:
+                return []
+            return p.artist_tracks(artist_id)
+
+        def _done(tracks):
+            try:
+                self._online_detail_tracks = list(tracks or [])
+                self.online_page.show_playlist_detail(name, tracks or [])
+            except Exception:
+                pass
+
+        run_async(work=_work, on_done=_done)
+
+    def _song_nodes_to_cards(self, tracks) -> list:
+        """TrackItem 列表 → 卡片（点开播放该歌曲）。"""
+        out = []
+        for t in (tracks or []):
+            try:
+                title = getattr(t, "title", "") or ""
+                if not title:
+                    continue
+                out.append({
+                    "name": title,
+                    "subtitle": getattr(t, "artist", "") or "",
+                    "cover_url": getattr(t, "cover_url", "") or "",
+                    "click": (lambda _t=t: self._play_from_list(_t, tracks)),
+                })
+            except Exception:
+                continue
+        return out
+
+    def _on_album_clicked(self, album_id: str, name: str) -> None:
+        """点在线专辑卡片：拉专辑歌曲，显示在在线页详情视图。"""
+        from core.tasks import run_async
+
+        def _work():
+            p = self._get_provider("subsonic")
+            if p is None:
+                return []
+            return p.album_tracks(album_id)
+
+        def _done(tracks):
+            try:
+                self._online_detail_tracks = list(tracks or [])
+                self.online_page.show_playlist_detail(name, tracks or [])
+            except Exception:
+                pass
+
+        run_async(work=_work, on_done=_done)
+
+    def _row_stream_url(self, row: dict) -> str:
+        """从历史/收藏的 DB 行，动态构造在线歌的 stream_url。
+
+        本地歌返回空串（用 filepath）。历史/收藏不存 stream_url，
+        因为 token 有时效；这里按 source_id 现场构造。
+        """
+        src = row.get("source_type") or SOURCE_LOCAL
+        sid = row.get("source_id") or ""
+        if src == "subsonic" and sid:
+            try:
+                p = self._get_provider("subsonic")
+                if p is not None:
+                    return p.stream_url(sid)
+            except Exception:
+                pass
+        return ""
 
     def _refresh_liked_page(self) -> None:
         try:
@@ -1196,6 +2297,7 @@ class MainWindow(Adw.ApplicationWindow):
                     filepath=r.get("filepath") or "",
                     source_type=r.get("source_type") or SOURCE_LOCAL,
                     source_id=r.get("source_id") or "",
+                    stream_url=self._row_stream_url(r),
                     cover_url=r.get("cover_url") or "",
                 ))
             except Exception:
@@ -1219,6 +2321,7 @@ class MainWindow(Adw.ApplicationWindow):
                     filepath=r.get("filepath") or "",
                     source_type=r.get("source_type") or SOURCE_LOCAL,
                     source_id=r.get("source_id") or "",
+                    stream_url=self._row_stream_url(r),
                     cover_url=r.get("cover_url") or "",
                 ))
             except Exception:
@@ -1226,8 +2329,12 @@ class MainWindow(Adw.ApplicationWindow):
         return tracks
 
     def _on_liked_track_activated(self, track: TrackItem) -> None:
+        # 在线歌（收藏里混了在线歌）→ 走在线播放
         tracks = self._liked_rows_to_tracks()
         if not tracks:
+            return
+        if getattr(track, "source_type", "") == "subsonic":
+            self._play_from_list(track, tracks)
             return
         key = getattr(track, "filepath", "") or getattr(track, "source_id", "")
         # 喜欢页队列指纹：一致时直接切索引，避免重建
@@ -1253,6 +2360,10 @@ class MainWindow(Adw.ApplicationWindow):
     # 本地播放
     # ============================================================
     def _on_local_track_activated(self, track: TrackItem) -> None:
+        # 在线歌（可能出现在历史/收藏等列表里）→ 走在线播放，不走本地曲库。
+        if getattr(track, "source_type", "") == "subsonic":
+            self._play_online_single(track)
+            return
         provider = self._get_provider(SOURCE_LOCAL)
         if provider is None:
             return
@@ -1301,8 +2412,9 @@ class MainWindow(Adw.ApplicationWindow):
         if track is None:
             self._toast("当前没有播放曲目")
             return
-        if not getattr(track, "filepath", ""):
-            self._toast("仅支持投送本地曲目")
+        # 本地用 filepath；在线歌用 stream_url（http），都能投递。
+        if not (getattr(track, "filepath", "") or getattr(track, "stream_url", "")):
+            self._toast("该曲目无可投送地址")
             return
         try:
             dlg = CastDialog(
@@ -1457,7 +2569,8 @@ class MainWindow(Adw.ApplicationWindow):
         保持当前播放/暂停状态：若处于暂停态，推完 URI 后立即暂停，
         不强制出声；并同步播放按钮状态。
         """
-        fp = getattr(track, "filepath", "") or ""
+        fp = (getattr(track, "filepath", "")
+              or getattr(track, "stream_url", "")) or ""
         if not fp:
             return
         was_playing = bool(getattr(self, "_dlna_remote_playing", True))
@@ -1496,11 +2609,19 @@ class MainWindow(Adw.ApplicationWindow):
             self.now_playing.set_track(track.title, track.artist)
         except Exception:
             pass
-        # 通知本地曲库页记录当前播放曲目（供「定位当前播放」按钮使用）
-        try:
-            self.local_page.set_now_playing(track)
-        except Exception:
-            pass
+        # 通知各列表页记录当前播放曲目（供「定位当前播放」按钮使用）
+        for _pg in (
+            getattr(self, "local_page", None),
+            getattr(getattr(self, "library_page", None), "online_list", None),
+            getattr(getattr(self, "online_page", None), "detail_list", None),
+            getattr(getattr(self, "online_page", None), "result_page", None),
+        ):
+            if _pg is None:
+                continue
+            try:
+                _pg.set_now_playing(track)
+            except Exception:
+                pass
 
     def _record_play_history(self, track) -> None:
         """记录播放历史；若主页正显示则刷新其历史块。"""
@@ -1516,8 +2637,11 @@ class MainWindow(Adw.ApplicationWindow):
             pass
 
     def _start_playback_if_needed(self, track, restoring: bool) -> None:
-        """非恢复态且为本地曲目时，立即开始播放（不等封面加载）。"""
-        if restoring or not track.is_local:
+        """非恢复态且曲目可播时，立即开始播放（不等封面加载）。
+
+        本地文件、在线流（play_url 为 http URL）都应播放。
+        """
+        if restoring:
             return
         if self.playlist.is_playable(track):
             self.player.play_file(track.play_url)
@@ -1583,7 +2707,18 @@ class MainWindow(Adw.ApplicationWindow):
         """
         import time as _t
         _t0 = _t.monotonic()
+        # 封面原始字节：本地读内嵌；在线下载 cover_url。
         cover_raw = extract_cover(filepath) if is_local else None
+        if cover_raw is None and not is_local:
+            try:
+                _curl = getattr(track, "cover_url", "") or ""
+                if _curl:
+                    import urllib.request as _ur
+                    _req = _ur.Request(_curl, method="GET")
+                    with _ur.urlopen(_req, timeout=15) as _resp:
+                        cover_raw = _resp.read()
+            except Exception:
+                cover_raw = None
         _t1 = _t.monotonic()
         # 封面处理（缩放/主色/背景模糊/亮度）委托给 services/track_assets.py
         from services.track_assets import load_cover_assets
@@ -1620,7 +2755,10 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         _t2 = _t.monotonic()
-        lyrics = load_lyrics(filepath) if is_local else []
+        if is_local:
+            lyrics = load_lyrics(filepath)
+        else:
+            lyrics = self._load_online_lyrics(track)
         _t3 = _t.monotonic()
         rg_gain = None
         if not restoring:
@@ -2820,6 +3958,15 @@ class MainWindow(Adw.ApplicationWindow):
         playing = state == "playing"
         self.player_panel.set_playing(playing)
         self.now_playing.set_playing(playing)
+        # 播放状态 → 指示器动画/显隐：
+        #   playing → 跳动；paused → 可见静止；stopped → 隐藏。
+        try:
+            from ui.widgets.playing_indicator import set_paused, set_current_key
+            if state == "stopped":
+                set_current_key("")
+            set_paused(not playing)
+        except Exception:
+            pass
         try:
             if getattr(self, "_tray", None) is not None:
                 self._tray.set_playing(playing)
@@ -2904,6 +4051,8 @@ class MainWindow(Adw.ApplicationWindow):
             on_viz_changed=self._on_viz_changed,
             on_open_viz_window=self._on_open_viz_window,
             on_coloring=self._on_coloring_changed,
+            on_subsonic_toggled=self._apply_subsonic_enabled,
+            on_subsonic_tested=self._on_subsonic_tested,
         )
         win.present()
         if goto_effect:
@@ -3550,6 +4699,16 @@ class MainWindow(Adw.ApplicationWindow):
             tracks = list_to_tracks(data.get("tracks"))
             if not tracks:
                 return False
+            # 在线歌：缓存里不存 stream_url（token 有时效），恢复时动态重建。
+            for t in tracks:
+                try:
+                    if getattr(t, "source_type", "") == "subsonic" and not getattr(t, "stream_url", ""):
+                        p = self._get_provider("subsonic")
+                        sid = getattr(t, "source_id", "") or ""
+                        if p is not None and sid:
+                            t.stream_url = p.stream_url(sid)
+                except Exception:
+                    pass
             idx = int(data.get("index", 0) or 0)
             if idx < 0:
                 # 没有当前项：仅恢复队列，不设当前
