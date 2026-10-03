@@ -85,6 +85,8 @@ pub(crate) struct Shared {
     pub(crate) output_device: Mutex<String>,
     /// 待发送给客户端的错误（解码线程写入，推送线程读取后经 IPC 发出）。
     pub(crate) pending_error: Mutex<Option<String>>,
+    /// 待发送给客户端的音频技术信息（解码线程探测后写入，推送线程读取后经 IPC 发出）。
+    pub(crate) pending_audio_info: Mutex<Option<serde_json::Value>>,
 }
 
 impl Shared {
@@ -104,5 +106,18 @@ impl Shared {
     /// 取出并清空待发送错误（推送线程调用）。
     pub(crate) fn take_error(&self) -> Option<String> {
         self.pending_error.lock().ok().and_then(|mut s| s.take())
+    }
+
+    /// 记录一条待发送的音频技术信息（解码线程调用）。
+    /// info 字段：sample_rate / bit_depth / channels / bitrate（有则填）。
+    pub(crate) fn report_audio_info(&self, info: serde_json::Value) {
+        if let Ok(mut slot) = self.pending_audio_info.lock() {
+            *slot = Some(info);
+        }
+    }
+
+    /// 取出并清空待发送音频信息（推送线程调用）。
+    pub(crate) fn take_audio_info(&self) -> Option<serde_json::Value> {
+        self.pending_audio_info.lock().ok().and_then(|mut s| s.take())
     }
 }

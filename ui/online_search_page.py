@@ -69,6 +69,14 @@ class OnlineSearchPage(Gtk.Box):
         self.playlist_section = OnlinePlaylistSection(on_playlist_click=on_playlist_click)
         browse.append(self.playlist_section)
 
+        # 排行榜：标准 getAlbumList2("frequent")，标准后端支持则显示
+        self.rank_section = CardSection(_("排行榜"))
+        browse.append(self.rank_section)
+
+        # 每日推荐：私有扩展 getDailySongs，未实现的后端自动隐藏
+        self.daily_section = CardSection(_("每日推荐"))
+        browse.append(self.daily_section)
+
         self.random_section = CardSection(_("专辑"), on_more=lambda: self._open_section("random"))
         browse.append(self.random_section)
 
@@ -508,6 +516,20 @@ class OnlineSearchPage(Gtk.Box):
     def set_playlists(self, playlists) -> None:
         try:
             self.playlist_section.set_playlists(playlists or [])
+        except Exception:
+            pass
+
+    def set_rank(self, cards) -> None:
+        """排行榜卡片；空则区块自动隐藏。"""
+        try:
+            self.rank_section.set_cards(cards or [])
+        except Exception:
+            pass
+
+    def set_daily(self, cards) -> None:
+        """每日推荐卡片；空则区块自动隐藏（私有扩展未实现时）。"""
+        try:
+            self.daily_section.set_cards(cards or [])
         except Exception:
             pass
 

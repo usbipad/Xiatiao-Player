@@ -53,13 +53,13 @@ pub(crate) fn prefer_ffmpeg(path: &str) -> bool {
     matches!(ext.as_str(), "ape" | "wv" | "dsf" | "dff" | "mpc" | "tta")
 }
 
-/// 用 ffprobe 读取 (采样率, 声道, 时长秒)。
-fn ffprobe_info(path: &str) -> (u32, u32, f64) {
+/// 用 ffprobe 读取 (采样率, 声道, 时长秒, 位深, 码率bps, 编码格式)。
+fn ffprobe_info(path: &str) -> (u32, u32, f64, u32, u64, String) {
     let out = crate::deps::command("ffprobe")
         .args([
             "-v", "error",
             "-select_streams", "a:0",
-            "-show_entries", "stream=sample_rate,channels:format=duration",
+            "-show_entries", "stream=sample_rate,channels,bits_per_raw_sample,bits_per_sample,bit_rate,codec_name:format=duration,bit_rate",
             "-of", "default=noprint_wrappers=1",
             path,
         ])
@@ -67,6 +67,9 @@ fn ffprobe_info(path: &str) -> (u32, u32, f64) {
     let mut rate = 44100u32;
     let mut channels = 2u32;
     let mut dur = 0.0f64;
+    let mut bits = 0u32;
+    let mut bitrate = 0u64;
+    let mut codec = String::new();
     if let Ok(o) = out {
         let text = String::from_utf8_lossy(&o.stdout);
         for line in text.lines() {
@@ -76,10 +79,24 @@ fn ffprobe_info(path: &str) -> (u32, u32, f64) {
                 channels = v.trim().parse().unwrap_or(channels);
             } else if let Some(v) = line.strip_prefix("duration=") {
                 dur = v.trim().parse().unwrap_or(0.0);
+            } else if let Some(v) = line.strip_prefix("bits_per_raw_sample=") {
+                bits = v.trim().parse().unwrap_or(bits);
+            } else if let Some(v) = line.strip_prefix("bits_per_sample=") {
+                if bits == 0 {
+                    bits = v.trim().parse().unwrap_or(0);
+                }
+            } else if let Some(v) = line.strip_prefix("bit_rate=") {
+                if bitrate == 0 {
+                    bitrate = v.trim().parse().unwrap_or(0);
+                }
+            } else if let Some(v) = line.strip_prefix("codec_name=") {
+                if codec.is_empty() {
+                    codec = v.trim().to_string();
+                }
             }
         }
     }
-    (rate, channels, dur)
+    (rate, channels, dur, bits, bitrate, codec)
 }
 
 /// 用 ffmpeg 解码到原始采样率 PCM，再转交输出层。
@@ -98,16 +115,32 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
         return Err(msg);
     }
 
-    let (src_rate, in_channels, dur) = ffprobe_info(path);
+    let (src_rate, in_channels, dur, bits, bitrate, codec) = ffprobe_info(path);
 
     // 原则：ffmpeg 解码出什么采样率，就全程保持那个采样率，
     // 不做任何重采样/限幅/滤波。采样率转换交给 PipeWire/DAC。
     let in_rate = src_rate;
-    eprintln!("[engine/ffmpeg] {in_rate}Hz {in_channels}ch dur={dur:.1}s");
+    crate::logts!("[engine/ffmpeg] ffprobe 完成: {in_rate}Hz {in_channels}ch {bits}bit {bitrate}bps dur={dur:.1}s codec={codec}");
 
     shared.in_rate.store(in_rate as u64, Ordering::SeqCst);
     shared.in_channels.store(in_channels as u64, Ordering::SeqCst);
     shared.duration_ms.store((dur * 1000.0) as u64, Ordering::SeqCst);
+    // 上报音频技术信息（前端显示格式/采样率/位深/码率）
+    {
+        let mut info = serde_json::Map::new();
+        info.insert("sample_rate".into(), serde_json::json!(in_rate));
+        info.insert("channels".into(), serde_json::json!(in_channels));
+        if bits > 0 {
+            info.insert("bit_depth".into(), serde_json::json!(bits));
+        }
+        if bitrate > 0 {
+            info.insert("bitrate".into(), serde_json::json!(bitrate));
+        }
+        if !codec.is_empty() {
+            info.insert("codec".into(), serde_json::json!(codec));
+        }
+        shared.report_audio_info(serde_json::Value::Object(info));
+    }
     let ch = in_channels.max(1) as u32;
 
     // 可视化旁路 + DSP 链 + Camilla 引擎
@@ -124,7 +157,7 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             Err(e) => { eprintln!("[engine/ffmpeg] pw-cat 启动失败: {e}"); None }
         }
     } else {
-        eprintln!("[engine/ffmpeg] 使用原生 PipeWire 输出");
+        crate::logts!("[engine/ffmpeg] 开始解码 + 输出");
         None
     };
     // 启动 ffmpeg：不加 -ar / -af，用 ffmpeg 默认采样率输出（保持原样）。
@@ -147,7 +180,7 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
     // （子进程启动延迟），超过阈值才认定为真 EOF，避免误跳下一首，
     // 同时避免无限重试死循环。声明在 loop 外，否则 continue 会被重置。
     let mut seek_eof_retries: u32 = 0;
-    const SEEK_EOF_MAX_RETRIES: u32 = 40;
+    const SEEK_EOF_MAX_RETRIES: u32 = 150;
     // seek 后待恢复 Playing 的标志：必须跨迭代保持（读到第一块新数据才清），
     // 否则 EOF 重试时 just_seeked 被重置为 false，重试逻辑失效。
     let mut just_seeked = false;
@@ -222,13 +255,20 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
 
         let n = ff_out.read(&mut buf).unwrap_or(0);
         if n == 0 {
-            // 【关键】seek 后刚重启的 ffmpeg 可能还没吐出数据就被读到 EOF
-            // （子进程启动延迟 / -ss 定位到文件尾部附近）。此时不能直接
-            // 判定整首播完跳下一首，应短暂重试；只有连续多次仍无数据，
-            // 才认定为真 EOF。
-            if just_seeked && seek_eof_retries < SEEK_EOF_MAX_RETRIES {
+            // 【关键】read 返回 0 不等于「整首播完」。以下情况都会返回 0
+            // 但并非真结束：
+            //   - seek 后刚重启的 ffmpeg 尚未吐出数据；
+            //   - 在线流的 CDN 暂时无数据 / 网络抖动；
+            //   - ffmpeg 内部缓冲尚未就绪。
+            //
+            // 若直接把 0 判为 EOF，会向客户端误报 end_of_stream，导致
+            // 播放器「自动下一首」并陷入无限切歌。
+            //
+            // 故：任何一次读到 0 都先重试，累计重试达到上限（或超过最长
+            // 静默时长）才认定为真 EOF。seek 后的重试沿用同一计数。
+            if seek_eof_retries < SEEK_EOF_MAX_RETRIES {
                 seek_eof_retries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(std::time::Duration::from_millis(20));
                 continue;
             }
             shared.eof.store(true, Ordering::SeqCst);
@@ -237,6 +277,8 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             output.end_seek();
             break;
         }
+        // 成功读到数据：重置 EOF 重试计数（下次读到 0 重新计数）。
+        seek_eof_retries = 0;
         // 拼上上一轮残留字节，保证 f32 样本按 4 字节对齐解析。
         let data: Vec<u8> = if carry.is_empty() {
             buf[..n].to_vec()
@@ -290,6 +332,8 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
                 let _ = si.write_all(&bytes);
             }
         } else {
+            if frames_written % 200000 < pcm.len() as u64 / ch as u64 {
+            }
             output.write(&pcm, in_rate, ch);
         }
         // seek 后第一块新数据写完：恢复 Playing。

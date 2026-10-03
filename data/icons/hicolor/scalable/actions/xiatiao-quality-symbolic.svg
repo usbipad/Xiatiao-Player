@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- 音质图标：八分音符 + 右上角高音质标记（小方点）。
+       音符表达“音乐”，右上角标记表达“档位/品质”。
+       纯 fill，currentColor 跟随主题前景色。 -->
+  <g fill="currentColor">
+    <!-- 音符杆 -->
+    <rect x="8.4" y="2.4" width="1.4" height="7.6" rx="0.7"/>
+    <!-- 音符头（椭圆） -->
+    <ellipse cx="6.6" cy="10.4" rx="2.2" ry="1.7"/>
+    <!-- 音符旗（右侧小横） -->
+    <rect x="9.6" y="2.4" width="3.0" height="1.4" rx="0.7"/>
+    <!-- 高音质标记：右上角实心小圆点（像“等级”指示） -->
+    <circle cx="12.6" cy="4.0" r="1.5"/>
+  </g>
+</svg>

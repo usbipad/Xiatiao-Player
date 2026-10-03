@@ -68,6 +68,7 @@ impl Engine {
                 dsd_mode: Mutex::new("auto".to_string()),
                 output_device: Mutex::new(String::new()),
                 pending_error: Mutex::new(None),
+                pending_audio_info: Mutex::new(None),
             }),
             state: State::Stopped,
             effect: "off".to_string(),
@@ -160,6 +161,11 @@ impl Engine {
         self.output.take_error()
     }
 
+    /// 取出并清空待发送的音频技术信息（推送线程调用）。
+    pub fn take_audio_info(&self) -> Option<serde_json::Value> {
+        self.shared.take_audio_info()
+    }
+
     pub fn handle(&mut self, req: Request) -> Event {
         match req {
             Request::Ping => Event::Pong,
@@ -204,7 +210,7 @@ impl Engine {
                 Event::Ack { cmd: "stop".into() }
             }
             Request::Seek { seconds } => {
-                eprintln!("[engine] SEEK → {:.3}s", seconds);
+                crate::logts!("[engine] SEEK → {:.3}s", seconds);
                 let ms = (seconds.max(0.0) * 1000.0) as u64;
                 self.shared.seek_target_ms.store(ms, Ordering::SeqCst);
                 // 关键：中断可能卡在 output.write 的解码线程（ring 满时 sleep
@@ -328,7 +334,7 @@ impl Engine {
     }
 
     fn start_play(&mut self, path: &str) {
-        eprintln!("[engine] START_PLAY: {path}");
+        crate::logts!("[engine] START_PLAY: {path}");
         // 记录当前曲目，供切换输出设备后续播。
         self.current_path = Some(path.to_string());
         self.stop_internal();

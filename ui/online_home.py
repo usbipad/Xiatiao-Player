@@ -14,6 +14,8 @@ from gi.repository import Gdk, GLib, Gtk
 from core.i18n import _
 from core.tasks import run_async
 
+from .online_section import CardSection
+
 #: 卡片封面显示尺寸
 CARD_COVER_PX = 160
 #: 封面到容器边缘的距离（给 hover 浮起/阴影留空间）
@@ -22,8 +24,10 @@ _GAP = 12
 _CARD_W = CARD_COVER_PX + _GAP * 2
 #: 折叠时显示的行数
 _COLLAPSED_ROWS = 1
-#: 单行高度估算
-_ROW_H = 200
+#: 折叠态高度（一行卡片）
+_COLLAPSED_H = 200
+#: 展开态高度上限（-1 = 放开，由外层主页滚动接管）
+_EXPANDED_H = -1
 
 
 def _load_url_cover_async(url: str, on_done) -> None:
@@ -163,72 +167,31 @@ def _make_playlist_card(pl, on_click: Optional[Callable] = None) -> Gtk.Widget:
     return box
 
 
-class OnlinePlaylistSection(Gtk.Box):
-    """主页「我的歌单」区块：标题 + 可折叠歌单网格。
+class OnlinePlaylistSection(CardSection):
+    """主页「我的歌单」区块。
 
+    直接复用 CardSection（专辑/艺术家同款）：标题 + 横向一排卡片 + 横滑，
+    布局 / 滚动 / 外观与其它在线区块完全一致。
     set_playlists(playlists)：有数据 → 显示；空 → 隐藏整个区块。
     """
 
     def __init__(self, on_playlist_click: Optional[Callable] = None) -> None:
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        super().__init__(_("我的歌单"))
         self._on_click = on_playlist_click
-        self._expanded = False
-
-        # 标题行
-        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self._title_lbl = Gtk.Label(label=_("我的歌单"))
-        self._title_lbl.add_css_class("heading")
-        self._title_lbl.set_halign(Gtk.Align.START)
-        header.append(self._title_lbl)
-        self._toggle_btn = Gtk.Button()
-        self._toggle_btn.add_css_class("flat")
-        self._toggle_btn.set_valign(Gtk.Align.CENTER)
-        self._toggle_btn.set_child(Gtk.Image.new_from_icon_name("pan-end-symbolic"))
-        self._toggle_btn.connect("clicked", lambda *_: self._toggle())
-        header.append(self._toggle_btn)
-        self.append(header)
-
-        # 内容：横向滚动的 FlowBox（一行）
-        self._flow = Gtk.FlowBox()
-        self._flow.set_selection_mode(Gtk.SelectionMode.NONE)
-        self._flow.set_valign(Gtk.Align.START)
-        self._flow.set_halign(Gtk.Align.START)
-        self._flow.set_row_spacing(12)
-        self._flow.set_column_spacing(12)
-        self._flow.set_max_children_per_line(9999)
-
-        self._scroll = Gtk.ScrolledWindow()
-        self._scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        self._scroll.set_child(self._flow)
-        self._scroll.set_size_request(-1, _ROW_H)
-        self.append(self._scroll)
-
-        # 初始隐藏
-        self.set_visible(False)
-
-    def _toggle(self) -> None:
-        self._expanded = not self._expanded
-        self._scroll.set_size_request(-1, _ROW_H if self._expanded else 200)
-        self._toggle_btn.set_child(Gtk.Image.new_from_icon_name(
-            "pan-down-symbolic" if self._expanded else "pan-end-symbolic"))
 
     def set_playlists(self, playlists: List) -> None:
-        """填充歌单；空则隐藏区块。"""
-        # 清空旧卡片
-        try:
-            child = self._flow.get_first_child()
-            while child is not None:
-                nxt = child.get_next_sibling()
-                self._flow.remove(child)
-                child = nxt
-        except Exception:
-            pass
-
-        if not playlists:
-            self.set_visible(False)
-            return
-
-        for pl in playlists:
-            card = _make_playlist_card(pl, self._on_click)
-            self._flow.append(card)
-        self.set_visible(True)
+        """歌单（PlaylistInfo）→ 卡片 dict，喂给 CardSection。"""
+        cards = []
+        for pl in (playlists or []):
+            try:
+                cnt = int(getattr(pl, "song_count", 0) or 0)
+                cards.append({
+                    "name": getattr(pl, "name", "") or "",
+                    "subtitle": ("%d %s" % (cnt, _("首"))) if cnt else "",
+                    "cover_url": getattr(pl, "cover_url", "") or "",
+                    "click": (lambda _pl=pl: self._on_click(_pl))
+                             if callable(self._on_click) else None,
+                })
+            except Exception:
+                continue
+        self.set_cards(cards)

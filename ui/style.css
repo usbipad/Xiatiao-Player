@@ -673,10 +673,16 @@ headerbar menubutton.app-menu-btn > button {
     max-height: 34px;
     padding: 0;
     margin: 0;
+    transition: box-shadow 180ms ease, background-color 180ms ease;
 }
+/* 头像按钮：hover 悬浮（轻阴影）。 */
 headerbar menubutton.avatar-btn:hover,
+headerbar menubutton.avatar-btn > button:hover {
+    background-color: alpha(currentColor, 0.10);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+}
+/* 菜单按钮：hover 只给背景反馈，不悬浮。 */
 headerbar menubutton.app-menu-btn:hover,
-headerbar menubutton.avatar-btn > button:hover,
 headerbar menubutton.app-menu-btn > button:hover {
     background-color: alpha(currentColor, 0.10);
     box-shadow: none;
@@ -689,6 +695,25 @@ headerbar menubutton.app-menu-btn > button:hover {
     border-radius: 8px;
     background-color: alpha(currentColor, 0.08);
     color: alpha(currentColor, 0.75);
+}
+
+/* 顶部搜索框：胶囊（与导航胶囊/圆形按钮统一）。 */
+.search-pill {
+    border-radius: 999px;
+    background-color: alpha(currentColor, 0.05);
+    border: 1px solid alpha(currentColor, 0.06);
+    /* 外投阴影：轻凸起（Adwaita 克制风格）。 */
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.10);
+    transition: box-shadow 180ms ease, background-color 180ms ease;
+}
+.search-pill:hover {
+    background-color: alpha(currentColor, 0.08);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+}
+.search-pill:focus,
+.search-pill:focus-within {
+    background-color: alpha(currentColor, 0.08);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
 }
 
 .avatar-initial {
@@ -731,6 +756,52 @@ headerbar menubutton.app-menu-btn > button:hover {
     font-size: 12px;
     font-weight: 450;
     color: alpha(currentColor, 0.52);
+}
+
+/* 歌名旁音质徽章：圆角方框 + 加粗，按档位分色。
+   仿流媒体播放器标签样式，仅在线歌显示。 */
+.player-panel .quality-badge {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    padding: 2px 7px;
+    border-radius: 7px;
+    color: #ffffff;
+    opacity: 1;
+}
+.player-panel .quality-badge.qb-standard {
+    background: linear-gradient(135deg, #9ca3af, #6b7280);
+}
+.player-panel .quality-badge.qb-high {
+    background: linear-gradient(135deg, #60a5fa, #2563eb);
+}
+.player-panel .quality-badge.qb-lossless {
+    background: linear-gradient(135deg, #fbbf24, #d97706);
+    color: #1a1000;
+}
+.player-panel .quality-badge.qb-hires {
+    background: linear-gradient(135deg, #c084fc, #7c3aed);
+}
+.player-panel .quality-badge.qb-master {
+    background: linear-gradient(135deg, #f87171, #dc2626);
+}
+
+/* 歌名旁音质选择按钮：紧凑尺寸，宽度随当前档位文字自适应。 */
+.player-panel .quality-dropdown {
+    min-height: 24px;
+    font-size: 11px;
+    padding: 0 2px;
+    border-radius: 7px;
+}
+.player-panel .quality-dropdown > button {
+    min-height: 24px;
+    min-width: 0;
+    padding: 0 6px;
+    font-size: 11px;
+}
+.player-panel .quality-dropdown label {
+    font-size: 11px;
+    padding: 0;
 }
 
 /* 音质徽标系统：微光宝石质感胶囊 */

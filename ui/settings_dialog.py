@@ -20,7 +20,7 @@ class SettingsWindow(Adw.PreferencesWindow):
                  on_convolution_ir=None, on_convolution_cleared=None,
                  on_viz_changed=None, on_open_viz_window=None,
                  on_coloring=None, on_subsonic_toggled=None,
-                 on_subsonic_tested=None) -> None:
+                 on_subsonic_tested=None, subsonic_connected=False) -> None:
         super().__init__()
         # 保存父窗口：构建期 self.get_root() 可能为 None，
         # 因此统一通过 _get_window() 获取主窗口（用于访问 player）。
@@ -38,6 +38,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         self._on_coloring = on_coloring
         self._on_subsonic_toggled = on_subsonic_toggled
         self._on_subsonic_tested = on_subsonic_tested
+        self._subsonic_connected = bool(subsonic_connected)
 
         self._build_local_group()
         self._build_subsonic_group()
@@ -172,6 +173,17 @@ class SettingsWindow(Adw.PreferencesWindow):
         # 按当前开关状态设置一次可用性
         self._apply_subsonic_rows_sensitive(
             cfg.get_bool("subsonic_enabled", True))
+        # 按实际连接状态初始化（避免每次进设置都显示「未连接」）
+        if self._subsonic_connected:
+            try:
+                self._set_subsonic_btn_state(True)
+                self._subsonic_connect_btn.set_label(_("已连接"))
+                self._subsonic_result_lbl.set_text(_("已连接"))
+                self._subsonic_result_lbl.set_visible(True)
+                # 后台 ping 拿版本，更新为「连接成功（版本 x）」
+                self._ping_for_status()
+            except Exception:
+                pass
 
     def _apply_subsonic_rows_sensitive(self, enabled: bool) -> None:
         """总开关关闭时，底下的在线设置行与连接卡片一并禁用。"""
@@ -207,6 +219,39 @@ class SettingsWindow(Adw.PreferencesWindow):
             if lbl is not None:
                 lbl.set_text("")
                 lbl.set_visible(False)
+        except Exception:
+            pass
+
+    def _ping_for_status(self) -> None:
+        """静默 ping 一次：更新连接状态文字为「连接成功（版本 x）」。
+
+        用于进设置时已连接的情况——不弹对话框、不通知主窗口。
+        """
+        def _work():
+            from providers.subsonic import SubsonicProvider
+            p = SubsonicProvider()
+            return p.ping()
+
+        from core.tasks import run_async
+
+        def _done(result):
+            try:
+                ver = result.get("version", "?") if isinstance(result, dict) else "?"
+                self._subsonic_result_lbl.set_text(
+                    _("连接成功（版本 {ver}）").format(ver=ver))
+                self._subsonic_result_lbl.set_visible(True)
+                self._subsonic_result_lbl.add_css_class("dim-label")
+                self._set_subsonic_btn_state(True)
+                self._subsonic_connect_btn.set_label(_("已连接"))
+            except Exception:
+                pass
+
+        def _err(_exc):
+            # ping 失败：维持「已连接」显示即可（主窗口的检测会纠正）
+            pass
+
+        try:
+            run_async(work=_work, on_done=_done, on_error=_err)
         except Exception:
             pass
 

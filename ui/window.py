@@ -268,6 +268,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_add_queue=self._on_add_current_to_playlist,
             on_cast=self._on_cast_current,
             on_download=self._on_download_current,
+            on_quality=self._on_quality_changed,
         )
         # 主页音效按钮改为弹出模态对话框（6 个内置预设 + DSP 设置入口）
         self.player_panel.use_effect_dialog = True
@@ -838,6 +839,7 @@ class MainWindow(Adw.ApplicationWindow):
         # 导航按钮右侧：全局搜索框（搜当前页：本地曲库 / 我喜欢）
         left_box.append(Gtk.Box(spacing=8))
         self._search_entry = Gtk.SearchEntry()
+        self._search_entry.add_css_class("search-pill")
         self._search_entry.set_placeholder_text(_("搜索歌曲 / 歌手 / 专辑"))
         # 基准宽度 150；窄屏由断点收缩（见 _apply_responsive_breakpoints）。
         self._search_entry.set_size_request(150, -1)
@@ -1143,8 +1145,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._update_online_nav_state()
             # 启动预加载：连通且尚未加载过 → 后台拉在线数据，
             # 这样用户进「在线」页时即已就绪（无需等待）。
+            # 注意：不要在这里就把 _online_loaded 置 True——
+            # 它表示「数据已拉完」，应等 _refresh_home_online 的 _done 回调再置，
+            # 否则用户首次进在线页时会被误判为「已就绪」，跳过 loading。
             if result and not getattr(self, "_online_loaded", False):
-                self._online_loaded = True
                 try:
                     self._refresh_home_online()
                 except Exception:
@@ -1280,9 +1284,19 @@ class MainWindow(Adw.ApplicationWindow):
                     except Exception:
                         pass
                     return False
-                # 已预加载（启动时拉过）→ 直接显示，不重复请求
+                # 已预加载（启动时拉过）→ 不重复请求，但要看封面是否就绪：
+                # 封面仍在加载时先显示 loading，等空闲再切内容，
+                # 否则内容过早显示会出现「卡片还没封面」的观感。
                 if getattr(self, "_online_loaded", False):
-                    self.online_page.show_content()
+                    try:
+                        from ui.pages import cover_activity
+                        if cover_activity.busy:
+                            self.online_page.show_loading()
+                            self._online_show_when_idle()
+                        else:
+                            self.online_page.show_content()
+                    except Exception:
+                        self.online_page.show_content()
                     return False
                 # 未加载 → 拉取
                 self._check_subsonic_online()
@@ -1639,6 +1653,29 @@ class MainWindow(Adw.ApplicationWindow):
 
         run_async(work=_work, on_done=_done)
 
+    @staticmethod
+    def _dedupe_lyrics(items: list) -> list:
+        """合并内容相同的连续/重复歌词行，只保留首次时间。
+
+        部分后端把歌词按逐字/逐句平铺（同一句多个时间点），
+        或在 LRC 里对一句打多个时间标签，解析后会出现整句重复。
+        这里对「文本相同」的项去重，保留第一次出现的时间点，
+        避免同一句歌词重复显示十几遍。
+        """
+        out = []
+        seen = set()
+        for sec, text in (items or []):
+            key = (text or "").strip()
+            if not key:
+                # 空行（间奏）保留，但不参与去重
+                out.append((sec, text))
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((sec, text))
+        return out
+
     def _load_online_lyrics(self, track) -> list:
         """在线歌歌词：调 Subsonic getLyricsBySongId，转成 [(秒, 文本)]。
 
@@ -1652,11 +1689,13 @@ class MainWindow(Adw.ApplicationWindow):
             p = self._get_provider("subsonic")
             if p is None:
                 return []
+            from models import parse_lrc_text
             # 优先结构化歌词
             try:
                 body = p.get_lyrics_by_song_id(sid)
                 node = body.get("lyricsList")
                 items = []
+                raw_lrc_chunks = []
                 if isinstance(node, dict):
                     sl = node.get("structuredLyrics")
                     if isinstance(sl, dict):
@@ -1671,18 +1710,34 @@ class MainWindow(Adw.ApplicationWindow):
                             for ln in lines:
                                 if not isinstance(ln, dict):
                                     continue
-                                val = ln.get("value", "")
+                                val = str(ln.get("value", "") or "")
+                                # 兼容：value 里若自带 [mm:ss] 时间标签，
+                                # 交给 parse_lrc_text 解析，忽略可能单位不一致的 start。
+                                if "[" in val and "]" in val:
+                                    raw_lrc_chunks.append(val)
+                                    continue
                                 start = ln.get("start", 0) or 0
                                 try:
-                                    ms = float(start)
+                                    sec = float(start)
                                 except Exception:
-                                    ms = 0.0
-                                items.append((ms / 1000.0, str(val)))
+                                    sec = 0.0
+                                # OpenSubsonic 规定 start 为毫秒；但部分后端用秒。
+                                # 大于 10000 视为毫秒，否则视为秒，做启发式归一。
+                                if sec > 10000:
+                                    sec = sec / 1000.0
+                                items.append((sec, val))
+                # 结构化里含 LRC 原文 → 统一解析后合并
+                if raw_lrc_chunks:
+                    parsed = parse_lrc_text("\n".join(raw_lrc_chunks))
+                    if parsed:
+                        items = parsed
                 if items:
-                    return items
+                    return self._dedupe_lyrics(items)
             except Exception:
                 pass
-            # 回退：传统 getLyrics（纯文本，无时间轴 → 全部 0 秒）
+            # 回退：传统 getLyrics。
+            # 后端常返回带 [mm:ss.xx] 时间标签的 LRC 文本，
+            # 必须用 parse_lrc_text 解析时间轴；无标签时它按纯文本处理。
             try:
                 body = p.get_lyrics(
                     artist=getattr(track, "artist", "") or "",
@@ -1691,12 +1746,86 @@ class MainWindow(Adw.ApplicationWindow):
                 if isinstance(lyr, dict):
                     lyr = lyr.get("value", "") or ""
                 if isinstance(lyr, str) and lyr.strip():
-                    return [(0.0, line) for line in lyr.splitlines()]
+                    parsed = parse_lrc_text(lyr)
+                    if parsed:
+                        return self._dedupe_lyrics(parsed)
             except Exception:
                 pass
         except Exception as exc:
             log.debug("在线歌词加载失败: %s", exc)
         return []
+
+    #: 音质档位 key → 显示名（与 player_panel._QUALITY_LABELS 一致）
+    _QUALITY_NAMES = {
+        "standard": "标准", "high": "高品", "lossless": "无损",
+        "hires": "Hi-Res", "master": "母带",
+    }
+
+    def _on_quality_changed(self, key: str) -> None:
+        """音质档位切换：重建在线歌 stream_url + 刷新当前曲目 + 提示。
+
+        stream_url 是播放时构造的，切换档位后需要让当前及队列里的在线歌
+        重新生成 URL（带上新的 maxBitRate），否则仍用旧音质。
+        """
+        name = self._QUALITY_NAMES.get(key, key)
+        cur = None
+        try:
+            p = self._get_provider("subsonic")
+            # 遍历队列，把在线歌的 stream_url 按新档位重建
+            try:
+                tracks = self.playlist.tracks()
+            except Exception:
+                tracks = []
+            for t in (tracks or []):
+                try:
+                    if getattr(t, "source_type", "") == "subsonic":
+                        sid = getattr(t, "source_id", "") or ""
+                        if p is not None and sid:
+                            t.stream_url = p.stream_url(sid)
+                except Exception:
+                    continue
+            # 当前曲目：更新其 URL
+            cur = self.playlist.current_track()
+            if cur is not None and getattr(cur, "source_type", "") == "subsonic":
+                sid = getattr(cur, "source_id", "") or ""
+                if p is not None and sid:
+                    cur.stream_url = p.stream_url(sid)
+        except Exception as exc:
+            log.debug("切换音质失败: %s", exc)
+        # 同步下拉框选中项（不触发回调）；徽章先按所选占位，
+        # 重载 URL 后 _on_audio_info 会用实测值覆盖为实际档位。
+        try:
+            if getattr(cur, "source_type", "") == "subsonic":
+                self.player_panel.set_quality_dropdown(key)
+                self.player_panel.set_quality_info(key)
+        except Exception:
+            pass
+        # 当前曲目为在线歌且在播 → 用新 URL「无缝续播」：
+        # 记录当前进度，重载新 URL 后 seek 回原位置，避免跳回开头。
+        resumed = False
+        try:
+            if (cur is not None
+                    and getattr(cur, "source_type", "") == "subsonic"
+                    and getattr(self, "_active_source", "") != ""):
+                pos = 0.0
+                try:
+                    pos = float(self.player.position() or 0.0)
+                except Exception:
+                    pos = 0.0
+                url = getattr(cur, "stream_url", "") or ""
+                # 仅在确实有 URL 时续播（避免中断）
+                if url:
+                    self.player.play_file(url)
+                    if pos > 0.5:
+                        # 稍等新流就绪再 seek 到原位置
+                        GLib.timeout_add(300, lambda _p=pos: (self.player.seek_seconds(_p), False)[1])
+                    resumed = True
+        except Exception as exc:
+            log.debug("音质无缝续播失败: %s", exc)
+        if resumed:
+            self._toast(_("音质已切换为 {name}（当前曲目已无缝切换）").format(name=name))
+        else:
+            self._toast(_("音质已切换为 {name}（下一首生效）").format(name=name))
 
     def _on_download_current(self) -> None:
         """下载当前播放曲目到本地（在线歌）。"""
@@ -1840,6 +1969,8 @@ class MainWindow(Adw.ApplicationWindow):
                 self._online_loaded = False
                 try:
                     self.online_page.set_playlists([])
+                    self.online_page.set_rank([])
+                    self.online_page.set_daily([])
                     self.online_page.set_newest([])
                     self.online_page.set_random([])
                     self.online_page.set_artists([])
@@ -1857,8 +1988,8 @@ class MainWindow(Adw.ApplicationWindow):
         def _work():
             p = self._get_provider("subsonic")
             if p is None:
-                return ([], [], [], [], [])
-            # 并发拉取 5 个区块：总耗时 ≈ 最慢的一个（而非串行之和）。
+                return ([], [], [], [], [], [], [])
+            # 并发拉取各区块：总耗时 ≈ 最慢的一个（而非串行之和）。
             from concurrent.futures import ThreadPoolExecutor
 
             def _safe(fn, default):
@@ -1870,28 +2001,40 @@ class MainWindow(Adw.ApplicationWindow):
 
             tasks = {
                 "playlists": lambda: p.get_playlists_info(),
+                # 排行榜 / 每日推荐：私有扩展 getRecommendations，返回 sections 分组
+                "rank": lambda: p.recommendation_section_cards("qq", "rank"),
+                "daily": lambda: p.recommendation_section_cards("qq", "daily"),
                 "newest": lambda: p.get_album_list2("newest", size=30).get("albumList2", {}).get("album", []),
                 "rand": lambda: p.get_album_list2("alphabeticalByArtist", size=30).get("albumList2", {}).get("album", []),
                 "artists": lambda: p.all_artists(),
                 "rand_songs": lambda: p.random_songs(30),
             }
             out = {}
-            with ThreadPoolExecutor(max_workers=5) as ex:
-                futs = {k: ex.submit(_safe, fn, [] if k != "playlists" else []) for k, fn in tasks.items()}
+            with ThreadPoolExecutor(max_workers=7) as ex:
+                futs = {k: ex.submit(_safe, fn, []) for k, fn in tasks.items()}
                 for k, fut in futs.items():
                     out[k] = fut.result()
             return (out.get("playlists", []), out.get("newest", []),
                     out.get("rand", []), out.get("artists", []),
-                    out.get("rand_songs", []))
+                    out.get("rand_songs", []), out.get("rank", []),
+                    out.get("daily", []))
 
         def _done(result):
             try:
-                playlists, newest, rand, artists, rand_songs = result
+                (playlists, newest, rand, artists, rand_songs,
+                 rank, daily) = result
+                # 数据真正拉完 → 标记已加载（供切页时判断是否需 loading）
+                self._online_loaded = True
                 self.online_page.set_playlists(playlists or [])
                 newest_cards = self._album_nodes_to_cards(newest)
                 rand_cards = self._album_nodes_to_cards(rand)
                 artist_cards = self._artist_nodes_to_cards(artists)
                 song_cards = self._song_nodes_to_cards(rand_songs)
+                # 排行榜 / 每日推荐：推荐分组卡片（歌单形式，点击按 playlistId 取歌）
+                rank_cards = self._recommendation_cards(rank)
+                daily_cards = self._recommendation_cards(daily)
+                self.online_page.set_rank(rank_cards)
+                self.online_page.set_daily(daily_cards)
                 self.online_page.set_newest(newest_cards)
                 self.online_page.set_random(rand_cards)
                 # 艺术家全拿（几百个），首次只显示前 30（避免建几百 widget）
@@ -2015,14 +2158,27 @@ class MainWindow(Adw.ApplicationWindow):
                 }
             except Exception:
                 pass
-            if username or roles or server:
+            # 用户资料（扩展 getUserProfile）：昵称、头像 URL、会员状态
+            nick = ""
+            avatar_url = ""
+            try:
+                prof = p.get_user_profile()
+                up = prof.get("userProfile") if isinstance(prof, dict) else None
+                if isinstance(up, dict):
+                    nick = str(up.get("nickname", "") or "")
+                    avatar_url = str(up.get("avatarUrl", "") or "")
+            except Exception:
+                pass
+            if username or roles or server or nick or avatar_url:
                 profile = {
                     "username": username or get_config().get_str("subsonic_user", ""),
+                    "nickname": nick,
+                    "avatarUrl": avatar_url,
                     "roles": roles,
                     "server": server,
                     "connected": True,
                 }
-            # 头像（URL 下载）
+            # 头像（URL 下载）：优先 getUserProfile.avatarUrl，回退 getAvatar 端点
             try:
                 url = (profile or {}).get("avatarUrl") or p.get_avatar_url()
                 if url:
@@ -2221,6 +2377,52 @@ class MainWindow(Adw.ApplicationWindow):
             try:
                 self._online_detail_tracks = list(tracks or [])
                 self.online_page.show_playlist_detail(name, tracks or [])
+            except Exception:
+                pass
+
+        run_async(work=_work, on_done=_done)
+
+    def _recommendation_cards(self, cards) -> list:
+        """推荐分组卡片加点击：按 playlistId 调 getPlaylist 取歌，显示在歌单详情页。
+
+        后端把推荐内容实现为虚拟歌单；播放器不解析 playlistId，原样回传
+        给 getPlaylist 即可，后端动态返回内容。
+        """
+        out = []
+        for c in (cards or []):
+            if not isinstance(c, dict):
+                continue
+            pid = str(c.get("playlist_id", "") or "")
+            name = str(c.get("name", "") or "")
+            if not pid and not name:
+                continue
+            out.append({
+                "name": name,
+                "subtitle": str(c.get("subtitle", "") or ""),
+                "cover_url": str(c.get("cover_url", "") or ""),
+                "click": (lambda _pid=pid, _nm=name:
+                          self._open_recommendation_playlist(_pid, _nm))
+                         if pid else None,
+            })
+        return out
+
+    def _open_recommendation_playlist(self, playlist_id: str, name: str) -> None:
+        """点推荐分组卡片：按 playlistId 拉歌（虚拟歌单），显示在歌单详情视图。"""
+        from core.tasks import run_async
+
+        def _work():
+            try:
+                p = self._get_provider("subsonic")
+                if p is None:
+                    return []
+                return p.playlist_tracks(playlist_id)
+            except Exception as exc:
+                log.debug("推荐歌单拉取失败: %s", exc)
+                return []
+
+        def _done(tracks):
+            try:
+                self.online_page.show_playlist_detail(name or "", tracks or [])
             except Exception:
                 pass
 
@@ -2605,7 +2807,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.player_panel.reset_position()
             self.now_playing.reset_position()
             self.player_panel.set_track_info(track.title, track.artist)
-            self.player_panel.set_format_info(track.format_label)
+            self._update_panel_format(track)
             self.now_playing.set_track(track.title, track.artist)
         except Exception:
             pass
@@ -2644,7 +2846,8 @@ class MainWindow(Adw.ApplicationWindow):
         if restoring:
             return
         if self.playlist.is_playable(track):
-            self.player.play_file(track.play_url)
+            url = self._play_url_for(track)
+            self.player.play_file(url)
             # 立即同步播放按钮为"播放中"：后端 state 事件是异步的，
             # 不主动更新会等解码启动才变图标。
             try:
@@ -2652,6 +2855,25 @@ class MainWindow(Adw.ApplicationWindow):
                 self.now_playing.set_playing(True)
             except Exception:
                 pass
+
+    def _play_url_for(self, track) -> str:
+        """返回曲目的播放地址。
+
+        在线歌：实时按「当前档位」重建 stream_url，避免沿用曲目创建时的
+        旧档位快照（否则会出现「选了 hires 却按 standard 请求」的不一致）。
+        本地歌：直接用文件路径。
+        """
+        if getattr(track, "source_type", "") == "subsonic":
+            sid = getattr(track, "source_id", "") or ""
+            try:
+                p = self._get_provider("subsonic")
+                if p is not None and sid:
+                    url = p.stream_url(sid)
+                    track.stream_url = url  # 回写，保持一致
+                    return url
+            except Exception as exc:
+                log.debug("重建在线 stream_url 失败: %s", exc)
+        return getattr(track, "play_url", "") or getattr(track, "stream_url", "") or ""
 
     def _dispatch_track_assets(self, track, restoring: bool) -> None:
         """在专用后台线程加载封面/歌词/ReplayGain（重活，避免切歌卡顿）。"""
@@ -3916,6 +4138,11 @@ class MainWindow(Adw.ApplicationWindow):
     # ============================================================
     def _connect_player_signals(self) -> None:
         self.player.connect("position-update", self._on_position_update)
+        # 播放卡住检测：播放中但位置长时间不推进（如后端解不出多声道流），
+        # 自动跳过，避免「永久卡在播放状态却无声」。
+        self._last_pos_value = 0.0
+        self._last_pos_time = 0.0
+        self._stuck_checked = False
         self.player.connect("duration-changed", self._on_duration_changed)
         self.player.connect("end-of-stream", self._on_end_of_stream)
         self.player.connect("play-state-changed", self._on_play_state_changed)
@@ -3939,6 +4166,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._last_pos_update = now
         self.player_panel.set_position(seconds)
         self.now_playing.set_position(seconds)
+        # 记录位置推进，供卡住检测比对。
+        if abs(seconds - self._last_pos_value) > 0.05:
+            self._last_pos_value = seconds
+            self._last_pos_time = now
+            self._stuck_checked = False
 
     def _on_duration_changed(self, _player, seconds: float) -> None:
         self.player_panel.set_duration(seconds)
@@ -3958,6 +4190,12 @@ class MainWindow(Adw.ApplicationWindow):
         playing = state == "playing"
         self.player_panel.set_playing(playing)
         self.now_playing.set_playing(playing)
+        # 进入播放态：启动卡住检测（重置基准时间）。
+        if playing:
+            import time as _time2
+            self._last_pos_time = _time2.monotonic()
+            self._stuck_checked = False
+            GLib.timeout_add_seconds(1, self._check_playback_stuck)
         # 播放状态 → 指示器动画/显隐：
         #   playing → 跳动；paused → 可见静止；stopped → 隐藏。
         try:
@@ -3972,6 +4210,36 @@ class MainWindow(Adw.ApplicationWindow):
                 self._tray.set_playing(playing)
         except Exception:
             pass
+
+    def _check_playback_stuck(self) -> bool:
+        """周期检测播放是否卡住：播放中但位置长时间不推进 → 判定卡住 → 跳过。
+
+        场景：后端解不出某些流（如 5.1 多声道），卡在播放态却无声、进度不走。
+        纯前端兜底——避免用户「永久卡死」，无需等待后端修复。
+
+        返回 False 停止本定时器；True 继续（由 GLib 管理周期）。
+        """
+        import time as _time
+        try:
+            # 已处理过 / 非播放态 / 投送模式：不检测。
+            if self._stuck_checked:
+                return False
+            if self._is_casting():
+                return False
+            if self.player.state() != "playing":
+                return False
+            if self._last_pos_time <= 0:
+                return True
+            if _time.monotonic() - self._last_pos_time > 5.0:
+                self._stuck_checked = True
+                log.warning("播放卡住（位置 5s 未推进），自动跳过")
+                self._toast(_("播放卡住，已跳过"))
+                self._on_end_of_stream(self.player)
+                return False
+        except Exception as exc:
+            log.debug("卡住检测异常: %s", exc)
+            return False
+        return True
 
     def _on_player_error(self, _player, message: str) -> None:
         self._toast(message)
@@ -4002,19 +4270,112 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             log.debug("同步沉浸页音量失败", exc_info=True)
 
+    def _update_panel_format(self, track) -> None:
+        """更新播放面板技术信息行 + 音质徽章：
+
+        - 本地歌：无徽章，技术信息行显示格式/采样率/位深；
+        - 在线歌：歌名旁显示音质徽章（可点选），技术信息行**也**显示
+          格式/采样率/码率（能拿到多少显示多少；这些字段由后端提供）。
+        """
+        is_online = getattr(track, "source_type", "") == "subsonic"
+        log.info("[面板格式] title=%s source_type=%r is_online=%s",
+                 getattr(track, "title", ""),
+                 getattr(track, "source_type", ""), is_online)
+        # 音质徽章：每步独立 try，确保一定执行（不因前面某步失败而跳过）
+        if is_online:
+            # 当前所选档位（运行时优先，其次配置）——供下拉框选中与初始徽章。
+            try:
+                q = self.player_panel._current_quality()
+            except Exception:
+                q = "lossless"
+            try:
+                self.player_panel.set_available_qualities(None)
+            except Exception:
+                pass
+            # 显示音质选择下拉框，并同步选中到当前档位（不触发回调）。
+            try:
+                self.player_panel.quality_dropdown.set_visible(True)
+                self.player_panel.set_quality_dropdown(q)
+            except Exception as exc:
+                log.warning("[面板格式] 显示音质下拉框失败: %s", exc)
+            # 徽章只表示「实际档位」：切歌瞬间尚未探测，先按所选显示占位，
+            # 稍后 _on_audio_info 用实测值覆盖为真实档位。
+            try:
+                self.player_panel.set_quality_info(q)
+            except Exception as exc:
+                log.warning("[面板格式] set_quality_info 失败: %s", exc)
+        else:
+            try:
+                self.player_panel.clear_quality_info()
+            except Exception:
+                pass
+        # 技术信息行：本地/在线都显示 format_label
+        try:
+            self.player_panel.set_format_info(track.format_label)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _actual_quality_from_info(info: dict) -> str:
+        """从解码器实测参数判定「实际音质档位」。
+
+        实现委托给 core.quality（单一职责、可单测），本方法仅保留
+        兼容旧调用点。返回 standard/high/lossless/hires/master 或空串。
+        """
+        try:
+            from core.quality import actual_quality_from_info
+            return actual_quality_from_info(info)
+        except Exception as exc:
+            log.debug("判定实际音质失败: %s", exc)
+            return ""
+
     def _on_audio_info(self, _player, info: dict) -> None:
         track = self.playlist.current_track()
         if track is None:
             return
         try:
             track.apply_audio_info(info)
-            self.player_panel.set_format_info(track.format_label)
+            self._update_panel_format(track)
             self.now_playing.set_format_info(track.format_label)
             # 同步到各列表页里的同名 track：列表 model 里的对象是独立副本，
             # 不更新的话右键"查看歌曲信息"读到的是无参数的旧对象。
             self._sync_audio_info_to_pages(track, info)
         except Exception:
             pass
+        # 在线歌：用解码器实测参数判定实际音质，校正徽章（后端可能已降级）。
+        # 这是权威来源：在线流走 ffmpeg，ffprobe 实测 codec/bitrate/参数。
+        try:
+            if getattr(track, "source_type", "") == "subsonic":
+                actual = self._actual_quality_from_info(info)
+                log.info("[实际音质] info=%s → actual=%s", info, actual)
+                if actual:
+                    # 用户所选档位（运行时优先，其次配置）
+                    try:
+                        from providers.subsonic import _RUNTIME_QUALITY
+                        chosen = _RUNTIME_QUALITY
+                    except Exception:
+                        chosen = ""
+                    if not chosen:
+                        try:
+                            from config.settings import get_config
+                            chosen = get_config().get_str("online_quality", "lossless")
+                        except Exception:
+                            chosen = "lossless"
+                    # 徽章显示实际音质
+                    self.player_panel.set_quality_info(actual, actual=True)
+                    # 降级提示：实际 < 所选
+                    _order = ["standard", "high", "lossless", "hires", "master"]
+                    try:
+                        ci = _order.index(chosen)
+                        ai = _order.index(actual)
+                    except ValueError:
+                        ci = ai = -1
+                    if ci >= 0 and ai >= 0 and ai < ci:
+                        names = self._QUALITY_NAMES
+                        self._toast(_("所选 {a} 不可用，已降级为 {b}").format(
+                            a=names.get(chosen, chosen), b=names.get(actual, actual)))
+        except Exception as exc:
+            log.debug("校正实际音质徽章失败: %s", exc)
 
     def _sync_audio_info_to_pages(self, track, info: dict) -> None:
         """把探测到的音频参数同步到所有列表页的同名 TrackItem。"""
@@ -4053,6 +4414,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_coloring=self._on_coloring_changed,
             on_subsonic_toggled=self._apply_subsonic_enabled,
             on_subsonic_tested=self._on_subsonic_tested,
+            subsonic_connected=(getattr(self, "_subsonic_online", None) is True),
         )
         win.present()
         if goto_effect:
@@ -4797,14 +5159,29 @@ class MainWindow(Adw.ApplicationWindow):
     # 工具
     # ============================================================
     def _toast(self, message: str) -> None:
+        """弹出一条灰底提示。
+
+        关键：Adw.Toast 默认会「排队」——前一条显示完（默认 5s）后一条才出现，
+        连续操作时提示会延迟 1-2 秒才显示。这里改为「新提示立即顶掉旧的」，
+        并把显示时长收短，使提示即时反馈。
+        """
         try:
-            # 若存在可见的模态子窗口（如设置窗），把 toast 加到它上面，
-            # 否则会被子窗口遮挡（用户看不到提示）。
+            toast = Adw.Toast.new(message)
+            toast.set_timeout(3)
             target = self._visible_child_window()
             if target is not None and hasattr(target, "add_toast"):
-                target.add_toast(Adw.Toast.new(message))
+                # 清掉旧提示，立即显示最新（避免排队延迟）。
+                try:
+                    target.dismiss_all()
+                except Exception:
+                    pass
+                target.add_toast(toast)
             else:
-                self._toast_overlay.add_toast(Adw.Toast.new(message))
+                try:
+                    self._toast_overlay.dismiss_all()
+                except Exception:
+                    pass
+                self._toast_overlay.add_toast(toast)
         except Exception:
             log.info("提示: %s", message)
 

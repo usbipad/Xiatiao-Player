@@ -40,7 +40,7 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
     // http/https 是网络流：symphonia 不处理网络，直接交给 ffmpeg 拉流解码。
     // ffmpeg/ffprobe 原生支持 URL（-i http://...）。
     if path.starts_with("http://") || path.starts_with("https://") {
-        eprintln!("[engine] network stream → ffmpeg: {path}");
+        crate::logts!("[engine] network stream → ffmpeg: {path}");
         return run_playback_ffmpeg(path, shared, output);
     }
 
@@ -136,8 +136,31 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
     } else {
         0
     };
-    shared.duration_ms.store(dur_ms, Ordering::SeqCst);
-    eprintln!("[engine] symphonia: {in_rate}Hz {in_channels}ch");
+    shared.duration_ms.store(dur_ms as u64, Ordering::SeqCst);
+    let in_bits = track.codec_params.bits_per_sample.unwrap_or(0) as u32;
+    eprintln!("[engine] symphonia: {in_rate}Hz {in_channels}ch {in_bits}bit");
+    // 上报音频技术信息（前端显示格式/采样率/位深/码率）
+    {
+        let mut info = serde_json::Map::new();
+        info.insert("sample_rate".into(), serde_json::json!(in_rate));
+        info.insert("channels".into(), serde_json::json!(in_channels));
+        if in_bits > 0 {
+            info.insert("bit_depth".into(), serde_json::json!(in_bits));
+        }
+        // 码率：由总时长估算（若有）
+        if let Some(nf) = track.codec_params.n_frames {
+            let secs = nf as f64 / in_rate as f64;
+            if secs > 0.0 {
+                if let Ok(meta) = std::fs::metadata(path) {
+                    let bps = (meta.len() as f64 * 8.0 / secs) as u64;
+                    if bps > 0 {
+                        info.insert("bitrate".into(), serde_json::json!(bps));
+                    }
+                }
+            }
+        }
+        shared.report_audio_info(serde_json::Value::Object(info));
+    }
 
     // 输出层：默认**原生 PipeWire**（应用名正确、可控采样率跟随）；
     // 仅当显式设 XIATIAO_AUDIO_BACKEND=pwcat 时回退 pw-cat 子进程。
@@ -239,6 +262,8 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
         }
         match decoder.decode(&packet) {
             Ok(audio_buf) => {
+                if frames_written == 0 {
+                }
                 if sample_buf.is_none() {
                     let spec = *audio_buf.spec();
                     let cap = audio_buf.capacity() as u64;
@@ -295,7 +320,11 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
                             let _ = si.write_all(&bytes);
                         }
                     } else {
+                        if frames_written < 100000 {
+                        }
                         output.write(&pcm, rate_out, ch_out);
+                        if frames_written < 100000 {
+                        }
                     }
                     // seek 后第一块新数据写完：恢复 Playing。
                     // 放在 if/else 之外：pwcat 分支不经过 output.write，

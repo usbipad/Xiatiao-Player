@@ -38,6 +38,9 @@ class TrackItem(GObject.Object):
     bit_depth = GObject.Property(type=int, default=0)
     channels = GObject.Property(type=int, default=0)
     bitrate = GObject.Property(type=int, default=0)  # bps
+    #: 该曲目支持的音质档位列表（在线歌，来自后端扩展字段）。
+    #: 形如 [{"key":"lossless","name":"无损","br":999}, ...]；空=未知→回退默认五档。
+    quality_levels = GObject.Property(type=object, default=None)
 
     def __init__(
         self,
@@ -56,6 +59,7 @@ class TrackItem(GObject.Object):
         bit_depth: int = 0,
         channels: int = 0,
         bitrate: int = 0,
+        quality_levels: list | None = None,
     ) -> None:
         super().__init__()
         self.title = title
@@ -73,6 +77,7 @@ class TrackItem(GObject.Object):
         self.bit_depth = bit_depth
         self.channels = channels
         self.bitrate = bitrate
+        self.quality_levels = quality_levels or None
 
     # ---- 便捷方法 ----
 
@@ -230,14 +235,17 @@ class TrackItem(GObject.Object):
     def format_label(self) -> str:
         """返回可读的音频格式描述，如 'FLAC · 44.1kHz · 16bit · 2ch'。"""
         parts = []
-        # 本地用文件扩展名；在线用 stream_url 扩展名
+        # 本地用文件扩展名；在线用 stream_url 扩展名。
+        # 注意：在线 stream_url 指向 Subsonic 的 `.view` 端点，
+        # 其「扩展名」是 view 而非音频格式，须排除（否则显示 VIEW）。
         src = self.filepath or self.stream_url or ""
         ext = ""
         if "." in src:
-            # 去掉 query string 后取扩展名
             path_part = src.split("?", 1)[0]
             if "." in path_part:
-                ext = path_part.rsplit(".", 1)[-1].upper()
+                cand = path_part.rsplit(".", 1)[-1].upper()
+                if cand not in _NON_AUDIO_EXTS:
+                    ext = cand
         if ext:
             parts.append(ext)
         if self.sample_rate:
@@ -255,3 +263,7 @@ class TrackItem(GObject.Object):
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return f"<TrackItem {self.title!r} by {self.artist!r} [{self.source_type}]>"
+
+
+#: 非音频的 URL「扩展名」（Subsonic 端点等），不应当作音频格式显示。
+_NON_AUDIO_EXTS = frozenset({"VIEW", "JSON", "XML", "HTML", "PHP", "ASP"})

@@ -158,6 +158,11 @@ class PlaylistsPage(Gtk.Box):
         self._flow.set_homogeneous(False)
         self._flow.set_row_spacing(12)
         self._flow.set_column_spacing(12)
+        # 四周留白：给卡片阴影扩散空间，避免最左/最上卡片阴影被容器边界裁切。
+        self._flow.set_margin_start(20)
+        self._flow.set_margin_end(20)
+        self._flow.set_margin_top(12)
+        self._flow.set_margin_bottom(12)
         grid_scroll = Gtk.ScrolledWindow()
         grid_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         grid_scroll.set_child(self._flow)
@@ -263,33 +268,40 @@ class PlaylistsPage(Gtk.Box):
         except Exception:
             pass
 
+    #: 封面显示尺寸（缩小以给阴影留更多空间）
+    _CARD_COVER = 130
+    #: 卡片容器每侧留白（给阴影扩散，避免被容器边界裁切）
+    _CARD_PAD = 20
+
     # ---- 卡片 ----
     def _make_card(self, pl: dict) -> Gtk.Widget:
+        pad = self._CARD_PAD
+        cover = self._CARD_COVER
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        box.set_size_request(150, -1)
+        box.add_css_class("media-card")
+        # 容器宽 = 封面 + 左右留白：阴影有空间，不被裁切。
+        box.set_size_request(cover + pad * 2, -1)
         box.set_valign(Gtk.Align.START)
         box.set_halign(Gtk.Align.START)
         try:
             box.set_hexpand(False)
         except Exception:
             pass
-        # 封面框
+        # 封面框：在容器内水平居中，四周留白。
         frame = Gtk.Frame()
         frame.add_css_class("media-card-cover")
-        frame.set_size_request(150, 150)
+        frame.set_size_request(cover, cover)
+        frame.set_halign(Gtk.Align.CENTER)
         pic = Gtk.Picture()
         pic.set_content_fit(Gtk.ContentFit.COVER)
-        pic.set_size_request(150, 150)
-        tex = self._first_cover_texture(pl.get("id"))
-        if tex is not None:
-            pic.set_paintable(tex)
-            frame.set_child(pic)
-        else:
-            ph = Gtk.Image.new_from_icon_name("view-list-symbolic")
-            ph.set_pixel_size(48)
-            ph.add_css_class("media-card-placeholder")
-            frame.set_child(ph)
+        pic.set_size_request(cover, cover)
+        # 先占位，异步加载封面（本地内嵌 / 在线 URL）。
+        ph = Gtk.Image.new_from_icon_name("view-list-symbolic")
+        ph.set_pixel_size(48)
+        ph.add_css_class("media-card-placeholder")
+        frame.set_child(ph)
         box.append(frame)
+        self._load_card_cover_async(pl.get("id"), frame, pic, cover)
         lbl = Gtk.Label(label=pl.get("name") or _("未命名歌单"))
         lbl.set_ellipsize(3)
         lbl.set_max_width_chars(18)
@@ -310,22 +322,56 @@ class PlaylistsPage(Gtk.Box):
         box.add_controller(rclick)
         return box
 
-    def _first_cover_texture(self, pid):
-        """取歌单第一首的封面纹理（无则 None）。"""
+    def _load_card_cover_async(self, pid, frame, pic, size: int) -> None:
+        """异步加载歌单第一首的封面（本地内嵌 / 在线 URL），回主线程设置。
+
+        取不到封面时保持占位图。
+        """
         try:
             rows = get_playlist_store().rows_of(pid)
-            if not rows:
-                return None
-            fp = rows[0].get("filepath") or ""
-            if not fp:
-                return None
-            raw = extract_cover(fp)
-            if not raw:
-                return None
-            png = make_square_cover_bytes(raw, 150, radius=10)
-            return Gdk.Texture.new_from_bytes(GLib.Bytes.new(png))
         except Exception:
-            return None
+            return
+        if not rows:
+            return
+        first = rows[0]
+        fp = first.get("filepath") or ""
+        url = first.get("cover_url") or ""
+        if not fp and not url:
+            return
+
+        from core.tasks import run_async
+
+        def _work():
+            try:
+                raw = None
+                if fp:
+                    raw = extract_cover(fp)
+                if not raw and url:
+                    # 在线封面：下载后取字节（复用 models 的方形化）。
+                    import urllib.request
+                    req = urllib.request.Request(url, method="GET")
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        raw = resp.read()
+                if not raw:
+                    return None
+                return make_square_cover_bytes(raw, size, radius=10)
+            except Exception:
+                return None
+
+        def _done(png):
+            if not png:
+                return
+            try:
+                tex = Gdk.Texture.new_from_bytes(GLib.Bytes.new(png))
+                pic.set_paintable(tex)
+                frame.set_child(pic)
+            except Exception:
+                pass
+
+        try:
+            run_async(work=_work, on_done=_done)
+        except Exception:
+            pass
 
     def _card_menu(self, box, pl: dict, x: float, y: float) -> None:
         # 用 Gtk.Popover + 按钮直接连回调，不经 Gio 动作解析

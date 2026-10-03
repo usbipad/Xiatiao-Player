@@ -26,8 +26,12 @@ PANEL_CONTENT_MIN_W = 320
 #: 注：面板自身 margin 已归零，留白由 sidebar-pane 的 padding 提供；
 #: 此常量保留仅为兼容，不再计入窗口最小宽度。
 PANEL_MARGIN = 22
-#: 窗口最小宽度 = 左侧面板最小宽度（二者相等，不再额外加 margin）。
-PANEL_MIN_W = PANEL_CONTENT_MIN_W
+#: 侧栏容器（.sidebar-pane）左右 padding（各一份）。
+#: 必须与 style.css 里 .sidebar-pane 的 padding 值保持一致——
+#: 窗口最小宽度据此预留左右留白，太小会导致右侧留白被压没。
+PANEL_SIDE_PADDING = 6
+#: 窗口最小宽度 = 面板内容最小宽 + 左右两侧留白（各一份）。
+PANEL_MIN_W = PANEL_CONTENT_MIN_W + PANEL_SIDE_PADDING * 2
 
 
 def _fmt_seconds(seconds: float) -> str:
@@ -111,6 +115,7 @@ class PlayerPanel(Gtk.Box):
         on_add_queue: Callable[[], None] | None = None,
         on_cast: Callable[[], None] | None = None,
         on_download: Callable[[], None] | None = None,
+        on_quality: Callable[[str], None] | None = None,
     ) -> None:
         self._on_add_queue = on_add_queue
         self._on_queue_activate = on_queue_activate
@@ -232,7 +237,20 @@ class PlayerPanel(Gtk.Box):
         self.label_artist.set_hexpand(False)
         # 左右渐隐遮罩：与歌词区 np-fade 同机制（覆盖条 + CSS 渐变）。
         # 让跑马灯文字滚到两端时柔和淡出，而非硬切。
-        info_box.append(self._wrap_with_fade(self.label_track))
+        # 歌名行：Overlay —— 歌名（跑马灯 + 渐隐）为底，音质徽章叠在右侧。
+        # 徽章不参与横向排布，避免被跑马灯 300 宽挤掉/盖住。
+        _title_overlay = Gtk.Overlay()
+        _title_overlay.set_halign(Gtk.Align.CENTER)
+        _title_overlay.set_child(self._wrap_with_fade(self.label_track))
+        # 歌名旁：只读「实际音质」徽章（不可点；选档按钮已移到技术信息行）。
+        self.quality_badge = Gtk.Label(label="")
+        self.quality_badge.add_css_class("quality-badge")
+        self.quality_badge.set_valign(Gtk.Align.CENTER)
+        self.quality_badge.set_halign(Gtk.Align.END)
+        self.quality_badge.set_margin_end(4)
+        self.quality_badge.set_visible(False)
+        _title_overlay.add_overlay(self.quality_badge)
+        info_box.append(_title_overlay)
         info_box.append(self._wrap_with_fade(self.label_artist))
         # 套 WindowHandle：拖动歌名/歌手区域也能移动窗口（纯文字，无交互冲突）
         info_handle = Gtk.WindowHandle()
@@ -248,12 +266,53 @@ class PlayerPanel(Gtk.Box):
 
         self.label_time_left = Gtk.Label(label="0:00")
         self.label_time_left.add_css_class("caption")
-        # 音频技术信息独立一行（格式 · 采样率 · 位深 · 声道 · 码率）
+        # 音频技术信息一行：前面放「音质选择」按钮，后跟技术信息文本。
+        # 选档按钮用 MenuButton：只显示当前档位，宽度随文字自适应。
+        self.quality_dropdown = Gtk.MenuButton()
+        self.quality_dropdown.set_valign(Gtk.Align.CENTER)
+        self.quality_dropdown.set_visible(False)
+        self.quality_dropdown.set_tooltip_text(_("选择在线音质"))
+        self.quality_dropdown.add_css_class("quality-dropdown")
+        self._quality_btn_label = Gtk.Label(label="无损")
+        # MenuButton 自定义 child 后不显示内置箭头，手动补一个下拉三角。
+        _btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        _btn_box.append(self._quality_btn_label)
+        _arrow = Gtk.Image.new_from_icon_name("pan-down-symbolic")
+        _arrow.set_pixel_size(10)
+        _arrow.add_css_class("dim-label")
+        _btn_box.append(_arrow)
+        self.quality_dropdown.set_child(_btn_box)
+        # 弹出档位列表（Popover）。
+        self._quality_popover = Gtk.Popover()
+        self._quality_popover.set_parent(self.quality_dropdown)
+        _pop_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        _pop_box.set_margin_top(6)
+        _pop_box.set_margin_bottom(6)
+        _pop_box.set_margin_start(6)
+        _pop_box.set_margin_end(6)
+        self._quality_pop_btns = {}
+        for _k, _label in self._QUALITY_LABELS:
+            _b = Gtk.Button(label=_label)
+            _b.add_css_class("flat")
+            _b.set_halign(Gtk.Align.FILL)
+            _b.connect("clicked", self._on_quality_popover_choice, _k)
+            _pop_box.append(_b)
+            self._quality_pop_btns[_k] = _b
+        self._quality_popover.set_child(_pop_box)
+        self.quality_dropdown.set_popover(self._quality_popover)
         self.label_format = Gtk.Label(label="")
         self.label_format.add_css_class("caption")
         self.label_format.add_css_class("dim-label")
         self.label_format.set_ellipsize(3)
-        self.label_format.set_halign(Gtk.Align.CENTER)
+        self.label_format.set_halign(Gtk.Align.START)
+        # 三段式：按钮靠左固定（不随技术信息长度漂移），技术信息居中。
+        _fmt_box = Gtk.CenterBox()
+        _fmt_box.set_start_widget(self.quality_dropdown)
+        _fmt_box.set_center_widget(self.label_format)
+        # 按钮往右缩进一点，避免紧贴面板左缘。
+        _fmt_box.set_margin_start(28)
+        _fmt_box.set_margin_end(16)
+        self._fmt_box = _fmt_box
         self.label_time_right = Gtk.Label(label="0:00")
         self.label_time_right.add_css_class("caption")
         # CenterBox：中间留空，两侧时间对齐。
@@ -264,7 +323,7 @@ class PlayerPanel(Gtk.Box):
         time_box.set_margin_start(24)
         time_box.set_margin_end(24)
         inner.append(time_box)
-        inner.append(self.label_format)
+        inner.append(self._fmt_box)
 
         # ---- 控制行（Apple Music 风格：随机 / 上 / 播 / 下 / 循环）----
         ctrl_box = Gtk.Box(spacing=12)
@@ -386,6 +445,8 @@ class PlayerPanel(Gtk.Box):
             self._effect_state.connect("changed", self._on_effect_state_changed)
         except Exception:
             self._effect_state = None
+
+        self._on_quality = on_quality
 
         # 添加到歌单：把当前播放曲目加入歌单（弹出选择对话框）
         self._add_queue_btn = Gtk.Button(icon_name="xiatiao-queue-add-symbolic")
@@ -699,6 +760,145 @@ class PlayerPanel(Gtk.Box):
         if nick:
             self.user_avatar.set_tooltip_text(nick)
         self.user_avatar.set_visible(bool(url))
+
+    #: 在线音质档位（key → 显示名）；key 与 config.online_quality 一致
+    _QUALITY_LABELS = [
+        ("standard", "标准"),
+        ("high", "高品"),
+        ("lossless", "无损"),
+        ("hires", "Hi-Res"),
+        ("master", "母带"),
+    ]
+
+    def _current_quality(self) -> str:
+        """当前生效的音质档位：运行时优先，其次配置。
+
+        与 providers.subsonic._configured_quality_br 的取值口径一致——
+        母带/Hi-Res 只设运行时（不持久化），故不能只读配置。
+        """
+        try:
+            from providers.subsonic import _RUNTIME_QUALITY
+            if _RUNTIME_QUALITY:
+                return _RUNTIME_QUALITY
+        except Exception:
+            pass
+        try:
+            from config.settings import get_config
+            return get_config().get_str("online_quality", "lossless")
+        except Exception:
+            return "lossless"
+
+    def set_quality_info(self, key: str, actual: bool = False) -> None:
+        """在线歌：更新技术信息行前的「实际音质」只读徽章。
+
+        徽章只指示当前实际播放档位，不可点（选档由歌名旁下拉框负责）。
+        actual 参数保留以兼容调用方（语义上徽章始终表示实际值）。
+        """
+        name = dict(self._QUALITY_LABELS).get(key, key or "")
+        try:
+            self.quality_badge.set_text(name)
+            self.quality_badge.set_visible(True)
+            self.quality_badge.set_tooltip_text(_("当前实际播放音质"))
+            log.info("[音质徽章] set_quality_info key=%s name=%s actual=%s",
+                     key, name, actual)
+        except Exception as exc:
+            log.warning("[音质徽章] 显示失败: %s", exc)
+        try:
+            for cls in ("qb-standard", "qb-high", "qb-lossless",
+                        "qb-hires", "qb-master"):
+                self.quality_badge.remove_css_class(cls)
+            self.quality_badge.add_css_class("qb-" + (key or "standard"))
+        except Exception as exc:
+            log.debug("音质徽章配色失败: %s", exc)
+
+    def clear_quality_info(self) -> None:
+        """本地歌：隐藏音质徽章与音质下拉框。"""
+        try:
+            self.quality_badge.set_visible(False)
+        except Exception:
+            pass
+        try:
+            self.quality_dropdown.set_visible(False)
+        except Exception:
+            pass
+        log.info("[音质徽章] clear_quality_info（已隐藏）")
+
+    def _available_quality_labels(self) -> list:
+        """当前歌支持的档位 [(key, name)]。
+
+        后端给了 quality_levels → 只显示实际有的；
+        没给（标准后端/未实现）→ 回退默认五档。
+        """
+        ql = getattr(self, "_quality_levels", None)
+        if isinstance(ql, list) and ql:
+            out = []
+            for item in ql:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("key", "") or "").lower()
+                if not key:
+                    continue
+                name = str(item.get("name", "") or "") or \
+                    dict(self._QUALITY_LABELS).get(key, key)
+                out.append((key, name))
+            if out:
+                return out
+        return list(self._QUALITY_LABELS)
+
+    def set_available_qualities(self, levels) -> None:
+        """由 window 传入当前歌支持的档位列表（TrackItem.quality_levels）。"""
+        self._quality_levels = levels if isinstance(levels, list) else None
+
+    def _on_quality_popover_choice(self, _btn, key: str) -> None:
+        """弹出列表选档 → 切换音质（复用 _set_quality）。"""
+        log.info("[音质选择] key=%s", key)
+        try:
+            self._quality_popover.popdown()
+        except Exception:
+            pass
+        self._set_quality(key)
+
+    #: 档位短标签（用于按钮上显示，宽度自适应）。
+    _QUALITY_SHORT = {
+        "standard": "标准",
+        "high": "高品",
+        "lossless": "无损",
+        "hires": "Hi-Res",
+        "master": "母带",
+    }
+
+    def set_quality_dropdown(self, key: str) -> None:
+        """同步按钮显示到当前所选档位（宽度随文字自适应）。"""
+        try:
+            if hasattr(self, "_quality_btn_label"):
+                self._quality_btn_label.set_text(
+                    self._QUALITY_SHORT.get(key, key or "无损"))
+        except Exception as exc:
+            log.debug("同步音质按钮失败: %s", exc)
+
+    def _set_quality(self, key: str) -> None:
+        """切换音质档位。
+
+        母带 / Hi-Res：只设「运行时档位」（当前会话生效，不持久化）。
+        其它档位（标准/高品/无损）：写配置 + 设运行时档位。
+        持久化上限为「无损」——重启后母带/Hi-Res 回落。
+        """
+        try:
+            from providers.subsonic import set_runtime_quality
+            set_runtime_quality(key)
+        except Exception:
+            pass
+        if key not in ("master", "hires"):
+            try:
+                from config.settings import get_config
+                get_config().set_str("online_quality", key)
+            except Exception:
+                pass
+        if callable(getattr(self, "_on_quality", None)):
+            try:
+                self._on_quality(key)
+            except Exception:
+                pass
 
     #: 音效预设展示名（键与 PlayerCore 一致）
     _EFFECT_LABELS = [
@@ -1261,14 +1461,10 @@ class PlayerPanel(Gtk.Box):
         """Playing From 行已移除，保留空实现以兼容调用方。"""
         return None
 
-    def set_available_qualities(self, qualities, current: str, on_select) -> None:
-        """音质按钮已移除，保留空实现以兼容调用方。"""
-        return None
-
     def set_format_info(self, text: str) -> None:
         """显示音频技术信息（格式 · 采样率 · 位深 · 声道 · 码率）。
 
-        独立于音质按钮（后者只显示档位名），两者互不覆盖。
+        本地/在线歌都显示；在线歌时其前的徽章额外指示实际音质。
         """
         self.label_format.set_text(text or "")
 

@@ -91,10 +91,19 @@ class LocalLibraryPage(Gtk.Box):
         self._group_filter = ""
 
         header = self._build_header(title, on_refresh, on_add_to_playlist)
+        self._header = header
+        #: hide_header 时默认隐藏 header（不占位）；
+        #: 但进「组详情」时会临时显示（返回按钮在 header 里）。
+        self._hide_header = bool(hide_header)
+        if hide_header:
+            header.set_visible(False)
         self.append(header)
 
         self._empty_label = Gtk.Label(label=empty_text)
         self._empty_label.add_css_class("dim-label")
+        # 空提示文案为空时隐藏（不占位）。
+        if not empty_text:
+            self._empty_label.set_visible(False)
         self.append(self._empty_label)
 
         self._content_stack = Gtk.Stack()
@@ -488,12 +497,24 @@ class LocalLibraryPage(Gtk.Box):
         self._group_filter = ""
         self._view_mode = getattr(self, "_view_before_group", VIEW_SONGS) or VIEW_SONGS
         self._back_btn.set_visible(False)
+        # 返回卡片列表：若原本 hide_header，重新隐藏 header（不占位）。
+        if getattr(self, "_hide_header", False):
+            try:
+                self._header.set_visible(False)
+            except Exception:
+                pass
         self._apply_filter()
 
     def _enter_group(self, group_name: str) -> None:
         self._view_before_group = self._view_mode
         self._group_filter = group_name
         self._view_mode = VIEW_SONGS
+        # 进组详情：若 header 因 hide_header 被隐藏，临时显示（返回按钮在其中）。
+        if getattr(self, "_hide_header", False):
+            try:
+                self._header.set_visible(True)
+            except Exception:
+                pass
         self._back_btn.set_visible(True)
         self._apply_filter()
 

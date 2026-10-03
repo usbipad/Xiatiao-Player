@@ -28,6 +28,7 @@ mod output_alsa;
 mod dsd;
 mod reverb;
 mod ir_resample;
+mod logging;
 mod ipc;
 mod protocol;
 mod viz;
@@ -121,6 +122,12 @@ fn handle_client(stream: UnixStream, engine: Arc<Mutex<engine::Engine>>) {
                 // 解码线程报告的错误 → 发给客户端（UI 提示）
                 if let Some(err) = eng.lock().ok().and_then(|e| e.take_error()) {
                     if send_event(&w, &protocol::Event::Error { message: err }).is_err() {
+                        break;
+                    }
+                }
+                // 解码线程探测到的音频技术信息 → 发给客户端（显示格式/采样率/位深/码率）
+                if let Some(info) = eng.lock().ok().and_then(|e| e.take_audio_info()) {
+                    if send_event(&w, &protocol::Event::AudioInfo { info }).is_err() {
                         break;
                     }
                 }

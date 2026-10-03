@@ -41,6 +41,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "subsonic_use_token": True,
     # 额外查询参数（形如 a=1&b=2），留给特殊服务端
     "subsonic_extra_params": "",
+    # 在线音质档位：standard / high / lossless / hires / master
+    "online_quality": "lossless",
     # ---- 音效 ----
     "audio_effect": "off",
     # 全局 DSP 开关（Rust 内置链）

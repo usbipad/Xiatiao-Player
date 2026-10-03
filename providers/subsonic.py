@@ -78,6 +78,17 @@ class SubsonicError(Exception):
     """Subsonic 请求/解析错误。"""
 
 
+#: 运行时音质档位（内存，不持久化）。母带/Hi-Res 只设这里，
+#: 当前会话生效；重启后回落到配置档位（最高无损）。
+_RUNTIME_QUALITY = ""
+
+
+def set_runtime_quality(key: str) -> None:
+    """设置运行时音质档位（不写配置）。空串 = 回落配置。"""
+    global _RUNTIME_QUALITY
+    _RUNTIME_QUALITY = str(key or "")
+
+
 class SubsonicProvider(BaseMusicProvider):
     """通用 Subsonic 客户端。"""
 
@@ -235,11 +246,12 @@ class SubsonicProvider(BaseMusicProvider):
             pid = str(p.get("id", ""))
             if not pid:
                 continue
-            cover_id = str(p.get("coverArt", "") or "")
+            # 封面：优先 coverArt；为空则回退用歌单 id（与歌曲卡片一致的兜底策略）。
+            cover_id = str(p.get("coverArt", "") or "") or pid
             result.append(PlaylistInfo(
                 id=pid,
                 name=str(p.get("name", "") or "未命名歌单"),
-                cover_url=self.cover_art_url(cover_id) if cover_id else "",
+                cover_url=self.cover_art_url(cover_id),
                 song_count=int(p.get("songCount", 0) or 0),
                 source="subsonic",
                 description=str(p.get("comment", "") or ""),
@@ -395,13 +407,46 @@ class SubsonicProvider(BaseMusicProvider):
 
         max_bit_rate=0 表示不限制（原文件直传，支持无损/Range seek）。
         fmt 可指定转码格式（如 mp3），留空=不转码。
+        未显式指定 max_bit_rate 时，读取用户配置的音质档位。
         """
+        if not max_bit_rate:
+            try:
+                max_bit_rate = self._configured_quality_br()
+            except Exception:
+                max_bit_rate = 0
         extra = [("id", song_id)]
         if max_bit_rate:
             extra.append(("maxBitRate", str(max_bit_rate)))
         if fmt:
             extra.append(("format", fmt))
         return self._url("stream", extra)
+
+    @staticmethod
+    def _configured_quality_br() -> int:
+        """把当前音质档位映射成 maxBitRate 值（后端按此值返回对应音质）。
+
+        档位 → maxBitRate 约定值（后端需对齐）：
+          standard 标准 128 / high 高品 320 / lossless 无损 999 /
+          hires Hi-Res 1400 / master 母带 2000。
+        0 表示不限制（原文件直传）。
+
+        优先用「运行时档位」（母带/Hi-Res 临时试听，不持久化）；
+        无运行时档位时读配置（持久化，最高无损）。
+        """
+        q = _RUNTIME_QUALITY or None
+        if not q:
+            try:
+                from config.settings import get_config
+                q = get_config().get_str("online_quality", "lossless")
+            except Exception:
+                q = "lossless"
+        return {
+            "standard": 128,
+            "high": 320,
+            "lossless": 999,
+            "hires": 1400,
+            "master": 2000,
+        }.get(str(q or "").lower(), 0)
 
     def cover_art_url(self, cover_id: str, size: int = 0) -> str:
         """封面 URL（cover_id 通常是专辑/歌曲 id）。"""
@@ -475,6 +520,54 @@ class SubsonicProvider(BaseMusicProvider):
             ("action", "status"), ("source", source), ("key", key),
         ])
 
+    # ---- 推荐内容扩展（非标准；未实现的后端返回失败 → 前端隐藏入口）----
+    def get_recommendations(self, source: str = "qq", rec_type: str = "daily") -> dict:
+        """推荐内容（私有扩展 getRecommendations，见 PLAYER_EXTENSION.md）。
+
+        参数：source（音源 qq/netease/...）、type（daily/guess/rank/radio/categories）。
+        返回整个 recommendations 对象（含 sections 分组）；未实现 / 出错 → {}。
+        """
+        try:
+            body = self._request("getRecommendations", [
+                ("source", source), ("type", rec_type),
+            ])
+        except Exception:
+            return {}
+        node = body.get("recommendations")
+        return node if isinstance(node, dict) else {}
+
+    def recommendation_sections(self, source: str = "qq", rec_type: str = "daily") -> list:
+        """取推荐分组列表（sections 数组）。未实现 → []。
+
+        每项：{id, title, kind(playlist|songs), playlistId, coverArt, children}。
+        """
+        rec = self.get_recommendations(source, rec_type)
+        secs = rec.get("sections") if isinstance(rec, dict) else None
+        return secs if isinstance(secs, list) else []
+
+    def recommendation_section_cards(self, source: str, rec_type: str) -> list:
+        """推荐分组 → 卡片 dict 列表（name/subtitle/cover_url/click）。
+
+        kind=playlist：点击后用 playlistId 调 getPlaylist 取歌（虚拟歌单，
+        后端动态返回内容）。未实现 → []，前端隐藏区块。
+        """
+        out = []
+        for sec in self.recommendation_sections(source, rec_type):
+            if not isinstance(sec, dict):
+                continue
+            pid = str(sec.get("playlistId", "") or "")
+            title = str(sec.get("title", "") or "")
+            if not pid and not title:
+                continue
+            cover = str(sec.get("coverArt", "") or "")
+            out.append({
+                "name": title,
+                "subtitle": str(sec.get("id", "") or ""),
+                "cover_url": self.cover_art_url(cover) if cover else "",
+                "playlist_id": pid,
+            })
+        return out
+
     # ============================================================
     # 数据转换：Subsonic 结构 → TrackItem
     # ============================================================
@@ -484,6 +577,10 @@ class SubsonicProvider(BaseMusicProvider):
         dur = float(song.get("duration", 0) or 0)
         bitrate = int(song.get("bitRate", 0) or 0) * 1000  # kbps → bps
         cover_id = str(song.get("coverArt", "") or sid)
+        # 该歌支持的音质档位（后端扩展字段 qualityLevels）；无 → None，前端回退默认五档
+        qlevels = song.get("qualityLevels")
+        if not isinstance(qlevels, list):
+            qlevels = None
         # 技术参数（OpenSubsonic 提供；普通 Subsonic 可能缺）
         sample_rate = int(song.get("samplingRate", 0) or 0)
         bit_depth = int(song.get("bitDepth", 0) or 0)
@@ -503,6 +600,7 @@ class SubsonicProvider(BaseMusicProvider):
             sample_rate=sample_rate,
             bit_depth=bit_depth,
             channels=channels,
+            quality_levels=qlevels,
         )
 
     @staticmethod
@@ -557,3 +655,4 @@ class SubsonicProvider(BaseMusicProvider):
     def refresh(self) -> None:
         """Subsonic 无「扫描」概念，空实现。"""
         return
+

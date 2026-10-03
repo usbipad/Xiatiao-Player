@@ -405,7 +405,7 @@ impl PipewireOutput {
     /// 重建 stream（新格式）。
     fn rebuild(&self, rate: u32, channels: u32) {
         let device = self.device.lock().map(|d| d.clone()).unwrap_or_default();
-        eprintln!("[output][rate] REBUILD 开始：rate={rate} ch={channels} device='{device}'");
+        crate::logts!("[output][rate] REBUILD 开始：rate={rate} ch={channels} device='{device}'");
         self.stop();
         // 按实际采样率重建环形缓冲：保证缓冲时长 == RING_SECONDS。
         {
@@ -606,7 +606,7 @@ fn run_pipewire(
         .map_err(|e| e.to_string())?;
 
     // 格式：F32LE（与 PipeWire 内部处理格式一致）。
-    eprintln!("[output][rate] run_pipewire 建流：请求 rate={rate} ch={channels} latency='{latency_str}'");
+    crate::logts!("[output][rate] run_pipewire 建流：请求 rate={rate} ch={channels} latency='{latency_str}'");
     let mut audio_info = spa::param::audio::AudioInfoRaw::new();
     audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
     audio_info.set_rate(rate);
@@ -640,7 +640,7 @@ fn run_pipewire(
             &mut params,
         )
         .map_err(|e| e.to_string())?;
-    eprintln!("[output][rate] stream connect 完成：rate={rate} ch={channels}（PipeWire 应据此重协商）");
+    crate::logts!("[output][rate] stream connect 完成：rate={rate} ch={channels}");
 
     let lp = mainloop.loop_();
     let ml_timer = mainloop.clone();
