@@ -229,24 +229,12 @@ def _on_cover_bind(_factory, list_item) -> None:
     if ph is not None:
         ph.set_visible(True)
 
-    # 音质徽标（DSD / Hi-Res / CD）：按当前曲目音频规格显示/隐藏
+    # 音质规格徽标（DSD / DXD / HR / CD + 多声道）：统一由公共函数处理
     try:
         badge = getattr(list_item, "_cover_badge", None)
         if badge is not None:
-            label = ""
-            if item is not None:
-                label = getattr(item, "quality_badge", "") or ""
-            badge.set_text(label)
-            badge.set_visible(bool(label))
-            badge.remove_css_class("hires-badge")
-            badge.remove_css_class("cd-badge")
-            badge.remove_css_class("dsd-badge")
-            if label == "DSD":
-                badge.add_css_class("dsd-badge")
-            elif label == "CD":
-                badge.add_css_class("cd-badge")
-            else:
-                badge.add_css_class("hires-badge")
+            from ui.pages.common import apply_quality_badge
+            apply_quality_badge(badge, item)
     except Exception:
         pass
 

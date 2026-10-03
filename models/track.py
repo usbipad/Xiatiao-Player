@@ -94,39 +94,62 @@ class TrackItem(GObject.Object):
     def is_hires(self) -> bool:
         """是否为 Hi-Res 高解析音频。
 
-        判定标准（超过 CD 规格 44.1kHz / 16bit 即视为 Hi-Res）：
-        - 采样率 > 48kHz（如 88.2 / 96 / 176.4 / 192kHz），或
-        - 位深 > 16bit（如 24bit / 32bit）
+        判定：
+        - 采样率 > 48kHz（88.2 / 96 / 176.4 / 192kHz…），或
+        - 48kHz 且 24bit（特例：比 CD 高一档）。
+        注：44.1k（任意位深）与 48k/16bit 归 CD 级。
         信息未知（0）时不显示徽标。
         """
         try:
-            if self.sample_rate and self.sample_rate > 48000:
+            sr = int(self.sample_rate or 0)
+            bd = int(self.bit_depth or 0)
+            if sr > 48000:
                 return True
-            if self.bit_depth and self.bit_depth > 16:
-                return True
+            # 48kHz/24bit 特例 → HR。
+            return bool(sr > 44100 and bd > 16)
         except Exception:
             return False
-        return False
+
+    @property
+    def is_dxd(self) -> bool:
+        """是否为 DXD（超高采样率 PCM，>= 352.8kHz）。"""
+        try:
+            return bool(self.sample_rate and self.sample_rate >= 352800)
+        except Exception:
+            return False
+
+    @property
+    def is_multichannel(self) -> bool:
+        """是否多声道（>2 声道）。"""
+        try:
+            return bool(self.channels and self.channels > 2)
+        except Exception:
+            return False
+
+    @property
+    def multichannel_label(self) -> str:
+        """多声道标签（如 '5.1' / '7.1' / 'Nch'）；非多声道返回空串。"""
+        try:
+            ch = int(self.channels or 0)
+            if ch <= 2:
+                return ""
+            return {6: "5.1", 8: "7.1", 4: "4.0"}.get(ch, f"{ch}ch")
+        except Exception:
+            return ""
 
     @property
     def is_cd_quality(self) -> bool:
-        """是否为 CD 级音质（无损 + 16bit + <= 48kHz）。
+        """是否为 CD 级音质（无损 + 采样率 <= 48kHz）。
 
-        判定标准：
-        - 位深 == 16bit（CD 规格），且
-        - 采样率 <= 48kHz（44.1kHz 为标准 CD，48kHz 亦归入 CD 级），且
-        - 文件格式为无损（flac / ape / wav / wv / alac / aiff / aif）
-        有损格式（mp3 / aac / ogg / m4a 等）即使参数相同也不算 CD 级。
+        判定（采样率优先）：
+        - 采样率 <= 48kHz（44.1kHz 为标准 CD，48kHz 亦归入），且
+        - 文件格式为无损（flac / ape / wav / wv / alac / aiff / aif）。
+        注：24bit/48k 亦归 CD（采样率是 CD 规格）；有损格式不算。
         信息未知（0）时不显示。
         """
         try:
-            # 位深必须已知且为 16bit
-            if not self.bit_depth or self.bit_depth != 16:
-                return False
-            # 采样率必须已知且 <= 48kHz
             if not self.sample_rate or self.sample_rate > 48000:
                 return False
-            # 必须是无损格式
             ext = self._lossless_ext()
             if not ext or ext not in self._LOSSLESS_EXTS:
                 return False
@@ -186,16 +209,46 @@ class TrackItem(GObject.Object):
             return False
 
     @property
-    def quality_badge(self) -> str:
-        """返回音质徽标文案：'DSD' / 'HR' / 'CD' / ''（无徽标）。
+    def dsd_label(self) -> str:
+        """DSD 细分标签（DSD64/DSD128/…）；非 DSD 返回空串。
 
-        互斥，优先级 DSD > Hi-Res > CD 级。
+        按采样率 / 2822400 取倍数；无法判定时退回 'DSD'。
+        """
+        try:
+            if not self.is_dsd:
+                return ""
+            sr = int(self.sample_rate or 0)
+            if sr <= 0:
+                return "DSD"
+            # DSD 倍数基准 = 44.1kHz（DSD64=64×44100=2822400）。
+            mult = round(sr / 44100)
+            if mult in (64, 128, 256, 512, 1024):
+                return f"DSD{mult}"
+            if mult > 0 and abs(mult - min((64, 128, 256, 512, 1024),
+                                           key=lambda m: abs(m - mult))) <= 8:
+                nearest = min((64, 128, 256, 512, 1024), key=lambda m: abs(m - mult))
+                return f"DSD{nearest}"
+            return "DSD"
+        except Exception:
+            return "DSD"
+
+    @property
+    def quality_badge(self) -> str:
+        """返回音质规格徽标文案：DSD/DSD64…/DXD/HR/CD/''。
+
+        互斥，优先级 DSD > DXD > HR > CD。
+        仅无损规格才有徽标（有损不标）；多声道另由 multichannel_label 叠加。
         """
         if self.is_dsd:
-            return "DSD"
+            return self.dsd_label
+        # 仅无损格式参与规格判定。
+        if self._lossless_ext() not in self._LOSSLESS_EXTS:
+            return ""
+        if self.is_dxd:
+            return "DXD"
         if self.is_hires:
             return "HR"
-        if self.is_cd_quality and self._lossless_ext() in self._LOSSLESS_EXTS:
+        if self.is_cd_quality:
             return "CD"
         return ""
 

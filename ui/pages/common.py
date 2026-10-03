@@ -24,6 +24,105 @@ INDICATOR_SIZE = 14
 _COVER_LOADING: dict = {}
 
 
+#: 音质规格徽章的所有 CSS 类（统一在此维护）。
+_BADGE_CLASSES = (
+    "hires-badge", "cd-badge", "dsd-badge", "dxd-badge", "mc-badge",
+    "dsd64-badge", "dsd128-badge", "dsd256-badge", "dsd512-badge", "dsd1024-badge",
+)
+
+
+def badge_css_for(label: str, multichannel: str = "") -> str:
+    """按规格标签 + 多声道返回徽章 CSS 类名。
+
+    多声道优先用青灰（mc-badge）；否则按规格：DSD 紫 / DXD 青绿 /
+    CD 蓝 / 其余（HR 等）金。空标签返回空串。
+    """
+    if not label:
+        return ""
+    if multichannel:
+        return "mc-badge"
+    if label.startswith("DSD"):
+        # DSD 细分：DSD64→dsd64-badge…；通用 DSD 用 dsd-badge。
+        suffix = label[3:].strip()
+        if suffix in ("64", "128", "256", "512", "1024"):
+            return f"dsd{suffix}-badge"
+        return "dsd-badge"
+    if label.startswith("DXD"):
+        return "dxd-badge"
+    if label.startswith("CD"):
+        return "cd-badge"
+    return "hires-badge"
+
+
+def apply_quality_badge(badge, track) -> None:
+    """按 track 的规格 + 多声道设置徽章文字与 CSS 类（三处徽章共用）。
+
+    - 文字：quality_badge（如 'HR'）+ 多声道（如 '5.1'）→ 'HR 5.1'。
+    - 空标签（有损 / 未知）→ 隐藏徽章。
+    """
+    try:
+        label = getattr(track, "quality_badge", "") or ""
+        mc = getattr(track, "multichannel_label", "") or ""
+        if mc:
+            label = f"{label} {mc}".strip()
+        import logging as _lg
+        _lg.getLogger(__name__).info(
+            "[徽章] apply title=%r label=%r mc=%r",
+            getattr(track, "title", ""), label, mc)
+        badge.set_text(label)
+        badge.set_visible(bool(label))
+        for c in _BADGE_CLASSES:
+            badge.remove_css_class(c)
+        cls = badge_css_for(getattr(track, "quality_badge", "") or "", mc)
+        if cls:
+            badge.add_css_class(cls)
+    except Exception:
+        pass
+
+
+def track_from_row(r: dict, stream_url: str = ""):
+    """从 DB 行构造 TrackItem（歌单/历史/收藏共用）。
+
+    - 本地文件：补读音频技术参数（DB 表未存），供音质徽章显示。
+    - 在线歌：stream_url 由调用方传入（token 有时效，动态重建）。
+    失败返回 None。
+    """
+    try:
+        from models import TrackItem, SOURCE_LOCAL
+        source_type = r.get("source_type") or SOURCE_LOCAL
+        filepath = r.get("filepath") or ""
+        rate = depth = channels = bitrate = 0
+        if source_type == SOURCE_LOCAL and filepath:
+            try:
+                from providers.local import LocalProvider
+                tech = LocalProvider._read_tech_mutagen(filepath)
+                if tech:
+                    rate = tech.get("sample_rate", 0) or 0
+                    depth = tech.get("bit_depth", 0) or 0
+                    channels = tech.get("channels", 0) or 0
+                    bitrate = tech.get("bitrate", 0) or 0
+            except Exception:
+                pass
+        return TrackItem(
+            title=r.get("title") or "未知歌曲",
+            artist=r.get("artist") or "未知歌手",
+            album=r.get("album") or "",
+            duration=r.get("duration") or "0:00",
+            duration_seconds=float(r.get("duration_seconds") or 0.0),
+            filepath=filepath,
+            source_type=source_type,
+            source_id=r.get("source_id") or "",
+            stream_url=stream_url or r.get("stream_url") or "",
+            cover_url=r.get("cover_url") or "",
+            sample_rate=rate,
+            bit_depth=depth,
+            channels=channels,
+            bitrate=bitrate,
+        )
+    except Exception:
+        return None
+
+
 class _Miss:
     """缓存未命中的哨兵（区别于缓存值 None=无封面）。"""
 

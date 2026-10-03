@@ -243,8 +243,10 @@ class PlayerPanel(Gtk.Box):
         _title_overlay.set_halign(Gtk.Align.CENTER)
         _title_overlay.set_child(self._wrap_with_fade(self.label_track))
         # 歌名旁：只读「实际音质」徽章（不可点；选档按钮已移到技术信息行）。
+        # 样式类由 apply_quality_badge / set_quality_info 按规格动态添加
+        # （dsd256-badge / hires-badge …），与列表封面保持一致，故不再加旧
+        # 的 quality-badge 类（其两重选择器会压过规格类）。
         self.quality_badge = Gtk.Label(label="")
-        self.quality_badge.add_css_class("quality-badge")
         self.quality_badge.set_valign(Gtk.Align.CENTER)
         self.quality_badge.set_halign(Gtk.Align.END)
         self.quality_badge.set_margin_end(4)
@@ -624,19 +626,10 @@ class PlayerPanel(Gtk.Box):
         badge.set_visible(False)
         overlay.add_overlay(badge)
 
-        # 徽标：按曲目规格决定显示 DSD / HR / CD
+        # 徽标：按曲目规格显示（统一由公共函数处理）。
         try:
-            label = getattr(track, "quality_badge", "") or ""
-            badge.set_text(label)
-            badge.set_visible(bool(label))
-            badge.remove_css_class("cd-badge")
-            badge.remove_css_class("dsd-badge")
-            if label == "DSD":
-                badge.remove_css_class("hires-badge")
-                badge.add_css_class("dsd-badge")
-            elif label == "CD":
-                badge.remove_css_class("hires-badge")
-                badge.add_css_class("cd-badge")
+            from ui.pages.common import apply_quality_badge
+            apply_quality_badge(badge, track)
         except Exception:
             pass
 
@@ -788,13 +781,37 @@ class PlayerPanel(Gtk.Box):
         except Exception:
             return "lossless"
 
-    def set_quality_info(self, key: str, actual: bool = False) -> None:
-        """在线歌：更新技术信息行前的「实际音质」只读徽章。
+    #: 规格 → 显示名 / CSS 类（与 models/track.py 的 quality_badge 一致）。
+    _SPEC_LABELS = {
+        "dsd": ("DSD", "dsd-badge"),
+        "dsd64": ("DSD64", "dsd64-badge"),
+        "dsd128": ("DSD128", "dsd128-badge"),
+        "dsd256": ("DSD256", "dsd256-badge"),
+        "dsd512": ("DSD512", "dsd512-badge"),
+        "dsd1024": ("DSD1024", "dsd1024-badge"),
+        "dxd": ("DXD", "dxd-badge"),
+        "hr": ("HR", "hires-badge"),
+        "cd": ("CD", "cd-badge"),
+    }
 
-        徽章只指示当前实际播放档位，不可点（选档由歌名旁下拉框负责）。
-        actual 参数保留以兼容调用方（语义上徽章始终表示实际值）。
+    def set_quality_info(self, spec: str, actual: bool = False,
+                         multichannel: str = "") -> None:
+        """在线歌：更新技术信息行前的「实际音质规格」只读徽章。
+
+        spec: 规格 key（dsd/dxd/hr/cd）；空串则隐藏徽章（有损/未知不标）。
+        multichannel: 多声道标签（如 "5.1"）；非空则叠加显示并优先用青灰配色。
         """
-        name = dict(self._QUALITY_LABELS).get(key, key or "")
+        key = str(spec or "").lower()
+        if key not in self._SPEC_LABELS:
+            # 有损 / 未知规格：不显示徽章（渣渣音质不配）。
+            try:
+                self.quality_badge.set_visible(False)
+            except Exception:
+                pass
+            return
+        name, css = self._SPEC_LABELS[key]
+        if multichannel:
+            name = f"{name} {multichannel}"
         try:
             self.quality_badge.set_text(name)
             self.quality_badge.set_visible(True)
@@ -804,10 +821,11 @@ class PlayerPanel(Gtk.Box):
         except Exception as exc:
             log.warning("[音质徽章] 显示失败: %s", exc)
         try:
-            for cls in ("qb-standard", "qb-high", "qb-lossless",
-                        "qb-hires", "qb-master"):
+            from ui.pages.common import _BADGE_CLASSES, badge_css_for
+            for cls in _BADGE_CLASSES:
                 self.quality_badge.remove_css_class(cls)
-            self.quality_badge.add_css_class("qb-" + (key or "standard"))
+            self.quality_badge.add_css_class(
+                badge_css_for(self._SPEC_LABELS[key][0], multichannel))
         except Exception as exc:
             log.debug("音质徽章配色失败: %s", exc)
 

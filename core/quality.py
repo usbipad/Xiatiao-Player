@@ -1,51 +1,39 @@
-"""在线音源音质判定（单一职责，纯函数，可单测）。
+"""音质规格判定（单一职责，纯函数，可单测）。
 
-背景：
-  在线播放走 ffmpeg 解码，播放内核会上报 ffprobe 实测的
-  `codec / bit_rate / sample_rate / bits_per_sample`。这些是对
-  真实音频流的事实观测，比「后端回传的档位」「按配置显示」都准确。
+用途：本地曲库与在线播放统一使用「物理规格」标签，供音质徽章显示。
 
-  本模块把「实测参数」映射为播放器音质档位 key，供徽章显示真实音质，
-  从而消除「选了母带却实际拿到 320k」这类显示与实际不一致。
+规格标签（互斥，取最高）：
+  DSD  —— DSD 音频（.dsf/.dff）
+  DXD  —— 超高采样率 PCM（≥ 352.8kHz）
+  HR   —— Hi-Res（采样率 > 48kHz）
+  CD   —— CD 级无损（采样率 ≤ 48kHz 的无损）
+  （有损音频不返回标签 → 不显示徽章）
 
-档位 key（与 ui/player_panel.py 的 _QUALITY_LABELS 保持一致）：
-  standard / high / lossless / hires / master
+多声道为独立维度（见 is_multichannel），由调用方叠加显示（如 "HR 5.1"）。
 
-判定策略（依据实测数据，各档可区分）：
-  - 有损（mp3/aac/ogg 等）：按 bit_rate 分 standard / high
-  - 无损（flac/alac/wav/ape/dsd 等）：按位深 / 采样率分
-      lossless / hires / master
+判定以「采样率优先」为准：44.1k/24bit 视为 CD（采样率是 CD 级）；
+仅当采样率 > 48kHz 才算 HR。这与业界主流 Hi-Res 定义一致。
 """
 from __future__ import annotations
 
-#: 档位从低到高（用于比较、降级提示）。
-QUALITY_ORDER = ["standard", "high", "lossless", "hires", "master"]
+#: 规格从低到高（用于比较、降级提示）。有损不在其列。
+SPEC_ORDER = ["mp3", "hq", "cd", "hr", "dxd", "dsd"]
 
-#: 无损音频 codec 名（ffprobe codec_name，小写）。
+#: 无损 codec / 扩展名（小写）。
 LOSSLESS_CODECS = frozenset({
     "flac", "alac", "wav", "ape", "wv", "aiff", "aif",
     "dsd", "dsf", "dff",
 })
 
-#: 有损 codec 名（仅供参考，未列出的按有损处理）。
-LOSSY_CODECS = frozenset({
-    "mp3", "aac", "ogg", "vorbis", "opus", "m4a", "wma", "ac3",
-})
+#: DSD 扩展名。
+DSD_EXTS = frozenset({"dsf", "dff"})
 
-#: 有损档位判定阈值（bps）。
-_HIGH_BITRATE_THRESHOLD = 256_000  # 256k 以上算「高品」，以下算「标准」
-
-
-def quality_rank(key: str) -> int:
-    """返回档位序号（0=未知，1=standard ... 5=master）。用于比较高低。"""
-    try:
-        return QUALITY_ORDER.index(str(key or "").lower()) + 1
-    except ValueError:
-        return 0
+#: 超高采样率（DXD）门槛。
+_DXD_MIN_RATE = 352_800
 
 
 def _to_int(v) -> int:
-    """尽力把值转成正整数；失败返回 0。"""
+    """尽力转正整数；失败返回 0。"""
     try:
         n = int(v)
         return n if n > 0 else 0
@@ -53,63 +41,107 @@ def _to_int(v) -> int:
         return 0
 
 
-def actual_quality_from_info(info: dict) -> str:
-    """从解码器实测参数判定「实际音质档位」。
+def spec_from_info(info: dict) -> str:
+    """从实测参数判定「物理规格」。
 
-    参数 info（来自播放内核 audio-info 事件）：
-      codec:       音频编码名（如 "flac"/"mp3"），可能缺失
-      bitrate:     码率（bps），有损档通常有值，无损档可能缺失
-      bit_depth:   位深（如 16/24），无损档通常有值
-      sample_rate: 采样率（Hz）
-      channels:    声道数（本判定不使用）
+    参数 info（播放内核 audio-info）：
+      codec:       编码名（如 "flac"/"mp3"）
+      bitrate:     码率 bps
+      bit_depth:   位深
+      sample_rate: 采样率 Hz
 
-    返回：档位 key（standard/high/lossless/hires/master）；
-          信息不足无法判定时返回空串 ""（调用方保留原显示）。
+    返回：'dsd' / 'dxd' / 'hr' / 'cd' / ''（有损或信息不足 → 空）。
     """
     if not isinstance(info, dict):
         return ""
     codec = str(info.get("codec", "") or "").strip().lower()
-    bitrate = _to_int(info.get("bitrate"))
-    bit_depth = _to_int(info.get("bit_depth"))
     sample_rate = _to_int(info.get("sample_rate"))
+    bit_depth = _to_int(info.get("bit_depth"))
 
-    # codec 缺失时无法可靠分流；若连码率也没有则放弃判定。
+    # DSD：codec 以 dsd 开头（dsd / dsd_lsbf_planar / …）。
+    # 软解时 ffprobe 报的是 PCM 等效采样率（= DSD 原始率 / 8）：
+    #   DSD64 原始 2822400 → 等效 352800；DSD512 → 等效 2822400。
+    # 故 ×8 还原原始率再判倍数。
+    if codec.startswith("dsd"):
+        return dsd_spec_from_rate(sample_rate * 8)
+    # codec 缺失：按采样率/位深兜底（无法判有损，宁可显示规格）。
+    # 用于音频后端未上报 codec 的路径（如某些本地格式）。
     if not codec:
-        if bitrate >= _HIGH_BITRATE_THRESHOLD:
-            return "high"
-        if bitrate > 0:
-            return "standard"
+        if sample_rate >= _DXD_MIN_RATE:
+            return "dxd"
+        if sample_rate > 48_000:
+            return "hr"
+        if sample_rate > 44_100 and bit_depth > 16:
+            return "hr"
+        if sample_rate > 0:
+            return "cd"
         return ""
+    # 无损才继续判规格；有损直接返回空（不显示徽章）。
+    if codec not in LOSSLESS_CODECS:
+        return ""
+    if sample_rate >= _DXD_MIN_RATE:
+        return "dxd"
+    if sample_rate > 48_000:
+        return "hr"
+    # 采样率 <= 48k：
+    #   44.1k（任意位深）→ CD；48k/16bit → CD；
+    #   48k/24bit → HR（唯一特例，比 CD 高一档）。
+    if sample_rate > 44_100 and bit_depth > 16:
+        return "hr"
+    return "cd"
 
-    if codec in LOSSLESS_CODECS:
-        return _lossless_quality(bit_depth, sample_rate)
 
-    # 其余（含显式有损、未知 codec）按有损处理。
-    if bitrate >= _HIGH_BITRATE_THRESHOLD:
-        return "high"
-    if bitrate > 0:
-        return "standard"
-    # 有损但无码率：拿不到更细信息，归为标准档。
-    return "standard"
+#: DSD 倍数基准 = CD 采样率 44.1kHz。
+#: DSD64 = 64×44100 = 2822400；DSD256 = 256×44100 = 11289600。
+_DSD_MULT_BASE = 44_100
 
 
-def _lossless_quality(bit_depth: int, sample_rate: int) -> str:
-    """无损音频按位深/采样率细分档位。
+def dsd_spec_from_rate(sample_rate: int) -> str:
+    """按 DSD 采样率返回细分规格 key（dsd64/dsd128/…/dsd1024）。
 
-    约定：
-      master：24bit+ 且采样率 > 96kHz（母带级）
-      hires ：位深 > 16bit 或采样率 > 48kHz（高解析）
-      lossless：其余（CD 级或未知参数的无损）
+    倍数 = round(rate / 44100)（DSD64=64×44.1k=2822400）。
+    无法判定倍数（rate 为 0 或异常）时返回 'dsd'。
     """
-    if bit_depth >= 24 and sample_rate > 96_000:
-        return "master"
-    if bit_depth > 16 or sample_rate > 48_000:
-        return "hires"
-    return "lossless"
+    rate = _to_int(sample_rate)
+    if rate <= 0:
+        return "dsd"
+    mult = round(rate / _DSD_MULT_BASE)
+    if mult in (64, 128, 256, 512, 1024):
+        return f"dsd{mult}"
+    # 非常规倍数：就近归入最接近的标准档，或退回通用 DSD。
+    if mult <= 0:
+        return "dsd"
+    nearest = min((64, 128, 256, 512, 1024), key=lambda m: abs(m - mult))
+    return f"dsd{nearest}" if abs(nearest - mult) <= 8 else "dsd"
 
 
-def is_degraded(requested: str, actual: str) -> bool:
-    """actual 是否低于 requested（用于降级提示）。"""
-    r = quality_rank(requested)
-    a = quality_rank(actual)
+def is_multichannel(info: dict) -> bool:
+    """是否多声道（>2 声道）。"""
+    if not isinstance(info, dict):
+        return False
+    return _to_int(info.get("channels")) > 2
+
+
+def multichannel_label(info: dict) -> str:
+    """多声道标签（如 '5.1' / '4.0' / '6ch'）；非多声道返回空串。"""
+    if not isinstance(info, dict):
+        return ""
+    ch = _to_int(info.get("channels"))
+    if ch <= 2:
+        return ""
+    return {6: "5.1", 8: "7.1", 4: "4.0"}.get(ch, f"{ch}ch")
+
+
+def spec_rank(spec: str) -> int:
+    """规格序号（0=未知/有损）。用于比较。"""
+    try:
+        return SPEC_ORDER.index(str(spec or "").lower()) + 1
+    except ValueError:
+        return 0
+
+
+def is_degraded(requested_spec: str, actual_spec: str) -> bool:
+    """actual 是否低于 requested（规格维度）。"""
+    r = spec_rank(requested_spec)
+    a = spec_rank(actual_spec)
     return r > 0 and a > 0 and a < r

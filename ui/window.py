@@ -1797,7 +1797,8 @@ class MainWindow(Adw.ApplicationWindow):
         try:
             if getattr(cur, "source_type", "") == "subsonic":
                 self.player_panel.set_quality_dropdown(key)
-                self.player_panel.set_quality_info(key)
+                # 规格徽章先隐藏，等重载后 _on_audio_info 实测显示。
+                self.player_panel.set_quality_info("")
         except Exception:
             pass
         # 当前曲目为在线歌且在播 → 用新 URL「无缝续播」：
@@ -2487,21 +2488,13 @@ class MainWindow(Adw.ApplicationWindow):
             rows = get_liked_store().all_rows()
         except Exception:
             rows = []
+        from ui.pages.common import track_from_row
         tracks = []
         for r in rows:
             try:
-                tracks.append(TrackItem(
-                    title=r.get("title") or "未知歌曲",
-                    artist=r.get("artist") or "未知歌手",
-                    album=r.get("album") or "",
-                    duration=r.get("duration") or "0:00",
-                    duration_seconds=float(r.get("duration_seconds") or 0.0),
-                    filepath=r.get("filepath") or "",
-                    source_type=r.get("source_type") or SOURCE_LOCAL,
-                    source_id=r.get("source_id") or "",
-                    stream_url=self._row_stream_url(r),
-                    cover_url=r.get("cover_url") or "",
-                ))
+                t = track_from_row(r, stream_url=self._row_stream_url(r))
+                if t is not None:
+                    tracks.append(t)
             except Exception:
                 continue
         self.liked_page.set_tracks(tracks)
@@ -2511,21 +2504,13 @@ class MainWindow(Adw.ApplicationWindow):
             rows = get_liked_store().all_rows()
         except Exception:
             rows = []
+        from ui.pages.common import track_from_row
         tracks = []
         for r in rows:
             try:
-                tracks.append(TrackItem(
-                    title=r.get("title") or "未知歌曲",
-                    artist=r.get("artist") or "未知歌手",
-                    album=r.get("album") or "",
-                    duration=r.get("duration") or "0:00",
-                    duration_seconds=float(r.get("duration_seconds") or 0.0),
-                    filepath=r.get("filepath") or "",
-                    source_type=r.get("source_type") or SOURCE_LOCAL,
-                    source_id=r.get("source_id") or "",
-                    stream_url=self._row_stream_url(r),
-                    cover_url=r.get("cover_url") or "",
-                ))
+                t = track_from_row(r, stream_url=self._row_stream_url(r))
+                if t is not None:
+                    tracks.append(t)
             except Exception:
                 continue
         return tracks
@@ -2580,11 +2565,17 @@ class MainWindow(Adw.ApplicationWindow):
                 if (getattr(t, "filepath", "") or getattr(t, "source_id", "")) == key:
                     self.playlist.set_current_index(i)
                     return
-        index = 0
+        index = None
         for i, t in enumerate(lib):
             if (getattr(t, "filepath", "") or getattr(t, "source_id", "")) == key:
                 index = i
                 break
+        if index is None:
+            # 曲库中找不到该曲目（文件可能已删除 / 不在扫描目录）。
+            # 不 fallback 到 lib[0]（那会误播别的歌），而是提示用户。
+            self._toast(_("文件不存在或不在曲库：{name}").format(
+                name=getattr(track, "title", "") or ""))
+            return
         self.playlist.set_tracks(lib, autoplay_index=index)
         self._queue_source_fp = fp
 
@@ -3760,7 +3751,12 @@ class MainWindow(Adw.ApplicationWindow):
         }.get(key)
 
     def _track_ctx_remove_from_list(self, track) -> None:
-        """从当前列表移除（仅 UI 列表，不动文件、不影响曲库）。"""
+        """从当前列表移除。
+
+        收藏页：「移除」语义为「取消收藏」——须落库（liked_store），
+        否则重新进入收藏页（重新读 all_rows）时该歌会再次出现。
+        其它列表：仅从当前 UI 列表移除（不动文件、不影响曲库）。
+        """
         if not isinstance(track, TrackItem):
             return
         page = self._active_page()
@@ -3768,6 +3764,12 @@ class MainWindow(Adw.ApplicationWindow):
             self._toast("当前列表不支持移除")
             return
         try:
+            if page is getattr(self, "liked_page", None):
+                # 收藏页：取消收藏并落库，然后重新拉取刷新。
+                get_liked_store().remove(track)
+                self._refresh_liked_page()
+                self._toast(_("已取消收藏"))
+                return
             ok = page.remove_track(track)
             self._toast("已从列表移除" if ok else "移除失败")
         except Exception as exc:
@@ -3797,9 +3799,15 @@ class MainWindow(Adw.ApplicationWindow):
             def _on_resp(_d, resp):
                 if resp == "cancel":
                     return
-                # 先移除列表项
+                # 收藏页：落库（取消收藏），否则回刷复现。
                 page = self._active_page()
-                if page is not None and hasattr(page, "remove_track"):
+                if page is getattr(self, "liked_page", None):
+                    try:
+                        get_liked_store().remove(track)
+                    except Exception:
+                        pass
+                    self._refresh_liked_page()
+                elif page is not None and hasattr(page, "remove_track"):
                     try:
                         page.remove_track(track)
                     except Exception:
@@ -4177,6 +4185,33 @@ class MainWindow(Adw.ApplicationWindow):
         self.now_playing.set_duration(seconds)
 
     def _on_end_of_stream(self, _player) -> None:
+        # 秒 eos 检测：失效曲目（流拿不到 / 文件已删）会「刚播就结束」，
+        # 若队列只有它（或单曲循环），next() 返回自身 → 无限重播。
+        # 检测同一首在极短时间内反复结束，达阈值则判定失效并停止。
+        import time as _t
+        now = _t.monotonic()
+        cur = self.playlist.current_track()
+        key = ""
+        if cur is not None:
+            key = (getattr(cur, "filepath", "") or getattr(cur, "source_id", "")
+                   or getattr(cur, "title", "") or "")
+        same = (key != "" and key == getattr(self, "_last_eos_key", ""))
+        recent = (now - getattr(self, "_last_eos_time", 0.0)) < 3.0
+        if same and recent:
+            self._eos_fail_count = getattr(self, "_eos_fail_count", 0) + 1
+        else:
+            self._eos_fail_count = 1
+        self._last_eos_key = key
+        self._last_eos_time = now
+        if self._eos_fail_count >= 3:
+            log.warning("曲目反复秒结束（可能失效），跳过：%s", key)
+            self._toast(_("播放失败，已跳过"))
+            self._eos_fail_count = 0
+            # 跳过下一首；若无可跳，则停止。
+            nxt = self.playlist.next(auto=True)
+            if nxt is None:
+                self.player.stop()
+            return
         nxt = self.playlist.next(auto=True)
         if nxt is None:
             self.player.stop()
@@ -4232,8 +4267,8 @@ class MainWindow(Adw.ApplicationWindow):
                 return True
             if _time.monotonic() - self._last_pos_time > 5.0:
                 self._stuck_checked = True
-                log.warning("播放卡住（位置 5s 未推进），自动跳过")
-                self._toast(_("播放卡住，已跳过"))
+                log.warning("播放失败（位置 5s 未推进），已跳过")
+                self._toast(_("播放失败，已跳过"))
                 self._on_end_of_stream(self.player)
                 return False
         except Exception as exc:
@@ -4298,17 +4333,25 @@ class MainWindow(Adw.ApplicationWindow):
                 self.player_panel.set_quality_dropdown(q)
             except Exception as exc:
                 log.warning("[面板格式] 显示音质下拉框失败: %s", exc)
-            # 徽章只表示「实际档位」：切歌瞬间尚未探测，先按所选显示占位，
-            # 稍后 _on_audio_info 用实测值覆盖为真实档位。
+            # 规格徽章只表示「实际音质」：切歌瞬间尚未探测，先隐藏，
+            # 稍后 _on_audio_info 用实测规格（DSD/DXD/HR/CD + 多声道）显示。
+            # 传档位 key 给规格接口 → 不匹配 → 自动隐藏（预期行为）。
             try:
-                self.player_panel.set_quality_info(q)
+                self.player_panel.set_quality_info("")
             except Exception as exc:
                 log.warning("[面板格式] set_quality_info 失败: %s", exc)
         else:
+            # 本地歌：面板徽章表示「实际播放规格」（软解后），由 _on_audio_info
+            # 实测显示。切歌瞬间尚未探测，先隐藏。列表封面则用文件元数据
+            # （quality_badge），两者语义不同、各自准确。
             try:
-                self.player_panel.clear_quality_info()
+                self.player_panel.quality_dropdown.set_visible(False)
             except Exception:
                 pass
+            try:
+                self.player_panel.set_quality_info("")
+            except Exception as exc:
+                log.debug("[面板格式] 清空本地徽章失败: %s", exc)
         # 技术信息行：本地/在线都显示 format_label
         try:
             self.player_panel.set_format_info(track.format_label)
@@ -4317,14 +4360,14 @@ class MainWindow(Adw.ApplicationWindow):
 
     @staticmethod
     def _actual_quality_from_info(info: dict) -> str:
-        """从解码器实测参数判定「实际音质档位」。
+        """从解码器实测参数判定「实际音质规格」。
 
-        实现委托给 core.quality（单一职责、可单测），本方法仅保留
-        兼容旧调用点。返回 standard/high/lossless/hires/master 或空串。
+        委托 core.quality.spec_from_info。返回规格 key
+        （dsd/dxd/hr/cd）或空串（有损/未知）。
         """
         try:
-            from core.quality import actual_quality_from_info
-            return actual_quality_from_info(info)
+            from core.quality import spec_from_info
+            return spec_from_info(info)
         except Exception as exc:
             log.debug("判定实际音质失败: %s", exc)
             return ""
@@ -4342,40 +4385,49 @@ class MainWindow(Adw.ApplicationWindow):
             self._sync_audio_info_to_pages(track, info)
         except Exception:
             pass
-        # 在线歌：用解码器实测参数判定实际音质，校正徽章（后端可能已降级）。
-        # 这是权威来源：在线流走 ffmpeg，ffprobe 实测 codec/bitrate/参数。
+        # 用解码器实测参数判定「实际播放规格」校正面板徽章。
+        # 本地/在线统一：实测 codec / sample_rate / bit_depth 是对真实
+        # 输出的观测（软解后可能降采样，故以此为准，而非文件元数据）。
         try:
-            if getattr(track, "source_type", "") == "subsonic":
-                actual = self._actual_quality_from_info(info)
-                log.info("[实际音质] info=%s → actual=%s", info, actual)
-                if actual:
-                    # 用户所选档位（运行时优先，其次配置）
-                    try:
-                        from providers.subsonic import _RUNTIME_QUALITY
-                        chosen = _RUNTIME_QUALITY
-                    except Exception:
-                        chosen = ""
-                    if not chosen:
-                        try:
-                            from config.settings import get_config
-                            chosen = get_config().get_str("online_quality", "lossless")
-                        except Exception:
-                            chosen = "lossless"
-                    # 徽章显示实际音质
-                    self.player_panel.set_quality_info(actual, actual=True)
-                    # 降级提示：实际 < 所选
-                    _order = ["standard", "high", "lossless", "hires", "master"]
-                    try:
-                        ci = _order.index(chosen)
-                        ai = _order.index(actual)
-                    except ValueError:
-                        ci = ai = -1
-                    if ci >= 0 and ai >= 0 and ai < ci:
-                        names = self._QUALITY_NAMES
-                        self._toast(_("所选 {a} 不可用，已降级为 {b}").format(
-                            a=names.get(chosen, chosen), b=names.get(actual, actual)))
+            spec = self._actual_quality_from_info(info)
+            try:
+                from core.quality import multichannel_label
+                mc = multichannel_label(info)
+            except Exception:
+                mc = ""
+            log.info("[实际音质] info=%s → spec=%s mc=%s", info, spec, mc)
+            # 徽章：规格 + 多声道（有损/未知则隐藏）。
+            self.player_panel.set_quality_info(spec, actual=True, multichannel=mc)
         except Exception as exc:
             log.debug("校正实际音质徽章失败: %s", exc)
+        # 降级提示：仅在线歌（本地无「所选档位」概念），且实际低于所选时。
+        try:
+            if (getattr(track, "source_type", "") == "subsonic"
+                    and spec and mc == ""):
+                chosen = ""
+                try:
+                    from providers.subsonic import _RUNTIME_QUALITY
+                    chosen = _RUNTIME_QUALITY
+                except Exception:
+                    chosen = ""
+                if not chosen:
+                    try:
+                        from config.settings import get_config
+                        chosen = get_config().get_str("online_quality", "lossless")
+                    except Exception:
+                        chosen = "lossless"
+                _exp = {"standard": "mp3", "high": "mp3", "lossless": "cd",
+                        "hires": "hr", "master": "hr"}.get(chosen, "")
+                from core.quality import spec_rank
+                if _exp and spec_rank(spec) < spec_rank(_exp):
+                    names = self._QUALITY_NAMES
+                    spec_names = {"dsd": "DSD", "dxd": "DXD",
+                                  "hr": "Hi-Res", "cd": "无损"}
+                    self._toast(_("所选 {a} 不可用，实际为 {b}").format(
+                        a=names.get(chosen, chosen),
+                        b=spec_names.get(spec, spec)))
+        except Exception as exc:
+            log.debug("降级提示失败: %s", exc)
 
     def _sync_audio_info_to_pages(self, track, info: dict) -> None:
         """把探测到的音频参数同步到所有列表页的同名 TrackItem。"""

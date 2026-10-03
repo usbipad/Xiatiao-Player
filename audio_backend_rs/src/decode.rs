@@ -138,7 +138,15 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
     };
     shared.duration_ms.store(dur_ms as u64, Ordering::SeqCst);
     let in_bits = track.codec_params.bits_per_sample.unwrap_or(0) as u32;
-    eprintln!("[engine] symphonia: {in_rate}Hz {in_channels}ch {in_bits}bit");
+    // 编码格式名（供前端判定音质规格）。
+    // symphonia 的 Codec 是类型 ID（如 CodecType(8192)），无字符串名，
+    // 故本地文件改用「扩展名」作为格式名（flac / wav / alac …）。
+    let codec_name = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    eprintln!("[engine] symphonia: {in_rate}Hz {in_channels}ch {in_bits}bit codec={codec_name}");
     // 上报音频技术信息（前端显示格式/采样率/位深/码率）
     {
         let mut info = serde_json::Map::new();
@@ -146,6 +154,9 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
         info.insert("channels".into(), serde_json::json!(in_channels));
         if in_bits > 0 {
             info.insert("bit_depth".into(), serde_json::json!(in_bits));
+        }
+        if !codec_name.is_empty() && codec_name != "null" {
+            info.insert("codec".into(), serde_json::json!(codec_name));
         }
         // 码率：由总时长估算（若有）
         if let Some(nf) = track.codec_params.n_frames {

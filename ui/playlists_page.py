@@ -71,20 +71,8 @@ def _popup_menu(parent, x, y, entries) -> None:
 
 
 def _row_to_track(r: dict) -> Optional[TrackItem]:
-    try:
-        return TrackItem(
-            title=r.get("title") or "未知歌曲",
-            artist=r.get("artist") or "未知歌手",
-            album=r.get("album") or "",
-            duration=r.get("duration") or "0:00",
-            duration_seconds=float(r.get("duration_seconds") or 0.0),
-            filepath=r.get("filepath") or "",
-            source_type=r.get("source_type") or SOURCE_LOCAL,
-            source_id=r.get("source_id") or "",
-            cover_url=r.get("cover_url") or "",
-        )
-    except Exception:
-        return None
+    from ui.pages.common import track_from_row
+    return track_from_row(r)
 
 
 class PlaylistsPage(Gtk.Box):
