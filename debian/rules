@@ -20,7 +20,13 @@ binary-arch: build-arch
 binary: build
 
 override_dh_auto_build:
-	# 编译 Rust 后端（release）。
+	# 强制从零编译 Rust 后端（release）。
+	#
+	# 为何先删 target：cargo 会依据 target/ 内的 .fingerprint 时间戳判断
+	# 「是否需重编」。native 源码包的 mtime 可能被归一化，导致源码虽已
+	# 变更、cargo 仍认为产物是最新的 → 打出的 .deb 里是旧二进制。
+	# 打包场景对构建时长不敏感、但要求产物绝对新鲜，故直接清掉 target。
+	rm -rf audio_backend_rs/target
 	cd audio_backend_rs && cargo build --release --offline || cargo build --release
 
 override_dh_clean:
