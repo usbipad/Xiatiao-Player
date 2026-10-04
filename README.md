@@ -135,11 +135,17 @@
 
 ### 🧪 测试
 
-    # Rust 单元测试（DSP / DSD / 输出 / Camilla 等）
+    # Rust 单元测试（DSP / DSD / 输出 / Camilla / deps 等，约 50 项）
     cd audio_backend_rs && cargo test --release
 
-    # Python 冒烟测试
+    # Python 冒烟自检（导入 + provider 注册 + 核心逻辑，无需界面）
     python3 tests/smoke_test.py
+
+    # Python 边界/单元测试（音质规格 / 配置 / 存储 / 播放队列）
+    python3 tests/test_boundary.py
+
+    # 播放器 ↔ Subsonic API 服务端 联动测试（需服务端可达，否则自动跳过）
+    python3 tests/integration_api.py
 
 ### 🐛 调试
 
@@ -298,11 +304,17 @@ Packaging config lives in debian/: control (metadata & dependencies), rules (bui
 
 ### 🧪 Testing
 
-    # Rust unit tests (DSP / DSD / output / Camilla, etc.)
+    # Rust unit tests (DSP / DSD / output / Camilla / deps, ~50 cases)
     cd audio_backend_rs && cargo test --release
 
-    # Python smoke test
+    # Python smoke self-check (imports + provider registry + core logic, no GUI)
     python3 tests/smoke_test.py
+
+    # Python boundary/unit tests (quality spec / config / stores / play queue)
+    python3 tests/test_boundary.py
+
+    # Player <-> Subsonic API server integration (auto-skips if server unreachable)
+    python3 tests/integration_api.py
 
 ### 🐛 Debugging
 

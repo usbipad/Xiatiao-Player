@@ -12,7 +12,7 @@ from typing import List
 from gi.repository import Gdk, Gtk
 
 from core.i18n import _
-from core.tasks import run_async
+from core.tasks import run_cover_async
 
 #: 卡片封面尺寸
 CARD_COVER_PX = 150
@@ -61,7 +61,7 @@ def _load_url_cover_async(url: str, on_done) -> None:
         except Exception:
             on_done(None)
 
-    run_async(work=_work, on_done=_done)
+    run_cover_async(work=_work, on_done=_done)
 
 
 def _make_card(card: dict) -> Gtk.Widget:

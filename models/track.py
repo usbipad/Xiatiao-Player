@@ -238,18 +238,54 @@ class TrackItem(GObject.Object):
 
         互斥，优先级 DSD > DXD > HR > CD。
         仅无损规格才有徽标（有损不标）；多声道另由 multichannel_label 叠加。
+
+        判定策略（关键，修在线歌徽章）：
+        - 本地文件：扩展名可辨识（flac/wav/…），沿用扩展名判无损，行为不变；
+        - 在线流：stream_url 形如 `.../stream.view?id=...`，其「扩展名」是
+          view，不代表音频格式。此时不能用扩展名判无损，改为按**实测技术
+          参数**（采样率/位深）经 core.quality.spec_from_info 判定规格。
         """
         if self.is_dsd:
             return self.dsd_label
-        # 仅无损格式参与规格判定。
-        if self._lossless_ext() not in self._LOSSLESS_EXTS:
+        # 扩展名（在线流会是 view 等端点名）。_NON_AUDIO_EXTS 为大写，
+        # 比较时统一大写（_lossless_ext 返回小写）。
+        ext = self._lossless_ext()
+        known_lossless = ext in self._LOSSLESS_EXTS
+        is_non_audio = bool(ext) and ext.upper() in _NON_AUDIO_EXTS
+        # 扩展名可辨识为有损音频：直接不标（与本地行为一致）。
+        # 非音频端点（view/json…）不算有损，落到参数兜底分支。
+        if ext and not known_lossless and not is_non_audio:
             return ""
-        if self.is_dxd:
-            return "DXD"
-        if self.is_hires:
-            return "HR"
-        if self.is_cd_quality:
-            return "CD"
+        # 本地无损文件：沿用原逻辑（采样率/位深判 DXD/HR/CD）。
+        if known_lossless:
+            if self.is_dxd:
+                return "DXD"
+            if self.is_hires:
+                return "HR"
+            if self.is_cd_quality:
+                return "CD"
+            return ""
+        # 扩展名不可辨识（在线流 view/json 等，或完全无扩展名）：
+        # 按实测参数判定规格，避免在线高解析歌被误判为「无徽章」。
+        from core.quality import spec_from_info
+        spec = spec_from_info({
+            "codec": self._codec_hint(),
+            "sample_rate": int(self.sample_rate or 0),
+            "bit_depth": int(self.bit_depth or 0),
+        })
+        return {"dxd": "DXD", "hr": "HR", "cd": "CD"}.get(spec, "")
+
+    def _codec_hint(self) -> str:
+        """尽力推断 codec 名，供参数规格判定（spec_from_info）使用。
+
+        - 扩展名可辨识（本地 flac/wav/…）→ 直接用作 codec；
+        - 在线流（view/无扩展名）→ 返回空串，让 spec_from_info 按采样率/
+          位深兜底判定（在线歌的真实格式由服务端转码决定，客户端无从得知）。
+        """
+        ext = self._lossless_ext()
+        # _NON_AUDIO_EXTS 为大写，比较统一大写。
+        if ext and ext.upper() not in _NON_AUDIO_EXTS:
+            return ext
         return ""
 
     @property

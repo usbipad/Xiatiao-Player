@@ -38,6 +38,50 @@ class BaseMusicProvider(GObject.Object):
     def has_capability(self, cap: str) -> bool:
         return cap in self.capabilities
 
+    # ---- 统一内容拉取接口（可选实现）----
+    #
+    # 设计目的：让「标准 Subsonic 服务端」与「用户自备的兼容服务端（含外挂
+    # 插件伪装成的 Subsonic 后端）」走同一条 UI 消费路径。UI 只调这些方法，
+    # 不关心后端到底是谁。未实现 / 后端不支持时返回空列表（UI 据此隐藏区块）。
+    #
+    # 合规说明：这些接口只描述「通用内容」，不含任何平台私有语义；
+    # 具体实现由各 Provider 或用户外挂模块负责，本软件不内置平台解析。
+
+    def fetch_playlists(self):
+        """拉取歌单列表（平台无关中间结构）。
+
+        默认返回空列表；支持歌单的 Provider（如标准 Subsonic）应覆盖。
+        元素类型建议为 providers.subsonic.PlaylistInfo（或同构对象）。
+        """
+        return []
+
+    def fetch_recommendations(self, *args, **kwargs):
+        """拉取推荐内容（可选能力）。
+
+        默认返回空；支持推荐的后端（标准扩展端点 / 外挂插件）覆盖。
+        返回结构由实现约定，UI 按 capabilities 决定是否展示。
+        """
+        return []
+
+    def fetch_library_page(self, offset: int = 0, count: int = 100):
+        """分页拉取在线曲库（可选能力）。默认空。"""
+        return []
+
+    def fetch_stream_url(self, source_id: str, quality: str = "") -> str:
+        """按曲目 source_id 构造可播放流 URL（可选能力）。默认空串。
+
+        在线音源应覆盖；返回空串表示不可播。quality 为通用档位 key。
+        """
+        return ""
+
+    def fetch_user_profile(self, username: str = ""):
+        """拉取用户资料（可选能力，扩展端点）。默认空 dict。"""
+        return {}
+
+    def fetch_avatar_url(self, username: str = "") -> str:
+        """拉取用户头像 URL（可选能力，扩展端点）。默认空串。"""
+        return ""
+
     def search(self, query: str) -> List[TrackItem]:
         """按关键字搜索（同步，适合本地内存数据）。
 

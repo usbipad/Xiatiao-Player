@@ -87,6 +87,9 @@ pub(crate) struct Shared {
     pub(crate) pending_error: Mutex<Option<String>>,
     /// 待发送给客户端的音频技术信息（解码线程探测后写入，推送线程读取后经 IPC 发出）。
     pub(crate) pending_audio_info: Mutex<Option<serde_json::Value>>,
+    /// 播放代次：每次 start_play 递增。Position 事件携带它，客户端据此
+    /// 丢弃「属于上一次播放」的过期位置事件（切歌/切音质后回跳的根因）。
+    pub(crate) play_gen: AtomicU64,
 }
 
 impl Shared {

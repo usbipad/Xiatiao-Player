@@ -71,11 +71,17 @@ class LibraryPage(Gtk.Box):
         )
         self._stack.add_named(self.local_list, "local")
 
-        # 在线列表（复用组件；点歌走在线回调）
+        # 在线列表（复用组件；点歌走在线回调）。
+        #
+        # 空提示说明：部分兼容服务端（如自建网关）**不实现**「search3 空查询
+        # 列出全部歌曲」这一非标准行为（在线曲库太大，全量返回不现实）。
+        # 此时在线曲库页会为空——给一条明确指引，而不是留空白让用户困惑。
+        # 对支持该行为的服务端（如 Navidrome），一旦有数据此提示自然隐藏。
         self.online_list = LocalLibraryPage(
             on_track_activated=on_online_track,
             track_actions=track_actions,
             initial_view=VIEW_SONGS,
+            empty_text="该服务端不支持全量曲库浏览，请使用搜索、歌单或推荐",
         )
         self._stack.add_named(self.online_list, "online")
 
@@ -143,6 +149,13 @@ class LibraryPage(Gtk.Box):
         if not tracks:
             if total_hint >= 0:
                 self._online_total_hint = total_hint
+            # 首次加载即为空 → 显式 set_tracks([]) 触发空提示可见（
+            # 说明该后端不支持全量列出）。否则空提示不会出现，用户只见空白。
+            if self._online_loaded == 0:
+                try:
+                    self.online_list.set_tracks([])
+                except Exception:
+                    pass
             return
         # 现有 + 新增
         cur = list(getattr(self.online_list, "_all_tracks", []) or [])

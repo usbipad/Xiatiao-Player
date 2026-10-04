@@ -78,6 +78,18 @@ class SeekBar(Gtk.DrawingArea):
         self._value = 0.0
         self.queue_draw()
 
+    def freeze(self, ms: int = 400) -> None:
+        """外部冻结位置跟随 ms 毫秒：期间忽略 set_position。
+
+        用于切歌 / 切音质：旧曲目残留的 position 事件（异步派发、
+        可能在路上）会到达并把进度条拉回旧值；冻结可忽略这些过期
+        事件，等新曲目的稳定位置到来再解冻。
+
+        注意：本方法不改动当前值——是否清零由调用方决定（切歌走
+        reset()+freeze()，切音质走 set_value(当前)+freeze()）。
+        """
+        self._freeze_after_seek(ms)
+
     def set_position(self, seconds: float) -> None:
         """外部（播放器）更新位置：交互期间不覆盖用户操作。"""
         if not self._seeking:

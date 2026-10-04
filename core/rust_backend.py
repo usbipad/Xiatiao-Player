@@ -75,6 +75,8 @@ class RustBackend(AudioBackend):
         self._output_device = ""
 
         self._socket_path = os.environ.get("XIATIAO_BACKEND_SOCKET", DEFAULT_SOCKET)
+        #: 已接受的播放代次（Position 事件按此过滤过期事件）。
+        self._pos_gen = 0
         self._proc: Optional[subprocess.Popen] = None
         self._sock: Optional[socket.socket] = None
         self._reader_thread: Optional[threading.Thread] = None
@@ -341,8 +343,19 @@ class RustBackend(AudioBackend):
         name = evt.get("event")
         # 位置事件太频繁，降噪：仅在非 position 时打印
         if name != "position":
-            log.info("[IPC←] %s", json.dumps(evt, ensure_ascii=False))
+            log.debug("[IPC←] %s", json.dumps(evt, ensure_ascii=False))
         if name == "position":
+            # 播放代次过滤：切歌/切音质后，旧代次的 position 事件可能仍在路上，
+            # 若不过滤会把进度条拉回旧值（回 0 再跳回 / 闪回上一首进度）。
+            gen = evt.get("gen")
+            if gen is not None:
+                gen = int(gen)
+                if gen != self._pos_gen:
+                    # 新代次：接受并记录。比新代次旧的（<）直接丢弃。
+                    if gen > self._pos_gen:
+                        self._pos_gen = gen
+                    else:
+                        return False
             self._position = float(evt.get("sec", 0.0))
             self.emit("position-update", self._position)
         elif name == "duration":
@@ -439,13 +452,18 @@ class RustBackend(AudioBackend):
             log.debug("重连后端失败: %s", exc)
             return False
 
-    def _send(self, obj: dict) -> None:
-        log.info("[IPC→] %s", json.dumps(obj, ensure_ascii=False))
+    def _send(self, obj: dict) -> bool:
+        """发送一条 IPC 命令。返回是否确实写入 socket。
+
+        返回 False 表示后端不可用（未启动/未连接），命令已被丢弃——
+        调用方据此可向用户明确报错，而非静默失败。
+        """
+        log.debug("[IPC→] %s", json.dumps(obj, ensure_ascii=False))
         if not self._alive or self._sock is None:
             # 断线：尝试重连一次
             if not self._try_reconnect():
                 log.warning("[IPC→] 丢弃(未连接): %s", obj.get("cmd"))
-                return
+                return False
         try:
             with self._send_lock:
                 # 锁内取本地引用：避免 self._sock 在检查后、发送前被
@@ -453,10 +471,12 @@ class RustBackend(AudioBackend):
                 sock = self._sock
                 if sock is None:
                     log.warning("[IPC→] 丢弃(连接已关闭): %s", obj.get("cmd"))
-                    return
+                    return False
                 sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
+                return True
         except Exception as exc:
             log.warning("发送 IPC 命令失败: %s", exc)
+            return False
 
     # ------------------------------------------------------------
     # AudioBackend 接口
@@ -473,7 +493,13 @@ class RustBackend(AudioBackend):
         # 立即本地进入播放态，UI 按钮能马上响应
         self._state = PlayerState.PLAYING
         self._position = 0.0
-        self._send({"cmd": "play", "path": path})
+        if not self._send({"cmd": "play", "path": path}):
+            # 后端未启动/未连接：命令被丢弃。明确告知用户并回退状态，
+            # 避免静默失败后由「卡住检测」给出笼统的「播放失败，已跳过」。
+            self._state = PlayerState.STOPPED
+            self._position = 0.0
+            self.emit("error-occur", "音频后端未连接（未启动或已断开），请检查后端是否就绪")
+            return False
         return True
 
     def pause(self) -> None:
@@ -539,6 +565,13 @@ class RustBackend(AudioBackend):
         """下发输出设备（PipeWire sink 名；空=默认）。"""
         self._output_device = name or ""
         self._send({"cmd": "set_output_device", "name": self._output_device})
+
+    def is_alive(self) -> bool:
+        """后端进程/连接是否可用（未启动或已断开 → False）。
+
+        供启动时与播放前做就绪检测，避免静默失败。
+        """
+        return bool(self._alive and self._sock is not None)
 
     def state(self) -> str:
         return self._state

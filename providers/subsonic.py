@@ -9,8 +9,16 @@
   【Subsonic 标准】ping / search3 / getSong / stream / getCoverArt /
                     getLyrics / getPlaylists / getPlaylist / getStarred /
                     star / unstar / getAlbumList2 / getArtists / scrobble
-  【私有扩展】（非 Subsonic 标准，供 Fenda-Player 增强体验，其他客户端可忽略）
+  【可选扩展端点】（非 Subsonic 标准；本模块只提供通用调用入口，
+                    不含任何具体平台的解析逻辑。服务端未实现时调用失败，
+                    调用方据此隐藏对应入口即可）
                     getAvatar / getUserProfile / qrLogin / qrLoginStatus
+
+合规边界：
+- 本 Provider 是通用 Subsonic 客户端，不对接、不内置任何国内音乐平台；
+- 若用户希望接入某平台，应由用户自行提供符合 Subsonic 协议的第三方
+  服务端（如自建网关），本软件仅作为标准协议客户端与之通信；
+- 本模块不实现：登录态伪造、Cookie 注入、绕过版权/DRM、平台私有接口解析。
 
 认证：Subsonic 标准 u/t/s/v/c/f 参数（token=md5(password+salt)），
       同时支持明文 p=（兼容部分服务端）。
@@ -37,8 +45,8 @@ log = logging.getLogger(__name__)
 
 #: Subsonic API 版本
 API_VERSION = "1.16.1"
-#: 客户端标识
-CLIENT_NAME = "fenda"
+#: 客户端标识（中性名，避免与任何第三方聚合客户端关联）。
+CLIENT_NAME = "xiatiao"
 
 
 @dataclass
@@ -219,8 +227,14 @@ class SubsonicProvider(BaseMusicProvider):
         return self._request("unstar", [("id", song_id)])
 
     def get_playlists(self) -> dict:
-        """全部歌单（原始 subsonic-response）。"""
-        return self._request("getPlaylists")
+        """全部歌单（原始 subsonic-response）。
+
+        超时放宽（同 PLAYLIST_TIMEOUT）：某些兼容服务端在后台刷新时
+        getPlaylists 可能从 <1s 波动到十几秒；统一的 15s 会偶发超时，
+        导致在线页歌单区块变空。放宽到 60s 覆盖该波动。
+        标准 Subsonic（Navidrome 等）此请求通常很快，不受影响。
+        """
+        return self._request("getPlaylists", timeout=self.PLAYLIST_TIMEOUT)
 
     def get_playlists_info(self) -> List[PlaylistInfo]:
         """全部歌单 → PlaylistInfo 列表（平台无关）。
@@ -258,15 +272,29 @@ class SubsonicProvider(BaseMusicProvider):
             ))
         return result
 
+    #: getPlaylist 的超时（秒）。
+    #
+    # 大歌单（数千首）服务端需一次性序列化全部条目，耗时可达十几秒；
+    # 用统一的 15s 会对超大歌单超时 → 详情页误显示为空。故单独放宽。
+    # 标准 Subsonic 服务端（Navidrome 等）此请求通常很快，不受影响。
+    PLAYLIST_TIMEOUT = 60.0
+
     def get_playlist(self, playlist_id: str) -> dict:
-        """单个歌单详情（含歌曲）。"""
-        return self._request("getPlaylist", [("id", playlist_id)])
+        """单个歌单详情（含歌曲）。
+
+        使用放宽后的超时（见 PLAYLIST_TIMEOUT），避免超大歌单超时失败。
+        """
+        return self._request("getPlaylist", [("id", playlist_id)],
+                             timeout=self.PLAYLIST_TIMEOUT)
 
     def playlist_tracks(self, playlist_id: str) -> List[TrackItem]:
-        """歌单详情 → TrackItem 列表（带音质信息）。
+        """歌单详情 → TrackItem 列表（带音质信息）。失败抛异常（不吞）。
 
         注意：不用 get_playlist_tracks 之名——基类已有同名的无参方法
         （返回默认播放列表），子类覆盖会因签名不符而报错。
+
+        异常语义：加载失败（网络/超时/服务端错误）会**向上抛**，
+        由调用方决定提示；避免"失败即当空歌单"导致用户误以为歌单为空。
         """
         body = self.get_playlist(playlist_id)
         node = body.get("playlist")
@@ -278,6 +306,18 @@ class SubsonicProvider(BaseMusicProvider):
         if not isinstance(entries, list):
             return []
         return [self._song_to_track(s) for s in entries if isinstance(s, dict)]
+
+    def playlist_tracks_safe(self, playlist_id: str) -> tuple:
+        """歌单详情，返回 (tracks, error)。
+
+        error 为 None 表示成功（tracks 可能为空 = 真空歌单）；
+        error 为 str 表示加载失败（网络/超时/服务端错误）。
+        调用方据此区分「空歌单」与「加载失败」，给出正确提示。
+        """
+        try:
+            return (self.playlist_tracks(playlist_id), None)
+        except Exception as exc:
+            return ([], str(exc) or exc.__class__.__name__)
 
     def all_artists(self) -> list:
         """艺术家列表 → [{"id", "name", "album_count"}, ...]。"""
@@ -400,6 +440,56 @@ class SubsonicProvider(BaseMusicProvider):
         """结构化歌词（Subsonic 1.16.1+ getLyricsBySongId）。"""
         return self._request("getLyricsBySongId", [("id", song_id)])
 
+    # ---- 下载辅助（同时兼容标准 Subsonic）----
+    def download_url(self, song_id: str, quality: str = "") -> str:
+        """按指定音质档位构造下载 URL。
+
+        兼容性：
+        - 标准 Subsonic 只认 maxBitRate（128/320/999/1400/2000 会由服务端
+          按自身能力处理，不支持的档位也不会报错，最多原样返回）。
+        - 本项目的私有后端额外识别 quality 参数（master/hires…），
+          因此这里同时带上 maxBitRate 与 quality：标准服务端忽略未知的
+          quality，私有后端则精确命中。
+        - quality 为空 → 用配置/运行时档位（沿用 stream_url 默认行为）。
+        """
+        from core.quality import quality_to_bitrate
+        q = str(quality or "").strip().lower()
+        if not q:
+            return self.stream_url(song_id)
+        br = quality_to_bitrate(q)
+        extra = [("id", song_id), ("quality", q)]
+        if br:
+            extra.append(("maxBitRate", str(br)))
+        return self._url("stream", extra)
+
+    def best_lyrics_lrc(self, song_id: str, artist: str = "",
+                        title: str = "") -> str:
+        """尽力取得 LRC 文本歌词，失败返回空串（不抛异常）。
+
+        顺序：
+          1) getLyricsBySongId（OpenSubsonic 结构化）→ LRC；
+          2) 传统 getLyrics(artist,title) → 纯文本。
+        标准 Subsonic 未必支持 1，回退 2；都失败则空串（下载照常）。
+        """
+        from core.downloader import structured_lyrics_to_lrc
+        # 1) 结构化
+        try:
+            body = self.get_lyrics_by_song_id(song_id)
+            lrc = structured_lyrics_to_lrc(body)
+            if lrc.strip():
+                return lrc
+        except Exception:
+            pass
+        # 2) 传统端点（标准 Subsonic）
+        try:
+            body = self.get_lyrics(artist=artist, title=title)
+            lrc = structured_lyrics_to_lrc(body)
+            if lrc.strip():
+                return lrc
+        except Exception:
+            pass
+        return ""
+
     # ---- URL 构造（交给播放器/图片用）----
     def stream_url(self, song_id: str, max_bit_rate: int = 0,
                    fmt: str = "") -> str:
@@ -433,20 +523,15 @@ class SubsonicProvider(BaseMusicProvider):
         优先用「运行时档位」（母带/Hi-Res 临时试听，不持久化）；
         无运行时档位时读配置（持久化，最高无损）。
         """
+        from core.quality import DEFAULT_ONLINE_QUALITY, quality_to_bitrate
         q = _RUNTIME_QUALITY or None
         if not q:
             try:
                 from config.settings import get_config
-                q = get_config().get_str("online_quality", "lossless")
+                q = get_config().get_str("online_quality", DEFAULT_ONLINE_QUALITY)
             except Exception:
-                q = "lossless"
-        return {
-            "standard": 128,
-            "high": 320,
-            "lossless": 999,
-            "hires": 1400,
-            "master": 2000,
-        }.get(str(q or "").lower(), 0)
+                q = DEFAULT_ONLINE_QUALITY
+        return quality_to_bitrate(str(q or ""))
 
     def cover_art_url(self, cover_id: str, size: int = 0) -> str:
         """封面 URL（cover_id 通常是专辑/歌曲 id）。"""
@@ -646,6 +731,19 @@ class SubsonicProvider(BaseMusicProvider):
 
         run_async(work=_work, on_done=_done, on_error=_err)
 
+    def search_page(self, query: str, offset: int = 0,
+                    count: int = 50) -> List[TrackItem]:
+        """搜索某一页（支持翻页）；返回 TrackItem 列表。
+
+        与 search() 的区别：可指定 offset，用于「滚动加载更多」。
+        """
+        if not self.is_configured():
+            return []
+        body = self.search3(query, song_count=count, song_offset=offset)
+        songs = self._extract_songs(
+            body, "searchResult3", "searchResult2", "searchResult")
+        return [self._song_to_track(s) for s in songs]
+
     def get_library(self) -> List[TrackItem]:
         return list(self._tracks)
 
@@ -655,4 +753,94 @@ class SubsonicProvider(BaseMusicProvider):
     def refresh(self) -> None:
         """Subsonic 无「扫描」概念，空实现。"""
         return
+
+    # ============================================================
+    # 统一内容拉取接口（BaseMusicProvider 可选实现）
+    # ============================================================
+    #
+    # 这些方法把「标准 Subsonic 端点」适配成平台无关的中间结构，
+    # 使 UI 无需区分后端是标准 Subsonic 还是用户自备的兼容服务端。
+    # 纯转发：内部仍走既有标准端点，行为与之前完全一致。
+
+    def fetch_playlists(self):
+        """歌单列表（PlaylistInfo）；未配置/出错返回空列表。"""
+        if not self.is_configured():
+            return []
+        try:
+            return self.get_playlists_info()
+        except Exception as exc:
+            log.debug("获取歌单列表失败: %s", exc)
+            return []
+
+    def fetch_library_page(self, offset: int = 0, count: int = 100):
+        """在线曲库分页（TrackItem）；未配置/出错返回空列表。
+
+        走标准 search3 空查询（部分服务端将其视为「列出全部」）。
+        """
+        try:
+            return self.all_songs(offset=offset, count=count)
+        except Exception as exc:
+            log.debug("获取在线曲库分页失败: %s", exc)
+            return []
+
+    def fetch_stream_url(self, source_id: str, quality: str = "") -> str:
+        """按 song id 构造流 URL（通用档位）。空 id 返回空串。"""
+        if not source_id:
+            return ""
+        try:
+            if quality:
+                return self.download_url(source_id, quality=quality)
+            return self.stream_url(source_id)
+        except Exception as exc:
+            log.debug("构造在线流 URL 失败: %s", exc)
+            return ""
+
+    def fetch_recommendations(self, source: str = "", rec_type: str = "daily"):
+        """推荐内容（可选能力，统一入口）。
+
+        转发到既有扩展端点 getRecommendations。
+        - 标准 Subsonic 未实现该端点 → _request 抛错 → 内部捕获返回 []，
+          UI 据此隐藏推荐区块（优雅降级）。
+        - 用户自备的兼容服务端 / 外挂插件实现该端点后，自动可用。
+
+        返回 recommendation_section_cards 风格的卡片列表
+        （name/subtitle/cover_url/playlist_id），供 UI 直接渲染区块。
+
+        合规：此处只调用「通用扩展端点」，不含任何具体平台的接口解析逻辑；
+        是否返回内容完全取决于服务端/插件自身。
+        """
+        try:
+            if not self.is_configured():
+                return []
+            # source 为空时用中性默认（仅为端点参数，不代表任何平台）。
+            src = str(source or "").strip()
+            return self.recommendation_section_cards(src, rec_type)
+        except Exception as exc:
+            log.debug("获取推荐失败: %s", exc)
+            return []
+
+    def fetch_user_profile(self, username: str = ""):
+        """用户资料（可选能力，统一入口）。未实现/失败返回 {}。
+
+        转发到扩展端点 getUserProfile；标准 Subsonic 未实现则返回 {}。
+        """
+        try:
+            if not self.is_configured():
+                return {}
+            body = self.get_user_profile(username)
+            node = body.get("userProfile") if isinstance(body, dict) else None
+            return node if isinstance(node, dict) else {}
+        except Exception as exc:
+            log.debug("获取用户资料失败: %s", exc)
+            return {}
+
+    def fetch_avatar_url(self, username: str = "") -> str:
+        """用户头像 URL（可选能力，统一入口）。未配置返回空串。"""
+        try:
+            if not self.is_configured():
+                return ""
+            return self.get_avatar_url(username)
+        except Exception as exc:
+            log.debug("获取头像 URL 失败: %s", exc)
+            return ""
 

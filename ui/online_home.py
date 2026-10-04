@@ -12,7 +12,7 @@ from typing import Callable, List, Optional
 from gi.repository import Gdk, GLib, Gtk
 
 from core.i18n import _
-from core.tasks import run_async
+from core.tasks import run_cover_async
 
 from .online_section import CardSection
 
@@ -69,7 +69,7 @@ def _load_url_cover_async(url: str, on_done) -> None:
         except Exception:
             on_done(None)
 
-    run_async(work=_work, on_done=_done)
+    run_cover_async(work=_work, on_done=_done)
 
 
 def _make_playlist_card(pl, on_click: Optional[Callable] = None) -> Gtk.Widget:

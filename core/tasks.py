@@ -32,6 +32,14 @@ log = logging.getLogger(__name__)
 #  max_workers 取较小值：这些任务多为 IO 密集，且并发过高会争抢 GIL。
 _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="xiatiao-async")
 
+#: 封面专用线程池：封面加载是 IO 密集（网络下载），且数量多（一屏几十张），
+#: 用高并发避免排队拖慢在线页首屏。与全局池隔离，互不挤占。
+_COVER_EXECUTOR = ThreadPoolExecutor(max_workers=24, thread_name_prefix="xiatiao-cover")
+
+#: 网络专用池：在线接口（getRecommendations/getPlaylists/...）是网络 IO，
+#: 与本地扫描/封面解码隔离，避免互相排队（否则在线页要等扫描/切歌占满全局池）。
+_NET_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="xiatiao-net")
+
 
 class TaskToken:
     """异步任务句柄，用于取消与查询状态。"""
@@ -78,6 +86,67 @@ def run_async(
         _EXECUTOR.submit(worker)
     except Exception as exc:  # 线程池关闭等极端情况：降级为同步执行，不丢任务
         log.debug("提交线程池失败，降级同步执行: %s", exc)
+        worker()
+    return token
+
+
+def run_cover_async(
+    work: Callable[[], Any],
+    on_done: Optional[Callable[[Any], None]] = None,
+    on_error: Optional[Callable[[Exception], None]] = None,
+) -> TaskToken:
+    """同 run_async，但用封面专用高并发池（不占全局 4 线程）。
+
+    封面一屏几十张、纯 IO，串在全局池会因并发不足排队，拖慢首屏显示。
+    """
+    token = TaskToken()
+
+    def worker() -> None:
+        if token.cancelled:
+            return
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("封面任务异常: %s", exc)
+            if not token.cancelled and on_error is not None:
+                GLib.idle_add(_safe_call, on_error, exc)
+            return
+        if not token.cancelled and on_done is not None:
+            GLib.idle_add(_safe_call, on_done, result)
+
+    try:
+        _COVER_EXECUTOR.submit(worker)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("封面池提交失败，降级同步: %s", exc)
+        worker()
+    return token
+
+
+def run_net_async(
+    work: Callable[[], Any],
+    on_done: Optional[Callable[[Any], None]] = None,
+    on_error: Optional[Callable[[Exception], None]] = None,
+) -> TaskToken:
+    """同 run_async，但用网络专用池（在线接口，不挤全局/封面池）。"""
+    token = TaskToken()
+
+    def worker() -> None:
+        if token.cancelled:
+            return
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("网络任务异常: %s", exc)
+            if not token.cancelled and on_error is not None:
+                GLib.idle_add(_safe_call, on_error, exc)
+            return
+        if not token.cancelled and on_done is not None:
+            GLib.idle_add(_safe_call, on_done, result)
+
+    try:
+        _NET_EXECUTOR.submit(worker)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("网络池提交失败，降级同步: %s", exc)
         worker()
     return token
 

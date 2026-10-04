@@ -58,23 +58,32 @@ class Playlist(GObject.Object):
         return self._shuffle
 
     def _rebuild_shuffle(self) -> None:
-        """重建洗牌顺序（不含当前曲，当前曲放最前）。"""
+        """重建洗牌顺序（本轮待播序列，**不含当前曲**）。
+
+        语义：当前曲此刻正在播放，本轮不必再把它排进待播序列；
+        本轮要播的是「其余曲目」的一个随机排列。
+        配合 _next_shuffle 的「先 +1 再取」，_shuffle_pos 初值取 -1，
+        使首个 next() 取到 order[0]（不会漏掉任何一首）。
+
+        历史 bug：旧实现把当前曲 insert 到 order[0] 且 _shuffle_pos=0，
+        而 next 先自增，导致 order[0] 的当前曲永不被取 → 一轮漏播一首。
+        """
         n = len(self._tracks)
         self._shuffle_order = []
         self._shuffle_pos = -1
         if not self._shuffle or n == 0:
             return
         order = list(range(n))
-        # 当前曲放在本轮开头，保证接着播下一首不重复
         cur = self._current_index
         if 0 <= cur < n:
+            # 当前曲正在播放，从本轮待播序列中排除。
             order.remove(cur)
             random.shuffle(order)
-            order.insert(0, cur)
         else:
+            # 无当前曲（首次启用随机）：全部曲目参与本轮。
             random.shuffle(order)
         self._shuffle_order = order
-        self._shuffle_pos = 0
+        self._shuffle_pos = -1
 
     def set_repeat_mode(self, mode: int) -> None:
         mode = int(mode) % 3
@@ -227,7 +236,10 @@ class Playlist(GObject.Object):
             if auto and self._repeat_mode == REPEAT_OFF:
                 return None  # 不循环：停止
             self._rebuild_shuffle()
-            self._shuffle_pos = 1 if len(self._shuffle_order) > 1 else 0
+            # _rebuild_shuffle 已把 _shuffle_pos 置 -1；下次 next() +1 取 order[0]。
+            # 若重建后仍为空（无曲），直接返回 None。
+            if not self._shuffle_order:
+                return None
         idx = self._shuffle_order[self._shuffle_pos]
         # 同步洗牌位置到当前索引变化（若用户手动选曲，后面会重建）
         return self.set_current_index(idx)

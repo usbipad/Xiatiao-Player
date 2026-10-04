@@ -31,6 +31,41 @@ DSD_EXTS = frozenset({"dsf", "dff"})
 #: 超高采样率（DXD）门槛。
 _DXD_MIN_RATE = 352_800
 
+# ============================================================
+# 在线音质档位（单一真相）
+# ============================================================
+#
+# 档位 → Subsonic `maxBitRate` 约定值（通用参数；由服务端按自身能力解释，
+# 不支持该档位的标准服务端不会报错，最多原样返回）。
+# 0 表示不限制（原文件直传）。
+#
+# 说明：这里只是「客户端请求的通用档位」，不含任何平台私有语义；
+# 标准 Subsonic 与用户自备的兼容服务端都按此约定响应。
+ONLINE_QUALITY_BITRATE: dict[str, int] = {
+    "standard": 128,
+    "high": 320,
+    "lossless": 999,
+    "hires": 1400,
+    "master": 2000,
+}
+
+#: 档位显示名（key, 展示名），供下拉框/UI 复用。
+ONLINE_QUALITY_LABELS: list[tuple[str, str]] = [
+    ("standard", "标准 128k"),
+    ("high", "高品 320k"),
+    ("lossless", "无损"),
+    ("hires", "Hi-Res"),
+    ("master", "母带"),
+]
+
+#: 默认档位（配置缺省）。
+DEFAULT_ONLINE_QUALITY = "lossless"
+
+
+def quality_to_bitrate(key: str) -> int:
+    """档位 key → maxBitRate；未知/空返回 0（不限制）。"""
+    return ONLINE_QUALITY_BITRATE.get(str(key or "").strip().lower(), 0)
+
 
 def _to_int(v) -> int:
     """尽力转正整数；失败返回 0。"""

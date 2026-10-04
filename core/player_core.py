@@ -181,6 +181,19 @@ class PlayerCore(GObject.Object):
         return []
 
     # ---- 查询 ----
+    def is_backend_alive(self) -> bool:
+        """音频后端是否可用（未启动/未连接 → False）。
+
+        后端不支持该查询时保守返回 True，避免误报。
+        """
+        fn = getattr(self._backend, "is_alive", None)
+        if callable(fn):
+            try:
+                return bool(fn())
+            except Exception:
+                return True
+        return True
+
     def state(self) -> str:
         return self._backend.state()
 

@@ -12,6 +12,30 @@ log = logging.getLogger(__name__)
 APP_DIR_NAME = "xiatiao"
 CONFIG_FILENAME = "config.json"
 
+
+def xdg_config_dir() -> str:
+    """$XDG_CONFIG_HOME/xiatiao（未设置 XDG_CONFIG_HOME 时回退 ~/.config）。"""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
+    return os.path.join(base, APP_DIR_NAME)
+
+
+def xdg_data_dir() -> str:
+    """$XDG_DATA_HOME/xiatiao（未设置 XDG_DATA_HOME 时回退 ~/.local/share）。"""
+    base = os.environ.get("XDG_DATA_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "share"
+    )
+    return os.path.join(base, APP_DIR_NAME)
+
+
+def xdg_cache_dir() -> str:
+    """$XDG_CACHE_HOME/xiatiao（未设置 XDG_CACHE_HOME 时回退 ~/.cache）。"""
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache"
+    )
+    return os.path.join(base, APP_DIR_NAME)
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "music_dirs": [],
     "volume": 1.0,

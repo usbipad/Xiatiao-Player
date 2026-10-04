@@ -43,7 +43,9 @@ pub enum Event {
     Pong,
     Ack { cmd: String },
     Error { message: String },
-    Position { sec: f64 },
+    /// 播放位置。gen = 播放代次（每次 play 递增）；客户端丢弃旧 gen 的位置事件，
+    /// 避免切歌/切音质后旧事件把进度条拉回。
+    Position { sec: f64, gen: u64 },
     Duration { sec: f64 },
     State { state: String },
     EndOfStream,

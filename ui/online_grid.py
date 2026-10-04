@@ -15,7 +15,7 @@ from typing import Callable, List, Optional
 
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, GObject, Gtk
 
-from core.tasks import run_async
+from core.tasks import run_cover_async
 
 #: 封面渲染尺寸（与 online_section.CARD_COVER_PX 一致）
 CARD_COVER_PX = 150
@@ -78,7 +78,7 @@ def _load_url_cover_async(url: str, on_done: Callable) -> None:
     def _done(pb):
         on_done(pb)
 
-    run_async(work=_work, on_done=_done)
+    run_cover_async(work=_work, on_done=_done)
 
 
 def _set_holder_child(holder: Gtk.Box, widget: Gtk.Widget) -> None:

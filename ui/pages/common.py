@@ -65,10 +65,6 @@ def apply_quality_badge(badge, track) -> None:
         mc = getattr(track, "multichannel_label", "") or ""
         if mc:
             label = f"{label} {mc}".strip()
-        import logging as _lg
-        _lg.getLogger(__name__).info(
-            "[徽章] apply title=%r label=%r mc=%r",
-            getattr(track, "title", ""), label, mc)
         badge.set_text(label)
         badge.set_visible(bool(label))
         for c in _BADGE_CLASSES:

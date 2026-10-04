@@ -49,6 +49,9 @@ fn main() {
     // 启动时探测外部依赖（便于打包后诊断）
     deps::probe_all();
 
+    // 默认 socket 路径必须与 Python 侧 core/rust_backend.py::DEFAULT_SOCKET 一致。
+    // 跨语言无法共享常量，改动任一侧时务必同步另一侧（可用
+    // XIATIAO_BACKEND_SOCKET 环境变量覆盖）。
     let sock_path = std::env::var("XIATIAO_BACKEND_SOCKET")
         .unwrap_or_else(|_| "/tmp/xiatiao-audio-backend.sock".to_string());
 
@@ -94,12 +97,19 @@ fn handle_client(stream: UnixStream, engine: Arc<Mutex<engine::Engine>>) {
             let mut last_pos = -1.0f64;
             let mut last_dur = -1.0f64;
             let mut eof_sent = false;
+            let mut last_gen = u64::MAX;
             while alive.load(Ordering::SeqCst) {
                 thread::sleep(Duration::from_millis(100));
-                let (state, pos, is_eof, dur) = match eng.lock() {
-                    Ok(e) => (e.state_str().to_string(), e.position(), e.is_eof(), e.duration_secs()),
+                let (state, pos, is_eof, dur, gen) = match eng.lock() {
+                    Ok(e) => (e.state_str().to_string(), e.position(), e.is_eof(), e.duration_secs(), e.play_gen()),
                     Err(_) => break,
                 };
+                // 代次变化（切歌/切音质）：重置位置去重基准，让新代次的
+                // 首个位置（即使与旧值接近）也能发出。
+                if gen != last_gen {
+                    last_gen = gen;
+                    last_pos = -1.0;
+                }
                 if dur > 0.0 && (dur - last_dur).abs() >= 0.5 {
                     last_dur = dur;
                     if send_event(&w, &protocol::Event::Duration { sec: dur }).is_err() {
@@ -115,7 +125,7 @@ fn handle_client(stream: UnixStream, engine: Arc<Mutex<engine::Engine>>) {
                 // 位置：只在播放中且变化时发
                 if (pos - last_pos).abs() >= 0.1 {
                     last_pos = pos;
-                    if send_event(&w, &protocol::Event::Position { sec: pos }).is_err() {
+                    if send_event(&w, &protocol::Event::Position { sec: pos, gen }).is_err() {
                         break;
                     }
                 }

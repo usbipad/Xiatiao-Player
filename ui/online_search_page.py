@@ -37,6 +37,8 @@ class OnlineSearchPage(Gtk.Box):
         self._on_album_click = on_album_click
         self._on_load_more_ext = on_load_more
         self._on_section_more = on_section_more
+        #: 搜索结果翻页回调（由 window 注入）：(query, offset, count) -> None
+        self._on_result_more_ext: Optional[Callable] = None
         # 供 section 列表视图按类型重建（专辑/艺术家列头不同）
         self._on_track_activated = on_track_activated
         self._track_actions = track_actions
@@ -155,6 +157,7 @@ class OnlineSearchPage(Gtk.Box):
         result.append(self.status_lbl)
         self.result_page = LocalLibraryPage(
             on_track_activated=on_track_activated,
+            on_online_load_more=self._on_result_load_more,
             title="",
             empty_text="",
             track_actions=track_actions,
@@ -162,6 +165,10 @@ class OnlineSearchPage(Gtk.Box):
             hide_header=True,
             show_locate=False,
         )
+        #: 搜索结果翻页状态
+        self._result_query = ""
+        self._result_offset = 0
+        self._result_loading = False
         self.result_page.set_vexpand(True)
         result.append(self.result_page)
         self._stack.add_named(result, "result")
@@ -581,10 +588,38 @@ class OnlineSearchPage(Gtk.Box):
 
     def show_results(self, query: str, tracks) -> None:
         tracks = list(tracks or [])
+        # 记录本次搜索条件与已加载数量（供滚动翻页）。
+        self._result_query = query or ""
+        self._result_offset = len(tracks)
         self.result_page.set_tracks(tracks)
         self.status_lbl.set_text(
             ("%d " % len(tracks)) + _("首") if tracks else _("无结果"))
         self._stack.set_visible_child_name("result")
+
+    def append_results(self, tracks, done: bool = False) -> None:
+        """追加搜索下一页结果（滚动加载更多）。"""
+        tracks = list(tracks or [])
+        if tracks:
+            self._result_offset += len(tracks)
+            self.result_page.append_tracks(tracks)
+        if done:
+            # 没有更多：清空 query 让后续滚动不再触发。
+            self._result_query = ""
+        self.status_lbl.set_text(
+            ("%d " % self._result_offset) + _("首"))
+
+    def _on_result_load_more(self, offset: int, count: int) -> None:
+        """搜索结果滚动到底 → 请求下一页。"""
+        if self._result_loading or not self._result_query:
+            return
+        cb = getattr(self, "_on_result_more_ext", None)
+        if not callable(cb):
+            return
+        self._result_loading = True
+        try:
+            cb(self._result_query, self._result_offset, count)
+        except Exception:
+            self._result_loading = False
 
     def show_browse(self) -> None:
         self._stack.set_visible_child_name("browse")

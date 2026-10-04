@@ -69,6 +69,7 @@ impl Engine {
                 output_device: Mutex::new(String::new()),
                 pending_error: Mutex::new(None),
                 pending_audio_info: Mutex::new(None),
+                play_gen: AtomicU64::new(0),
             }),
             state: State::Stopped,
             effect: "off".to_string(),
@@ -148,6 +149,11 @@ impl Engine {
 
     pub fn duration_secs(&self) -> f64 {
         self.shared.duration_ms.load(Ordering::SeqCst) as f64 / 1000.0
+    }
+
+    /// 当前播放代次（随每次 start_play 递增），供 Position 事件标注。
+    pub fn play_gen(&self) -> u64 {
+        self.shared.play_gen.load(Ordering::SeqCst)
     }
 
     /// 取出并清空待发送给客户端的错误（推送线程调用）。
@@ -335,6 +341,8 @@ impl Engine {
 
     fn start_play(&mut self, path: &str) {
         crate::logts!("[engine] START_PLAY: {path}");
+        // 递增播放代次：此后发出的 Position 都带新 gen，客户端丢弃旧 gen 的。
+        self.shared.play_gen.fetch_add(1, Ordering::SeqCst);
         // 记录当前曲目，供切换输出设备后续播。
         self.current_path = Some(path.to_string());
         self.stop_internal();

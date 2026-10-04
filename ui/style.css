@@ -663,14 +663,15 @@ headerbar menubutton.avatar-btn,
 headerbar menubutton.app-menu-btn,
 headerbar menubutton.avatar-btn > button,
 headerbar menubutton.app-menu-btn > button {
-    /* 强制 34×34 纯圆：min+max 双锁，超大 radius 不受宽高比影响。 */
+    /* 强制 34×34 纯圆。
+       注意：GTK4 CSS 不支持 max-width/max-height（写了会报
+       "No property named max-width" 解析错误），只支持 min-width/min-height。
+       故用 min-* 锁定尺寸 + padding:0，配合超大 radius 即可得到纯圆。 */
     border-radius: 9999px;
     background: none;
     box-shadow: none;
     min-width: 34px;
     min-height: 34px;
-    max-width: 34px;
-    max-height: 34px;
     padding: 0;
     margin: 0;
     transition: box-shadow 180ms ease, background-color 180ms ease;

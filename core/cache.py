@@ -17,9 +17,10 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from config.settings import APP_DIR_NAME, xdg_cache_dir
+
 log = logging.getLogger(__name__)
 
-APP_DIR_NAME = "xiatiao"
 CACHE_FILENAME = "cache.json"
 
 #: 允许缓存的块名（防止误写大对象）
@@ -27,10 +28,7 @@ CACHE_KEYS = ("home", "explore", "collection", "local", "user", "queue")
 
 
 def _default_cache_path() -> Path:
-    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(
-        os.path.expanduser("~"), ".cache"
-    )
-    return Path(base) / APP_DIR_NAME / CACHE_FILENAME
+    return Path(xdg_cache_dir()) / CACHE_FILENAME
 
 
 class AppCache:

@@ -31,6 +31,10 @@ const RETRY_INTERVAL: Duration = Duration::from_millis(500);
 /// 写入线程的节拍：每 tick 写一小块。16ms ≈ 60Hz，与渲染节拍匹配。
 const WRITE_TICK: Duration = Duration::from_millis(16);
 /// 每 tick 写入的最大样本数（16kHz × 16ms = 256）。
+///
+/// 跨语言契约：本值（256）须与 Python 侧 core/viz.py 的产帧步进
+/// （DEFAULT_HOP，numpy 路径 = VIZ_RATE/60 ≈ 256）保持同量级，
+/// 使 FIFO 写入粒度与消费端 hop 匹配。改动任一侧请同步评估另一侧。
 const WRITE_SAMPLES_PER_TICK: usize = (VIZ_RATE as usize * 16) / 1000;
 /// 队列容量（样本数）：约 500ms 的 16kHz 数据，够吸收抖动，又不占太多内存。
 const QUEUE_CAP: usize = (VIZ_RATE as usize) / 2;

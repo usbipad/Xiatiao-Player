@@ -110,7 +110,7 @@ class HomePage(Gtk.Box):
         self.artists_section = _CollapsibleSection(_("艺术家"), self.artists_page, expanded=False)
         self.append(self.artists_section)
 
-        # ---- 3) 历史（精简：无表头、不可排序，歌名/歌手/格式/采样率）----
+        # ---- 3) 历史（精简：无表头、不可排序，歌名/歌手）----
         self.history_page = LocalLibraryPage(
             on_track_activated=on_track_activated,
             title="",
@@ -123,8 +123,6 @@ class HomePage(Gtk.Box):
             compact_cols=[
                 (_("歌名"), "title", True, "title"),
                 (_("歌手"), "artist", False, "artist"),
-                (_("格式"), "format_ext", False, "format_ext"),
-                (_("采样率"), "sample_rate_label", False, "sample_rate"),
             ],
         )
         self.history_section = _CollapsibleSection(_("历史播放"), self.history_page, expanded=True)

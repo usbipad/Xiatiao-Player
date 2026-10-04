@@ -51,13 +51,21 @@ class HistoryStore(SqliteStore):
                         played_at REAL
                     )"""
                 )
-                # 旧库迁移：补充技术字段列（已存在则忽略）
+                # 旧库迁移：补充技术字段列。
+                # 用 PRAGMA table_info 先查列是否存在，避免「ALTER 失败→吞异常」
+                # 这种用异常控制流程的写法（每次启动都抛 4 个异常、污染日志）。
+                existing = {
+                    row[1] for row in conn.execute("PRAGMA table_info(history_tracks)")
+                }
                 for col, typ in (("sample_rate", "INTEGER"), ("bit_depth", "INTEGER"),
                                  ("channels", "INTEGER"), ("bitrate", "INTEGER")):
+                    if col in existing:
+                        continue
                     try:
                         conn.execute(f"ALTER TABLE history_tracks ADD COLUMN {col} {typ}")
-                    except sqlite3.Error:
-                        pass
+                    except sqlite3.Error as exc:
+                        # 并发或权限等极端情况：记录但不阻断初始化
+                        log.debug("补充历史库列 %s 失败: %s", col, exc)
                 conn.commit()
         except sqlite3.Error as exc:
             log.warning("初始化历史库失败: %s", exc)

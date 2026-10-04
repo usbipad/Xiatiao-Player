@@ -17,21 +17,18 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-log = logging.getLogger(__name__)
+from config.settings import APP_DIR_NAME, xdg_data_dir
 
-#: 应用数据目录名（$XDG_DATA_HOME 下）。
-APP_DIR_NAME = "xiatiao"
+log = logging.getLogger(__name__)
 
 
 def xdg_data_db_path(filename: str) -> Path:
     """按 XDG 规范返回 $XDG_DATA_HOME/xiatiao/<filename>。
 
     未设置 XDG_DATA_HOME 时回退到 ~/.local/share。
+    目录名与其它模块共用 config.settings.APP_DIR_NAME（单一真相）。
     """
-    base = os.environ.get("XDG_DATA_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "share"
-    )
-    return Path(base) / APP_DIR_NAME / filename
+    return Path(xdg_data_dir()) / filename
 
 
 def track_key(track) -> str:

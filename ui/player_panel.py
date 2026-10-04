@@ -648,8 +648,10 @@ class PlayerPanel(Gtk.Box):
             pic.set_paintable(cached)
             return overlay
         if cached is _MISS:
-            # 未缓存：异步加载（复用 pages 的后台读图/下载 + 缓存）
-            from core.tasks import run_async
+            # 未缓存：异步加载（复用 pages 的后台读图/下载 + 缓存）。
+            # 用封面专用高并发池，避免与在线流代理等长任务共占全局池
+            # （仅 4 线程）而排队，导致面板封面延迟数十秒才显示。
+            from core.tasks import run_cover_async
 
             def _done(png_bytes) -> None:
                 tex = None
@@ -667,10 +669,10 @@ class PlayerPanel(Gtk.Box):
 
             try:
                 if filepath:
-                    run_async(work=lambda: _load_cover_bytes(filepath), on_done=_done)
+                    run_cover_async(work=lambda: _load_cover_bytes(filepath), on_done=_done)
                 else:
                     from .pages.common import load_cover_from_url as _load_url_cover
-                    run_async(work=lambda: _load_url_cover(cover_url), on_done=_done)
+                    run_cover_async(work=lambda: _load_url_cover(cover_url), on_done=_done)
             except Exception:
                 pass
         return overlay
@@ -1495,7 +1497,11 @@ class PlayerPanel(Gtk.Box):
         self.label_time_right.set_text(_fmt_seconds(seconds))
 
     def reset_position(self) -> None:
-        """切歌时重置进度显示，避免沿用上一首的位置。"""
+        """切歌时重置进度显示，避免沿用上一首的位置。
+
+        旧曲目的 position 事件由后端 play_gen 过滤（RustBackend._dispatch
+        丢弃旧代次事件），此处无需额外冻结。
+        """
         self.progress.reset()
         self.label_time_left.set_text("0:00")
 

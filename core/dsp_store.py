@@ -12,9 +12,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from config.settings import APP_DIR_NAME, xdg_config_dir
+
 log = logging.getLogger(__name__)
 
-APP_DIR_NAME = "xiatiao"
 FILENAME = "dsp_presets.json"
 
 
@@ -28,10 +29,7 @@ class DspPresetStore:
 
     @staticmethod
     def _default_path() -> Path:
-        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
-            os.path.expanduser("~"), ".config"
-        )
-        return Path(base) / APP_DIR_NAME / FILENAME
+        return Path(xdg_config_dir()) / FILENAME
 
     def load(self) -> None:
         self._data = {"presets": {}, "current": None}

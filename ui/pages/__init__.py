@@ -70,10 +70,16 @@ class LocalLibraryPage(Gtk.Box):
                  compact_cols=None,
                  show_locate: bool = True,
                  embedded: bool = False,
-                 on_add_to_playlist=None) -> None:
+                 on_add_to_playlist=None,
+                 on_online_load_more=None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._on_activated = on_track_activated
         self._on_refresh = on_refresh
+        #: 滚动到底「加载更多」回调：(offset, count) -> None
+        self._on_online_load_more = on_online_load_more
+        self._online_loading = False
+        self._online_loaded = 0
+        self._online_scroll_armed = True
         self._title = _(title) if title else ""
         self._empty_text = _(empty_text) if empty_text else ""
         self._track_actions = track_actions
@@ -126,6 +132,10 @@ class LocalLibraryPage(Gtk.Box):
             embedded=embedded,
         )
         self._content_stack.add_named(self._column_view, "songs")
+
+        # 在线列表滚动到底 → 触发加载更多（仅当注入了回调时）。
+        if callable(self._on_online_load_more):
+            self._setup_online_scroll_hook()
 
         self._build_grid(embedded)
 
@@ -245,6 +255,52 @@ class LocalLibraryPage(Gtk.Box):
     def set_tracks(self, tracks: List[TrackItem]) -> None:
         self._all_tracks = list(tracks or [])
         self._apply_filter()
+
+    def append_tracks(self, tracks: List[TrackItem]) -> None:
+        """追加曲目（滚动加载更多）并重渲染。"""
+        tracks = list(tracks or [])
+        if not tracks:
+            return
+        self._all_tracks = list(self._all_tracks) + tracks
+        self._online_loaded = len(self._all_tracks)
+        # 追加后重新武装滚动加载（离开底部区域后再次可触发）。
+        self._online_scroll_armed = True
+        self._apply_filter()
+        self._online_loading = False
+
+    def _setup_online_scroll_hook(self) -> None:
+        """给歌曲列表滚动容器挂「接近底部」检测，用于加载更多。"""
+        try:
+            vadj = self._column_view.get_vadjustment()
+            if vadj is not None:
+                vadj.connect("value-changed", self._on_online_scroll)
+        except Exception:
+            pass
+
+    def _on_online_scroll(self, adj) -> None:
+        if self._online_loading:
+            return
+        try:
+            remaining = adj.get_upper() - adj.get_page_size() - adj.get_value()
+        except Exception:
+            return
+        if remaining <= 400:
+            if self._online_scroll_armed:
+                self._online_scroll_armed = False
+                self._request_online_more()
+        else:
+            self._online_scroll_armed = True
+
+    def _request_online_more(self) -> None:
+        if self._online_loading:
+            return
+        if not callable(self._on_online_load_more):
+            return
+        self._online_loading = True
+        try:
+            self._on_online_load_more(self._online_loaded, 50)
+        except Exception:
+            self._online_loading = False
 
     def set_filter_text(self, text: str) -> None:
         text = (text or "").strip()

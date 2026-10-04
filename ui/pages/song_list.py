@@ -7,7 +7,7 @@ from __future__ import annotations
 from gi.repository import Gdk, GLib, Gio, Gtk
 
 from core.i18n import _
-from core.tasks import run_async
+from core.tasks import run_async, run_cover_async
 from ui.widgets.playing_indicator import PlayingIndicator
 
 from .common import (
@@ -181,7 +181,21 @@ def _on_cover_setup(_factory, list_item) -> None:
     ph_icon.set_halign(Gtk.Align.CENTER)
     ph_icon.set_valign(Gtk.Align.CENTER)
     overlay.add_overlay(ph_icon)
-    list_item.set_child(overlay)
+
+    # 封面 cell = 水平 Box：[跳动音符(默认隐藏)] [封面 Overlay]。
+    # 只有「正在播放」那一行会显示出左侧跳动音符，其他行封面直接在最前。
+    ind = PlayingIndicator(width=INDICATOR_SIZE, height=INDICATOR_SIZE)
+    ind.set_valign(Gtk.Align.CENTER)
+    ind.set_margin_end(8)
+    ind.set_visible(False)
+
+    cell = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+    cell.set_valign(Gtk.Align.CENTER)
+    cell.append(ind)
+    cell.append(overlay)
+    list_item.set_child(cell)
+    list_item._cover_cell = cell
+    list_item._cover_indicator = ind
     list_item._cover_overlay = overlay
     list_item._cover_badge = badge
     list_item._cover_ph = ph_icon
@@ -192,6 +206,8 @@ def _on_indicator_setup(_factory, list_item) -> None:
     indicator = PlayingIndicator(width=INDICATOR_SIZE, height=INDICATOR_SIZE)
     indicator.set_halign(Gtk.Align.CENTER)
     indicator.set_valign(Gtk.Align.CENTER)
+    # 与右侧封面之间留出间距（避免音符贴着封面显得挤）。
+    indicator.set_margin_end(10)
     indicator.set_visible(False)
     list_item.set_child(indicator)
     list_item._indicator = indicator
@@ -216,18 +232,31 @@ def _on_indicator_bind(_factory, list_item) -> None:
 
 def _on_cover_bind(_factory, list_item) -> None:
     item = list_item.get_item()
-    overlay = list_item.get_child()
-    if isinstance(overlay, Gtk.Overlay):
-        pic = overlay.get_child()
-    else:
-        pic = overlay
-        overlay = None
+    # 封面 cell 现在是 Box[指示器 + Overlay]，用存的属性取 overlay。
+    overlay = getattr(list_item, "_cover_overlay", None)
+    if overlay is None:
+        child = list_item.get_child()
+        if isinstance(child, Gtk.Overlay):
+            overlay = child
+    pic = overlay.get_child() if isinstance(overlay, Gtk.Overlay) else None
     if pic is None:
         return
     pic.set_paintable(None)
     ph = getattr(list_item, "_cover_ph", None)
     if ph is not None:
         ph.set_visible(True)
+    # 跳动音符：按当前行键决定是否在本行封面左侧显示（切歌时自动刷新）。
+    ind = getattr(list_item, "_cover_indicator", None)
+    if ind is not None:
+        row_key = ""
+        if item is not None:
+            row_key = (getattr(item, "filepath", "") or getattr(item, "source_id", "")
+                       or getattr(item, "title", ""))
+        ind.set_row_key(row_key)
+        try:
+            ind.sync_now()
+        except Exception:
+            pass
 
     # 音质规格徽标（DSD / DXD / HR / CD + 多声道）：统一由公共函数处理
     try:
@@ -296,11 +325,13 @@ def _on_cover_bind(_factory, list_item) -> None:
             except Exception:
                 pass
 
+    # 封面一律走封面专用高并发池（run_cover_async）：避免与在线流代理等
+    # 长任务共用全局池（仅 4 线程）而排队，导致封面延迟数十秒才显示。
     if filepath:
-        run_async(work=lambda: _load_cover_bytes(filepath), on_done=on_done)
+        run_cover_async(work=lambda: _load_cover_bytes(filepath), on_done=on_done)
     else:
         from .common import load_cover_from_url as _load_url_cover
-        run_async(work=lambda: _load_url_cover(cover_url), on_done=on_done)
+        run_cover_async(work=lambda: _load_url_cover(cover_url), on_done=on_done)
 
 
 # ================================================================
@@ -388,8 +419,8 @@ def build_track_columnview(model, on_activate=None,
     if menu_model is not None:
         cover_factory.connect("bind", _attach_cell_right_click, menu_model, ctx)
     cover_col = Gtk.ColumnViewColumn(title="", factory=cover_factory)
-    cover_col.set_fixed_width(COVER_SIZE + 16)
-    column_view.append_column(cover_col)
+    # 封面列变宽：左侧要容纳「正在播放」跳动音符（约 INDICATOR_SIZE + 间距）。
+    cover_col.set_fixed_width(COVER_SIZE + INDICATOR_SIZE + 24)
 
     def _append_text_column(title, prop, expand, sort_key, numeric=False, width=0, sortable=True):
         factory = Gtk.SignalListItemFactory()
@@ -410,32 +441,16 @@ def build_track_columnview(model, on_activate=None,
 
     _sort_on = not no_sort
 
-    def _append_indicator_column():
-        """追加播放指示器列（当前播放行显示跳动音符）。"""
-        ind_factory = Gtk.SignalListItemFactory()
-
-        def _ind_setup_cb(_f, list_item):
-            _on_indicator_setup(_f, list_item)
-            if now_playing_ref is not None:
-                list_item._now_playing_ref = now_playing_ref
-
-        ind_factory.connect("setup", _ind_setup_cb)
-        ind_factory.connect("bind", _on_indicator_bind)
-        ind_col = Gtk.ColumnViewColumn(title="", factory=ind_factory)
-        ind_col.set_fixed_width(INDICATOR_SIZE + 16)
-        column_view.append_column(ind_col)
+    # 封面列（首列）。跳动音符已内嵌进封面 cell，仅当前播放行显示，
+    # 所以不再需要单独的指示器列。
+    column_view.append_column(cover_col)
 
     if compact_cols is not None:
-        for i, (title, prop, expand, sort_key) in enumerate(compact_cols):
+        for (title, prop, expand, sort_key) in compact_cols:
             _append_text_column(title, prop, expand, sort_key, sortable=False)
-            if i == 1:
-                _append_indicator_column()
-        if len(compact_cols) < 2:
-            _append_indicator_column()
     else:
         _append_text_column(_("歌名"), "title", True, "title", sortable=_sort_on)
         _append_text_column(_("歌手"), "artist", False, "artist", sortable=_sort_on)
-        _append_indicator_column()
         _append_text_column(_("格式"), "format_ext", False, "format_ext", width=90, sortable=_sort_on)
         _append_text_column(_("采样率"), "sample_rate_label", False, "sample_rate", numeric=True, width=100, sortable=_sort_on)
 

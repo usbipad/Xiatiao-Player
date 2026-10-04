@@ -993,7 +993,10 @@ class NowPlayingPage(Gtk.Overlay):
         self._time_right.set_text(_fmt(seconds))
 
     def reset_position(self) -> None:
-        """切歌时重置进度显示，避免沿用上一首的位置或卡住 seeking。"""
+        """切歌时重置进度显示，避免沿用上一首的位置或卡住 seeking。
+
+        旧曲目的 position 事件由后端 play_gen 过滤，无需额外冻结。
+        """
         self._progress.reset()
         self._time_left.set_text("0:00")
 
