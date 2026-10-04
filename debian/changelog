@@ -1,3 +1,12 @@
+xiatiao-player (1.0.5) unstable; urgency=medium
+
+  * 播放代次(gen)防进度回跳：切歌/切音质后旧 position 事件不再拉回进度。
+  * 在线歌音质徽章修复（.view 端点不再误判为非无损）。
+  * 在线歌单加载健壮性（大歌单放宽超时 + 失败提示）。
+  * 打包：构建前清 target，强制重编 Rust 后端。
+
+ -- xiatiao <xiatiao@example.com>  Sun, 04 Oct 2026 22:30:00 +0800
+
 xiatiao-player (1.0.4) unstable; urgency=medium
 
   * DLNA 投送：播放结束后按播放列表（含循环/随机）自动下一首。
