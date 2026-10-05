@@ -1984,6 +1984,11 @@ class MainWindow(Adw.ApplicationWindow):
             pass
         # 当前曲目为在线歌且在播 → 用新 URL 续播：
         # 记录当前进度，重载新 URL 后 seek 回原位置，避免跳回开头。
+        # 当前曲目为在线歌且在播 → 按模式处理：
+        #   本地模式：用新 URL 本机续播（记录进度，重载后 seek 回原位置）。
+        #   投送模式：**本机不播**，把新音质 URL 重新推给远端设备并 seek 续播。
+        #     否则本机播新音质 + 远端放旧音质 → 双份声音，且本地/远端两路
+        #     进度同时更新进度条 → 进度条左右抽搐。
         try:
             if (cur is not None
                     and getattr(cur, "source_type", "") == "subsonic"
@@ -1993,21 +1998,25 @@ class MainWindow(Adw.ApplicationWindow):
                     pos = float(self.player.position() or 0.0)
                 except Exception:
                     pos = 0.0
-                url = getattr(cur, "stream_url", "") or ""
-                # 仅在确实有 URL 时续播（避免中断）
-                if url:
-                    # 后端未连接时 play_file 返回 False 并已发出明确错误，
-                    # 此时不能谎报「已无缝切换」。
-                    # 声明期望位置 = 当前进度：过滤重载瞬间后端归零的位置，
-                    # 进度条停在原位不跳；seek 回到 pos 后达成即恢复跟随。
-                    try:
-                        self.player.expect_position(pos)
-                    except Exception as exc:
-                        log.debug("expect_position 失败: %s", exc)
-                    if self.player.play_file(url):
-                        if pos > 0.5:
-                            # 稍等新流就绪再 seek 到原位置
-                            GLib.timeout_add(300, lambda _p=pos: (self.player.seek_seconds(_p), False)[1])
+                if self._is_casting():
+                    # 投送模式：重推远端新音质（本机不出声，从头播）。
+                    self._recact_quality_to_cast(cur)
+                else:
+                    url = getattr(cur, "stream_url", "") or ""
+                    # 仅在确实有 URL 时续播（避免中断）
+                    if url:
+                        # 后端未连接时 play_file 返回 False 并已发出明确错误，
+                        # 此时不能谎报「已无缝切换」。
+                        # 声明期望位置 = 当前进度：过滤重载瞬间后端归零的位置，
+                        # 进度条停在原位不跳；seek 回到 pos 后达成即恢复跟随。
+                        try:
+                            self.player.expect_position(pos)
+                        except Exception as exc:
+                            log.debug("expect_position 失败: %s", exc)
+                        if self.player.play_file(url):
+                            if pos > 0.5:
+                                # 稍等新流就绪再 seek 到原位置
+                                GLib.timeout_add(300, lambda _p=pos: (self.player.seek_seconds(_p), False)[1])
         except Exception as exc:
             log.debug("音质无缝续播失败: %s", exc)
         self._toast(_("音质已切换为 {name}").format(name=name))
@@ -3207,6 +3216,34 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             log.debug("DLNA 投送切歌失败", exc_info=True)
 
+    def _recact_quality_to_cast(self, track) -> None:
+        """投送模式切音质：把新音质 URL 重推给远端设备，**从头播放**。
+
+        本机不出声（保持投送语义），避免「本地+远端双播」与进度条打架。
+
+        切音质 = 重新加载，直接从头播最简单可靠：不再做「查远端位置 +
+        延迟 seek」——那依赖远端 get_position 的准确性与 seek 时序，易出现
+        位置偏差（如实际 58s 却跳到 49s/27s）。SetAVTransportURI 本身
+        即从 0 开始，故 push 后无需任何 seek。
+        """
+        fp = (getattr(track, "stream_url", "")
+              or getattr(track, "filepath", "")) or ""
+        if not fp:
+            return
+        try:
+            from core.dlna_push import get_dlna_pusher
+            pusher = get_dlna_pusher()
+            if pusher.current_device() is None:
+                return
+            was_playing = bool(getattr(self, "_dlna_remote_playing", True))
+            self._cast_ended_handled = False
+            pusher.push(fp, getattr(track, "title", "") or "",
+                        getattr(track, "artist", "") or "")
+            if not was_playing:
+                pusher.pause()
+        except Exception:
+            log.debug("投送切音质重推失败", exc_info=True)
+
     def _update_now_playing_ui(self, track) -> None:
         """同步两侧 UI 的曲目信息（轻量、立即响应）。"""
         try:
@@ -3624,7 +3661,16 @@ class MainWindow(Adw.ApplicationWindow):
         if self._is_casting():
             try:
                 from core.dlna_push import get_dlna_pusher
-                get_dlna_pusher().seek(seconds)
+                pusher = get_dlna_pusher()
+                pusher.seek(seconds)
+                # seek 后远端会（继续/开始）播放。统一把本机意图与按钮
+                # 同步为「播放中」，避免按钮仍显示暂停与实际不符。
+                self._dlna_remote_playing = True
+                try:
+                    self.player_panel.set_playing(True)
+                    self.now_playing.set_playing(True)
+                except Exception:
+                    pass
                 # 远端进度无法实时回读，本地进度条先跳到目标位置。
                 self.player_panel.set_position(seconds)
                 self.now_playing.set_position(seconds)
@@ -4614,6 +4660,11 @@ class MainWindow(Adw.ApplicationWindow):
             pass
 
     def _on_position_update(self, _player, seconds: float) -> None:
+        # 投送模式：本机后端已 stop，进度条由远端轮询（_apply_cast_position）
+        # 驱动。此处忽略本地 position——否则本机若仍有余留位置事件，会与
+        # 远端进度交替覆盖，导致进度条左右抽搐。
+        if self._is_casting():
+            return
         # 位置信号可能很密集；节流到约 30fps，避免 SeekBar 反复重绘、
         # 歌词高亮/缓动滚动被高频触发而占满主线程。
         import time as _time
