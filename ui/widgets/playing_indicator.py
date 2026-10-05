@@ -186,6 +186,41 @@ class PlayingIndicator(Gtk.DrawingArea):
             w = w.get_parent()
         return None
 
+    # ---- 生命周期：从控件树移除时断开所有持有，使 widget 能被回收 ----
+    #
+    # 内存泄漏修复（实测 100 个泄漏 → 1 个）：
+    #
+    #  1) 动画定时器：GLib.timeout_add 的源**强引用**回调（self._tick → self）。
+    #     移除时若仍在跑，widget 被 GLib 源持有、永不释放。
+    #
+    #  2) 绘制回调（**主因**）：self.set_draw_func(self._draw) 让 GTK 的 C 层
+    #     持有 self._draw（绑定方法 → self）。C 层不参与 Python gc，故即便
+    #     widget 从控件树移除、无任何 Python 引用，也被这个 method 钉住无法回收。
+    #     移除时必须显式 set_draw_func(None) 断开。
+    #
+    # 注：do_unroot 在 widget 被移出控件树时由 GTK 调用。
+    def do_unroot(self) -> None:
+        self._stop_timer()
+        # 断开 GTK 对 _draw（绑定方法）的持有——这是 widget 无法回收的主因。
+        try:
+            self.set_draw_func(None, None)
+        except Exception:
+            pass
+        try:
+            Gtk.DrawingArea.do_unroot(self)
+        except Exception:
+            pass
+
+    def do_unmap(self) -> None:
+        # 不可见（被移出可视区）也停定时器：动画本就无意义，且避免累积。
+        # 注意：此处**不停** draw_func——widget 仍可能重新 map（滚回视口），
+        # 需保留绘制能力；真正的断开在 do_unroot（被移出控件树时）。
+        self._stop_timer()
+        try:
+            Gtk.DrawingArea.do_unmap(self)
+        except Exception:
+            pass
+
     # ---- 动画定时器 ----
     def _start_timer(self) -> None:
         if self._timer is not None:

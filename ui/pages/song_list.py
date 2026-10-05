@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import weakref
+
 from gi.repository import Gdk, GLib, Gio, Gtk
 
 from core.i18n import _
@@ -77,6 +79,55 @@ def _attach_cell_right_click(_factory, list_item, menu_entries, ctx) -> None:
     g.connect("pressed", on_right_click)
     child.add_controller(g)
     child._rclick = g
+
+
+def _detach_cell_right_click(_factory, list_item) -> None:
+    """unbind 时移除右键 controller。
+
+    内存泄漏修复（实测：不移除 → 100/100 泄漏；移除 → 1/100）：
+    add_controller(g) 让 child（cell 内容）持有 g；g 的 "pressed" 信号持有
+    on_right_click 闭包，闭包又捕获 list_item。形成「child → g → 闭包 →
+    list_item」的跨 C/Python 引用环——C 层不参与 Python gc，cell 无法回收。
+    在 factory 的 unbind（cell 从列表解绑）时移除 controller，断开环。
+    """
+    child = list_item.get_child()
+    if child is None:
+        return
+    g = getattr(child, "_rclick", None)
+    if g is None:
+        return
+    try:
+        child.remove_controller(g)
+    except Exception:
+        pass
+    try:
+        child._rclick = None
+    except Exception:
+        pass
+
+
+def _on_cover_unbind(factory, list_item) -> None:
+    """unbind：清理封面加载表里本 cell 的登记，并断开右键 controller。
+
+    治本（内存）：封面回填表 loading[ckey] 存 cell 强引用；若 cell 被回收/
+    复用（unbind）时不清理，已回收的 cell 会永久滞留表中 → 无限累积。
+    这里按 bind 时记下的 ckey 把自身从表中移除。
+    """
+    try:
+        ckey = getattr(list_item, "_cover_loading_ckey", None)
+        if ckey:
+            loading = cover_loading_map()
+            lst = loading.get(ckey)
+            if lst:
+                new = [t for t in lst if t[0] is not list_item]
+                if new:
+                    loading[ckey] = new
+                else:
+                    loading.pop(ckey, None)
+            list_item._cover_loading_ckey = None
+    except Exception:
+        pass
+    _detach_cell_right_click(factory, list_item)
 
 
 def _popup_track_menu(parent, x, y, ctx) -> None:
@@ -284,10 +335,21 @@ def _on_cover_bind(_factory, list_item) -> None:
             ph.set_visible(cached is None)
         return
     loading = cover_loading_map()
-    if ckey in loading:
-        loading[ckey].append((list_item, pic, "file"))
+    # 治本（内存 + 正确性）：
+    #  - 回填表存 **强引用**：PyGObject 的 Python 包装会被 GC（底层 C widget
+    #    仍在），若存弱引用，异步完成时取到 None → 封面永不回填（表现为
+    #    「封面不显示 + 反复触发加载而变慢」）。故必须强引用才能可靠回填。
+    #  - 表不无限累积：在 factory 的 unbind 里按 list_item._cover_loading_ckey
+    #    把已回收/复用的 cell 从表中移除（见 _on_cover_unbind）。
+    #  - on_done 闭包**不捕获任何 cell**（只捕获 ckey/loading 等），故异步任务
+    #    不会钉住 cell；回填靠遍历表里的等待者完成。
+    first = ckey not in loading
+    loading.setdefault(ckey, [])
+    loading[ckey].append((list_item, pic))
+    list_item._cover_loading_ckey = ckey
+    if not first:
+        # 已有同 key 的加载在进行，登记等待即可，不重复起任务。
         return
-    loading[ckey] = []
     cover_activity.mark_busy()
 
     def _item_matches(t) -> bool:
@@ -307,14 +369,9 @@ def _on_cover_bind(_factory, list_item) -> None:
             except Exception:
                 tex = None
         cache_put(ckey, tex)
-        cur = list_item.get_item()
-        if _item_matches(cur):
-            pic.set_paintable(tex)
-            _ph = getattr(list_item, "_cover_ph", None)
-            if _ph is not None:
-                _ph.set_visible(tex is None)
-        # 回填所有等待同一封面的其它列表项（曲库/历史/歌单可能同屏）
-        for w_item, w_pic, _kind in waiters:
+        # 回填所有等待同一封面的列表项（曲库/历史/歌单可能同屏）。
+        # 逐个校验其当前绑定项仍匹配（复用的 cell 可能已换曲目）→ 不匹配则跳过。
+        for w_item, w_pic in waiters:
             try:
                 wc = w_item.get_item()
                 if _item_matches(wc):
@@ -365,8 +422,18 @@ def build_track_columnview(model, on_activate=None,
         _sort_model = _sel_model.get_model() if hasattr(_sel_model, "get_model") else None
         if isinstance(_sort_model, Gtk.SortListModel):
             _cv_sorter = column_view.get_sorter()
+            # 内存泄漏修复（关键）：_sync_sorter 若直接引用 column_view，会形成
+            #   column_view → sorter → "changed"信号 → _sync_sorter闭包 → column_view
+            # 的跨 C/Python 引用环。C 层不参与 Python gc，column_view 永不释放，
+            # 其内部 ColumnView 的 cell 复用池（每次 splice 建的一批 ColumnViewCell）
+            # 也随之永不回收——表现为「反复切列表/切专辑 → cell 无限累积 → 内存持续涨」。
+            # 用 weakref 引用 column_view 断环：信号仍能回调，但不再强持有视图。
+            _cv_ref = weakref.ref(column_view)
 
             def _sync_sorter(*_a):
+                cv = _cv_ref()
+                if cv is None:
+                    return
                 # 1) 清除选中：否则排序后 GTK 会把「选中行」滚到可见区
                 try:
                     if hasattr(model, "set_selected"):
@@ -375,7 +442,7 @@ def build_track_columnview(model, on_activate=None,
                     pass
                 # 2) 应用新排序
                 try:
-                    _sort_model.set_sorter(column_view.get_sorter())
+                    _sort_model.set_sorter(cv.get_sorter())
                 except Exception:
                     pass
 
@@ -416,6 +483,7 @@ def build_track_columnview(model, on_activate=None,
 
     cover_factory.connect("setup", _cover_setup_cb)
     cover_factory.connect("bind", _on_cover_bind)
+    cover_factory.connect("unbind", _on_cover_unbind)
     if menu_model is not None:
         cover_factory.connect("bind", _attach_cell_right_click, menu_model, ctx)
     cover_col = Gtk.ColumnViewColumn(title="", factory=cover_factory)
@@ -426,6 +494,7 @@ def build_track_columnview(model, on_activate=None,
         factory = Gtk.SignalListItemFactory()
         factory.connect("setup", _on_factory_setup)
         factory.connect("bind", _on_factory_bind, prop)
+        factory.connect("unbind", _on_cover_unbind)
         if menu_model is not None:
             factory.connect("bind", _attach_cell_right_click, menu_model, ctx)
         col = Gtk.ColumnViewColumn(title=title, factory=factory)

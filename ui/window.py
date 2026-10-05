@@ -34,87 +34,16 @@ from services.shortcuts import (
     parse_shortcut,
 )
 
+from .cast_controller import CastController
+from .download_dialog import DownloadController
+from .mpris_cover import write_mpris_cover
 from .now_playing import NowPlayingPage
 from .pages import LocalLibraryPage
 from .player_panel import PANEL_MIN_W, PlayerPanel
 from .settings_dialog import SettingsWindow
+from .text_utils import glib_escape, human_size
 
 log = logging.getLogger(__name__)
-
-
-def _human_size(n: float) -> str:
-    """把字节数格式化成可读大小。"""
-    try:
-        n = float(n)
-    except Exception:
-        return "—"
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
-        n /= 1024
-    return f"{n:.1f} TB"
-
-
-def _glib_escape(text: str) -> str:
-    """转义 Pango markup 特殊字符。"""
-    return (str(text).replace("&", "&amp;").replace("<", "&lt;")
-            .replace(">", "&gt;").replace("'", "&apos;").replace('"', "&quot;"))
-
-
-def _mpris_cover_cache_dir() -> str:
-    """MPRIS 封面落盘目录（XDG 缓存目录下）。"""
-    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(
-        os.path.expanduser("~"), ".cache")
-    return os.path.join(base, "xiatiao")
-
-
-def _cover_ext(image_bytes: bytes) -> str:
-    """按图片魔数判定扩展名。"""
-    if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
-        return ".png"
-    if image_bytes[:6] in (b"GIF87a", b"GIF89a"):
-        return ".gif"
-    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
-        return ".webp"
-    return ".jpg"
-
-
-def _write_mpris_cover(image_bytes: bytes, token: int) -> Optional[str]:
-    """把封面字节写成缓存文件，返回路径；失败返回 None。
-
-    关键：文件名带 token（唯一），原因有二——
-    1. 避免快速连切时旧线程覆盖新封面（即使有 token 校验，文件层面也隔离）；
-    2. mpris:artUrl 每次变化，KDE Connect / Android 端不会命中旧缓存，
-       否则固定 URL 会导致一直显示第一张封面。
-    同时清理本目录下其它过期封面文件（保留当前这张）。
-    """
-    if not image_bytes:
-        return None
-    try:
-        ext = _cover_ext(image_bytes)
-        d = _mpris_cover_cache_dir()
-        os.makedirs(d, exist_ok=True)
-        name = f"mpris_cover_{token}{ext}"
-        path = os.path.join(d, name)
-        tmp = path + ".tmp"
-        with open(tmp, "wb") as fp:
-            fp.write(image_bytes)
-        os.replace(tmp, path)
-        # 清理本目录下其它 mpris_cover_* 旧文件，避免无限堆积
-        try:
-            for fn in os.listdir(d):
-                if fn == name or not fn.startswith("mpris_cover_"):
-                    continue
-                try:
-                    os.remove(os.path.join(d, fn))
-                except OSError:
-                    pass
-        except OSError:
-            pass
-        return path
-    except OSError as exc:
-        log.debug("写入 MPRIS 封面失败: %s", exc)
-        return None
 
 
 #: 导航项：(显示名 key, 页面 key)；显示名经 _() 翻译
@@ -191,8 +120,32 @@ class MainWindow(Adw.ApplicationWindow):
         self._active_source = "local"
         self._local_fingerprint = None
         self._restoring = False
+        #: 启动恢复时记下的「上次播放位置」（秒）；供用户点播放时首次续播。
+        #: 0 表示无恢复位置（从头播）。首次播放后清零（见 _start_playback_if_needed）。
+        self._pending_restore_pos = 0.0
+        #: 待恢复位置所属曲目的 key（source_id/filepath）。仅当当前曲目匹配时，
+        #: 恢复位置才生效——防止「重开后直接点别的歌」被误从恢复处开始播。
+        self._pending_restore_key = ""
         self._dsp_yaml_timer = None
         self._pending_dsp_params = None
+        # ---- 投送控制器（DLNA 状态机，从本类抽出）----
+        self._cast = CastController(
+            get_current_track=lambda: self.playlist.current_track(),
+            player_stop=lambda: self.player.stop(),
+            ui_set_playing=self._cast_ui_set_playing,
+            ui_set_position=self._cast_ui_set_position,
+            ui_set_duration=self._cast_ui_set_duration,
+            toast=self._toast,
+            playlist_next_auto=lambda: self.playlist.next(auto=True),
+            notify_mpris=self._mpris_notify_cast,
+        )
+        # ---- 下载控制器（在线歌下载，从本类抽出）----
+        self._download = DownloadController(
+            get_current_track=lambda: self.playlist.current_track(),
+            get_provider=self._get_provider,
+            toast=self._toast,
+            parent_window=self,
+        )
         # ---- DSP 单一真相源（架构重构 S2：接线，过渡期双写）----
         # DspState 成为 dsp_params 的唯一权威；旧路径（各视图 _params +
         # _on_dsp_changed）在过渡期继续工作，DspState 并行维护。
@@ -437,10 +390,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._mpris.set_quit_callback(self._mpris_quit)
             # 投送提供者：投送模式下 MPRIS 状态/控制改走远端设备。
             self._mpris.set_cast_provider(
-                is_casting=lambda: bool(getattr(self, "_dlna_casting", False)),
-                remote_playing=lambda: bool(getattr(self, "_dlna_remote_playing", True)),
+                is_casting=self._cast.is_casting,
+                remote_playing=self._cast.is_remote_playing,
                 control=self._mpris_cast_control,
-                remote_position=lambda: float(getattr(self, "_dlna_remote_pos", 0.0) or 0.0),
+                remote_position=self._cast.get_remote_position,
             )
             _ok = self._mpris.start()
             log.info("MPRIS 启动结果: %s", _ok)
@@ -466,10 +419,10 @@ class MainWindow(Adw.ApplicationWindow):
             if action == "playpause":
                 self._on_play_pause()
             elif action == "play":
-                if not bool(getattr(self, "_dlna_remote_playing", True)):
+                if not self._cast.is_remote_playing():
                     self._on_play_pause()
             elif action == "pause":
-                if bool(getattr(self, "_dlna_remote_playing", True)):
+                if self._cast.is_remote_playing():
                     self._on_play_pause()
             elif action == "next":
                 self._on_next()
@@ -477,24 +430,16 @@ class MainWindow(Adw.ApplicationWindow):
                 self._on_prev()
             elif action == "seek":
                 # 系统媒体控件拖进度条 → 远端设备 AVTransport Seek。
-                from core.dlna_push import get_dlna_pusher
                 sec = max(0.0, float(value or 0.0))
-                get_dlna_pusher().seek(sec)
-                self._dlna_remote_pos = sec
+                self._cast.seek(sec)
+                self._cast.set_remote_position(sec)
                 try:
                     self.player_panel.set_position(sec)
                     self.now_playing.set_position(sec)
                 except Exception:
                     pass
             elif action == "stop":
-                from core.dlna_push import get_dlna_pusher
-                get_dlna_pusher().stop()
-                self._dlna_remote_playing = False
-                try:
-                    self.player_panel.set_playing(False)
-                    self.now_playing.set_playing(False)
-                except Exception:
-                    pass
+                self._cast.stop_remote()
         except Exception:
             log.debug("[投送] MPRIS 控制 %s 失败", action, exc_info=True)
 
@@ -1854,14 +1799,6 @@ class MainWindow(Adw.ApplicationWindow):
 
         run_net_async(work=_work, on_done=_done, on_error=_err)
 
-    def _on_online_search_track(self, track) -> None:
-        """点在线搜索结果：设为播放队列（当前搜索结果）并播放。"""
-        try:
-            lib = self.online_page.result_page._all_tracks or [track]
-        except Exception:
-            lib = [track]
-        self._play_from_list(track, lib)
-
     def _on_online_library_load(self, offset: int, count: int) -> None:
         """在线曲库分页加载：search3 空查询，offset/count 分页。"""
         from core.tasks import run_async
@@ -1883,109 +1820,21 @@ class MainWindow(Adw.ApplicationWindow):
 
     @staticmethod
     def _dedupe_lyrics(items: list) -> list:
-        """去掉「连续重复」的歌词行（与后端 xiatiao-api 的 dedupTimed 一致）。
-
-        后端已把逐字平铺的歌词合并成句、并做连续去重；本函数只做同样的
-        「相邻相同才合并」兜底。**绝不跨时间全局去重**——否则会把正常
-        重复的副歌（Chorus）删掉，导致歌曲后半段无歌词（如《相思》副歌
-        重复三次，全局去重会删掉第二、三次）。
-        """
-        out = []
-        last_key = None
-        for sec, text in (items or []):
-            key = (text or "").strip()
-            if key == last_key:
-                # 与上一行完全相同（逐字/逐句平铺特征）→ 跳过
-                continue
-            last_key = key
-            out.append((sec, text))
-        return out
+        """兼容入口：委托 services.online_lyrics.dedupe_lyrics。"""
+        from services.online_lyrics import dedupe_lyrics
+        return dedupe_lyrics(items)
 
     def _load_online_lyrics(self, track) -> list:
-        """在线歌歌词：调 Subsonic getLyricsBySongId，转成 [(秒, 文本)]。
+        """在线歌歌词（委托 services.online_lyrics.load_online_lyrics）。
 
-        在后台线程调用（网络请求，不碰 UI）。失败返回 []。
-        兼容：结构化歌词（line[].value/start）；无结构化则回退纯文本歌词。
+        纯逻辑已抽到 services/online_lyrics.py：网络请求 + 结构化/回退解析
+        + 连续去重。此处只注入 provider。
         """
-        try:
-            sid = getattr(track, "source_id", "") or ""
-            if not sid or getattr(track, "source_type", "") != "subsonic":
-                return []
-            p = self._get_provider("subsonic")
-            if p is None:
-                return []
-            from models import parse_lrc_text
-            # 优先结构化歌词
-            try:
-                body = p.get_lyrics_by_song_id(sid)
-                node = body.get("lyricsList")
-                items = []
-                raw_lrc_chunks = []
-                if isinstance(node, dict):
-                    sl = node.get("structuredLyrics")
-                    if isinstance(sl, dict):
-                        sl = [sl]
-                    if isinstance(sl, list):
-                        for one in sl:
-                            lines = one.get("line") if isinstance(one, dict) else None
-                            if isinstance(lines, dict):
-                                lines = [lines]
-                            if not isinstance(lines, list):
-                                continue
-                            for ln in lines:
-                                if not isinstance(ln, dict):
-                                    continue
-                                val = str(ln.get("value", "") or "")
-                                # 兼容：value 里若自带 [mm:ss] 时间标签，
-                                # 交给 parse_lrc_text 解析，忽略可能单位不一致的 start。
-                                if "[" in val and "]" in val:
-                                    raw_lrc_chunks.append(val)
-                                    continue
-                                start = ln.get("start", 0) or 0
-                                try:
-                                    sec = float(start)
-                                except Exception:
-                                    sec = 0.0
-                                # OpenSubsonic 规定 start 为**毫秒**，直接归一。
-                                # （旧实现用「>10000 才算毫秒」的启发式，会把
-                                #  6.12s=6120ms 这类 <10000 的毫秒值误当秒，
-                                #  导致开头几句时间轴错乱、歌词不动。）
-                                sec = sec / 1000.0
-                                items.append((sec, val))
-                # 结构化里含 LRC 原文 → 统一解析后合并
-                if raw_lrc_chunks:
-                    parsed = parse_lrc_text("\n".join(raw_lrc_chunks))
-                    if parsed:
-                        items = parsed
-                if items:
-                    return self._dedupe_lyrics(items)
-            except Exception:
-                pass
-            # 回退：传统 getLyrics。
-            # 后端常返回带 [mm:ss.xx] 时间标签的 LRC 文本，
-            # 必须用 parse_lrc_text 解析时间轴；无标签时它按纯文本处理。
-            try:
-                body = p.get_lyrics(
-                    artist=getattr(track, "artist", "") or "",
-                    title=getattr(track, "title", "") or "")
-                lyr = body.get("lyrics")
-                if isinstance(lyr, dict):
-                    lyr = lyr.get("value", "") or ""
-                if isinstance(lyr, str) and lyr.strip():
-                    parsed = parse_lrc_text(lyr)
-                    if parsed:
-                        return self._dedupe_lyrics(parsed)
-            except Exception:
-                pass
-        except Exception as exc:
-            log.debug("在线歌词加载失败: %s", exc)
-        return []
+        from services.online_lyrics import load_online_lyrics
+        return load_online_lyrics(track, self._get_provider("subsonic"))
 
-    #: 音质档位 key → 显示名（与 player_panel._QUALITY_LABELS 一致）
-    _QUALITY_NAMES = {
-        "standard": "标准", "high": "高品", "lossless": "无损",
-        "hires": "Hi-Res", "master": "母带",
-    }
+    #: 音质档位 key → 显示名（单一数据源：core.quality）。
+    from core.quality import ONLINE_QUALITY_SHORT as _QUALITY_NAMES
 
     def _on_quality_changed(self, key: str) -> None:
         """音质档位切换：重建在线歌 stream_url + 刷新当前曲目 + 提示。
@@ -2072,191 +1921,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._toast(_("音质已切换为 {name}").format(name=name))
 
     def _on_download_current(self) -> None:
-        """下载当前播放曲目到本地（在线歌）：弹对话框选音质/目录/文件名。"""
-        track = self.playlist.current_track()
-        if track is None:
-            self._toast(_("当前没有播放曲目"))
-            return
-        if track.is_local:
-            self._toast(_("本地曲目无需下载"))
-            return
-        if getattr(track, "source_type", "") != "subsonic":
-            self._toast(_("仅支持下载在线曲目"))
-            return
-        sid = getattr(track, "source_id", "") or ""
-        if not sid:
-            self._toast(_("该曲目无下载地址"))
-            return
-        self._show_download_dialog(track)
-
-    def _show_download_dialog(self, track) -> None:
-        """下载对话框：音质（默认跟当前播放档位）/ 目录 / 文件名。"""
-        import os as _os
-        from core.downloader import QUALITY_LABELS
-
-        # 默认音质：跟当前播放档位（运行时档位优先，回落到配置）。
-        cur_q = "lossless"
-        try:
-            from providers.subsonic import _RUNTIME_QUALITY
-            cur_q = _RUNTIME_QUALITY or get_config().get_str("online_quality", "lossless")
-        except Exception:
-            pass
-        cur_q = str(cur_q or "lossless").lower()
-
-        # 默认目录：配置 download_dir，空则 ~/下载。
-        default_dir = get_config().get_str("download_dir", "").strip()
-        if not default_dir:
-            default_dir = _os.path.join(_os.path.expanduser("~"), "下载")
-        default_name = self._safe_filename(f"{track.artist} - {track.title}")
-
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        box.set_margin_top(4)
-        box.set_margin_bottom(4)
-
-        # 音质档位：仅私有协议后端可选。
-        # 标准 Subsonic 不按档位转码——下载原文件，故不显示音质选项。
-        _is_private = bool(getattr(track, "is_private_backend", False))
-        keys = [k for k, _ in QUALITY_LABELS]
-        q_dropdown = None
-        if _is_private:
-            qrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-            qrow.append(Gtk.Label(label=_("音质"), xalign=0))
-            q_dropdown = Gtk.DropDown.new_from_strings([label for _, label in QUALITY_LABELS])
-            q_dropdown.set_hexpand(True)
-            if cur_q in keys:
-                q_dropdown.set_selected(keys.index(cur_q))
-            qrow.append(q_dropdown)
-            box.append(qrow)
-
-        # 目录行
-        drow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        drow.append(Gtk.Label(label=_("目录"), xalign=0))
-        dir_entry = Gtk.Entry()
-        dir_entry.set_text(default_dir)
-        dir_entry.set_hexpand(True)
-        drow.append(dir_entry)
-        browse_btn = Gtk.Button(label=_("浏览"))
-        drow.append(browse_btn)
-        box.append(drow)
-
-        # 文件名
-        nrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        nrow.append(Gtk.Label(label=_("文件名"), xalign=0))
-        name_entry = Gtk.Entry()
-        name_entry.set_text(default_name)
-        name_entry.set_hexpand(True)
-        nrow.append(name_entry)
-        box.append(nrow)
-
-        dlg = Adw.MessageDialog(
-            transient_for=self,
-            heading=_("下载"),
-            body=(_("选择音质与保存位置") if _is_private
-                  else _("选择保存位置")),
-        )
-        dlg.set_extra_child(box)
-        dlg.add_response("cancel", _("取消"))
-        dlg.add_response("ok", _("开始下载"))
-        dlg.set_default_response("ok")
-        dlg.set_close_response("cancel")
-
-        def _on_browse(_b):
-            fd = Gtk.FileDialog()
-            fd.set_title(_("选择下载目录"))
-            fd.set_initial_folder(Gio.File.new_for_path(
-                dir_entry.get_text().strip() or _os.path.expanduser("~")))
-
-            def _picked(d, result):
-                try:
-                    folder = d.select_folder_finish(result)
-                except Exception:
-                    return
-                if folder is not None and folder.get_path():
-                    dir_entry.set_text(folder.get_path())
-
-            fd.select_folder(self, None, _picked)
-
-        browse_btn.connect("clicked", _on_browse)
-
-        def _on_resp(_dlg, resp):
-            if resp != "ok":
-                return
-            quality = cur_q
-            if q_dropdown is not None:
-                idx = q_dropdown.get_selected()
-                quality = keys[idx] if 0 <= idx < len(keys) else cur_q
-            dest = dir_entry.get_text().strip() or default_dir
-            name = name_entry.get_text().strip() or default_name
-            # 记住目录（下次默认）。
-            try:
-                get_config().set_str("download_dir", dest)
-            except Exception:
-                pass
-            self._start_download(track, quality, dest, name)
-
-        dlg.connect("response", _on_resp)
-        dlg.present()
-
-    def _start_download(self, track, quality: str, dest_dir: str,
-                        base_name: str) -> None:
-        """执行下载：音频 + 封面 / 歌词 / 标签内嵌（元数据失败仅警告）。"""
-        from core.tasks import run_async
-        from core import downloader as _dl
-
-        sid = getattr(track, "source_id", "") or ""
-        self._toast(_("开始下载：{name}").format(name=base_name))
-
-        def _work():
-            p = self._get_provider("subsonic")
-            if p is None:
-                raise RuntimeError("在线音源不可用")
-            # 私有协议后端才按所选档位下载；
-            # 标准 Subsonic 不按档位转码——下载原文件直传（maxBitRate=0）。
-            _is_private = bool(getattr(track, "is_private_backend", False))
-            if _is_private:
-                url = p.download_url(sid, quality)
-            else:
-                url = p.stream_url(sid, max_bit_rate=0)
-            path = _dl.download_audio(url, dest_dir, base_name)
-            # 元数据（尽力而为，失败不影响音频）。
-            meta_err = ""
-            try:
-                cover = _dl.fetch_bytes(getattr(track, "cover_url", "") or "")
-                lyrics = p.best_lyrics_lrc(
-                    sid, getattr(track, "artist", "") or "",
-                    getattr(track, "title", "") or "")
-                _dl.write_metadata(
-                    path,
-                    title=getattr(track, "title", "") or "",
-                    artist=getattr(track, "artist", "") or "",
-                    album=getattr(track, "album", "") or "",
-                    cover_bytes=cover,
-                    lyrics_lrc=lyrics,
-                )
-            except Exception as exc:
-                meta_err = str(exc)
-                log.info("写入元数据失败（不影响音频）: %s", exc)
-            return path, meta_err
-
-        def _done(result):
-            path, meta_err = result
-            if meta_err:
-                self._toast(_("下载完成（元数据未写入）：{path}").format(path=path))
-            else:
-                self._toast(_("下载完成：{path}").format(path=path))
-
-        def _err(exc):
-            log.warning("下载失败: %s", exc)
-            self._toast(_("下载失败：{err}").format(err=exc))
-
-        run_async(work=_work, on_done=_done, on_error=_err)
-
-    @staticmethod
-    def _safe_filename(name: str) -> str:
-        """把歌名里的非法文件名字符替换掉。"""
-        import re as _re
-        s = _re.sub(r'[\\/:*?"<>|]', "_", name or "")
-        return s.strip() or "download"
+        """下载当前播放曲目（委托 DownloadController）。"""
+        self._download.download_current()
 
     def _on_online_playlist_click(self, pl) -> None:
         """点击在线歌单卡片：异步拉歌曲，填详情页并切换过去。"""
@@ -3098,137 +2764,17 @@ class MainWindow(Adw.ApplicationWindow):
                 on_cast_stopped=self._on_cast_stopped,
             )
             dlg.present(self)
-            self._cast_dlg = dlg
+            self._cast.dialog = dlg
         except Exception:
             log.debug("打开投送对话框失败", exc_info=True)
 
     def _on_cast_started(self) -> None:
         """投送成功：进入投送模式，播放控制改道到远端设备。"""
-        self._dlna_casting = True
-        self._dlna_remote_playing = True
-        # 本机若正在播放，停掉（B1：本机不放）。
-        try:
-            self.player.stop()
-        except Exception:
-            pass
-        try:
-            self.player_panel.set_playing(True)
-            self.now_playing.set_playing(True)
-        except Exception:
-            pass
-        self._start_cast_poll()
-        self._toast("已进入投送模式：播放控制将发送到设备")
+        self._cast.on_started()
 
     def _on_cast_stopped(self) -> None:
         """停止投送：退出投送模式，控制恢复本机。"""
-        self._dlna_casting = False
-        self._dlna_remote_playing = False
-        self._stop_cast_poll()
-        try:
-            self.player_panel.set_playing(False)
-            self.now_playing.set_playing(False)
-        except Exception:
-            pass
-        self._toast("已退出投送模式")
-
-    def _start_cast_poll(self) -> None:
-        """启动投送位置轮询：每秒查询远端播放位置，更新进度条。"""
-        self._stop_cast_poll()
-        # 单独后台线程查询（SOAP 是阻塞网络调用），结果经 GLib.idle_add 回主线程。
-        import threading
-        stop_flag = threading.Event()
-        self._cast_poll_stop = stop_flag
-
-        def _loop():
-            while not stop_flag.is_set():
-                if not getattr(self, "_dlna_casting", False):
-                    break
-                try:
-                    from core.dlna_push import get_dlna_pusher
-                    pusher = get_dlna_pusher()
-                    # 仅同步进度；播放/暂停状态以本机操作为准，
-                    # 不让轮询覆盖（否则设备状态上报延迟会与本机意图
-                    # 打架，导致「点播放却发了暂停」的错乱）。
-                    info = pusher.get_position()
-                    if info:
-                        GLib.idle_add(self._apply_cast_position, info)
-                except Exception:
-                    pass
-                stop_flag.wait(1.0)
-
-        threading.Thread(target=_loop, daemon=True).start()
-
-    def _stop_cast_poll(self) -> None:
-        flag = getattr(self, "_cast_poll_stop", None)
-        if flag is not None:
-            try:
-                flag.set()
-            except Exception:
-                pass
-        self._cast_poll_stop = None
-
-    def _apply_cast_position(self, info: dict) -> bool:
-        """主线程：用远端查询到的位置/时长更新进度条。"""
-        if not getattr(self, "_dlna_casting", False):
-            return False
-        try:
-            pos = float(info.get("position", 0.0))
-            dur = float(info.get("duration", 0.0))
-        except Exception:
-            return False
-        # 记录远端位置：供 MPRIS 进度上报使用（投送时本机 player 不动）。
-        self._dlna_remote_pos = pos
-        try:
-            mpris = getattr(self, "_mpris", None)
-            if mpris is not None:
-                mpris.notify_cast_changed()
-        except Exception:
-            pass
-        # 标准 DLNA：进度直接采用设备上报的位置/时长（渲染器是权威）。
-        try:
-            self.player_panel.set_position(pos)
-            self.now_playing.set_position(pos)
-            if dur > 0:
-                self.player_panel.set_duration(dur)
-                self.now_playing.set_duration(dur)
-        except Exception:
-            pass
-        # 自动下一首：投送模式下本机后端不在播放，收不到 end-of-stream，
-        # 只能靠轮询到的远端位置判断是否播完。留 1.5s 容差（轮询 1s + 网络
-        # 延迟），并用标志防重复触发；dur<=0（设备未上报时长）时不判断。
-        if dur > 0 and pos >= dur - 1.5:
-            if not getattr(self, "_cast_ended_handled", False):
-                self._cast_ended_handled = True
-                GLib.idle_add(self._on_cast_track_ended)
-        return False
-
-    def _on_cast_track_ended(self) -> bool:
-        """投送曲目播完：按播放列表推进到下一首（投送模式）。"""
-        if not getattr(self, "_dlna_casting", False):
-            return False
-        try:
-            before = self.playlist.current_track()
-            nxt = self.playlist.next(auto=True)
-            if nxt is None:
-                # 播放列表结束：停止远端设备。
-                from core.dlna_push import get_dlna_pusher
-                get_dlna_pusher().stop()
-                self._dlna_remote_playing = False
-                try:
-                    self.player_panel.set_playing(False)
-                    self.now_playing.set_playing(False)
-                except Exception:
-                    pass
-            elif nxt is before:
-                # 单曲循环：曲目未变，_on_playlist_current_changed 不会触发，
-                # 这里手动重推同一首（并复位「已播完」标志）。
-                self._cast_track(nxt)
-        except Exception:
-            log.debug("投送自动下一首失败", exc_info=True)
-        return False
-
-    # 注：不再用轮询同步播放/暂停状态（曾导致本机意图被设备延迟覆盖）。
-    # 播放/暂停/切歌状态一律由本机操作权威设置；轮询只负责进度。
+        self._cast.on_stopped()
 
     def _on_playlist_current_changed(self, _playlist, index: int) -> None:
         """当前曲目变化：协调 UI 更新、历史记录、播放启动、资产加载。"""
@@ -3247,64 +2793,12 @@ class MainWindow(Adw.ApplicationWindow):
         self._dispatch_track_assets(track, restoring)
 
     def _cast_track(self, track) -> None:
-        """把指定曲目推送到当前选中的 DLNA 设备。
-
-        保持当前播放/暂停状态：若处于暂停态，推完 URI 后立即暂停，
-        不强制出声；并同步播放按钮状态。
-        """
-        fp = (getattr(track, "filepath", "")
-              or getattr(track, "stream_url", "")) or ""
-        if not fp:
-            return
-        was_playing = bool(getattr(self, "_dlna_remote_playing", True))
-        # 切歌：清除「已播完」标志，让新曲目的轮询重新可触发自动下一首。
-        self._cast_ended_handled = False
-        try:
-            from core.dlna_push import get_dlna_pusher
-            pusher = get_dlna_pusher()
-            if pusher.current_device() is None:
-                return
-            # push() 内含 Play；暂停态时随后立即 Pause 收回。
-            pusher.push(fp, getattr(track, "title", "") or "",
-                        getattr(track, "artist", "") or "")
-            if not was_playing:
-                pusher.pause()
-            # 同步按钮：保持切歌前的播放/暂停状态。
-            try:
-                self.player_panel.set_playing(was_playing)
-                self.now_playing.set_playing(was_playing)
-            except Exception:
-                pass
-        except Exception:
-            log.debug("DLNA 投送切歌失败", exc_info=True)
+        """把指定曲目推送到当前选中的 DLNA 设备（委托 CastController）。"""
+        self._cast.push_track(track)
 
     def _recact_quality_to_cast(self, track) -> None:
-        """投送模式切音质：把新音质 URL 重推给远端设备，**从头播放**。
-
-        本机不出声（保持投送语义），避免「本地+远端双播」与进度条打架。
-
-        切音质 = 重新加载，直接从头播最简单可靠：不再做「查远端位置 +
-        延迟 seek」——那依赖远端 get_position 的准确性与 seek 时序，易出现
-        位置偏差（如实际 58s 却跳到 49s/27s）。SetAVTransportURI 本身
-        即从 0 开始，故 push 后无需任何 seek。
-        """
-        fp = (getattr(track, "stream_url", "")
-              or getattr(track, "filepath", "")) or ""
-        if not fp:
-            return
-        try:
-            from core.dlna_push import get_dlna_pusher
-            pusher = get_dlna_pusher()
-            if pusher.current_device() is None:
-                return
-            was_playing = bool(getattr(self, "_dlna_remote_playing", True))
-            self._cast_ended_handled = False
-            pusher.push(fp, getattr(track, "title", "") or "",
-                        getattr(track, "artist", "") or "")
-            if not was_playing:
-                pusher.pause()
-        except Exception:
-            log.debug("投送切音质重推失败", exc_info=True)
+        """投送模式切音质：把新音质 URL 重推给远端设备（委托 CastController）。"""
+        self._cast.re_push_for_quality(track)
 
     def _update_now_playing_ui(self, track) -> None:
         """同步两侧 UI 的曲目信息（轻量、立即响应）。"""
@@ -3313,8 +2807,16 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         try:
-            self.player_panel.reset_position()
-            self.now_playing.reset_position()
+            # 恢复后首次播放：不清零进度条，改为显示待恢复位置，
+            # 避免「点播放 → 进度条跳回 0 → 再跳回恢复处」的视觉抖动。
+            # 仅当曲目匹配恢复目标时才用（见 _resume_pos_for）。
+            _resume = self._resume_pos_for(track)
+            if _resume > 0.5:
+                self.player_panel.set_position(_resume)
+                self.now_playing.set_position(_resume)
+            else:
+                self.player_panel.reset_position()
+                self.now_playing.reset_position()
             self.player_panel.set_track_info(track.title, track.artist)
             self._update_panel_format(track)
             self.now_playing.set_track(track.title, track.artist)
@@ -3357,6 +2859,25 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
 
+    def _resume_pos_for(self, track) -> float:
+        """取「恢复位置」——仅当 track 是恢复的目标曲目时返回其位置，否则 0。
+
+        防止「重开后直接点别的歌」被误从恢复处开始播：恢复位置带曲目 key，
+        只有当前曲目 key 匹配才生效。用后由调用方清零。
+        """
+        try:
+            pos = float(getattr(self, "_pending_restore_pos", 0.0) or 0.0)
+            if pos <= 0.5:
+                return 0.0
+            want = getattr(self, "_pending_restore_key", "") or ""
+            if not want:
+                return pos
+            got = (getattr(track, "source_id", "") or getattr(track, "filepath", "")
+                   or getattr(track, "title", "") or "")
+            return pos if got == want else 0.0
+        except Exception:
+            return 0.0
+
     def _start_playback_if_needed(self, track, restoring: bool) -> None:
         """非恢复态且曲目可播时，立即开始播放（不等封面加载）。
 
@@ -3366,13 +2887,33 @@ class MainWindow(Adw.ApplicationWindow):
             return
         if self.playlist.is_playable(track):
             url = self._play_url_for(track)
-            # 声明期望位置 0（新曲目从头）：过滤切换瞬间可能残留的旧位置，
-            # 避免进度条「回 0 再跳回上一首」。达成/超时自动解除。
+            # 首次播放若带「恢复位置」，从该处续播；否则从头。
+            # _pending_restore_pos 由 _restore_position 在启动恢复时写入，
+            # 只对「恢复后的第一次播放」且「曲目匹配」时生效（用后清零）。
+            resume_pos = self._resume_pos_for(track)
+            self._pending_restore_pos = 0.0
+            self._pending_restore_key = ""
+            # 声明期望位置：过滤切换瞬间可能残留的旧位置。
+            # - 有恢复位置：声明恢复位置（进度条停在恢复处，不跳回 0）
+            # - 无：声明 0（新曲目从头）
             try:
-                self.player.expect_position(0.0)
+                self.player.expect_position(resume_pos)
             except Exception as exc:
                 log.debug("expect_position 失败: %s", exc)
             started = self.player.play_file(url)
+            # 首次播放且有恢复位置：流加载后 seek 到恢复处。
+            # 后端 play 后流就绪需短暂时间，故延迟一小段再 seek（此时 seek 有效）。
+            if started and resume_pos > 0.5:
+                def _seek_resume(_p=resume_pos):
+                    try:
+                        self.player.seek_seconds(_p)
+                        self.player_panel.set_position(_p)
+                        self.now_playing.set_position(_p)
+                    except Exception:
+                        log.debug("恢复位置 seek 失败", exc_info=True)
+                    return False
+
+                GLib.timeout_add(300, _seek_resume)
             if not started:
                 # 后端未连接/未启动：play_file 已发出明确错误（error-occur
                 # → 提示），此处不再假装播放中，避免误导用户并避免随后
@@ -3442,24 +2983,6 @@ class MainWindow(Adw.ApplicationWindow):
             daemon=True,
             name="xiatiao-track-assets",
         ).start()
-
-    def _apply_instant_cover_placeholder(self, filepath: str) -> None:
-        """切歌瞬间：若列表封面缓存里已有这首歌的小图，先用它占位。
-
-        目的：让封面区域和歌名一样"立即"有内容，不再空等后台线程。
-        小图后续会被高清封面替换（后台线程完成后）。
-        """
-        if not filepath:
-            return
-        try:
-            from ui.pages import _cache_get, _MISS
-            tex = _cache_get(filepath)
-            if tex is _MISS or tex is None:
-                return
-            # 列表小封面（40px）先顶上，避免空白/占位符
-            self.player_panel.cover.set_cover_texture(tex)
-        except Exception:
-            pass
 
     def _load_track_assets_bg(self, token: int, filepath: str, is_local: bool,
                               track, restoring: bool, want_color: bool = False) -> None:
@@ -3592,7 +3115,7 @@ class MainWindow(Adw.ApplicationWindow):
         try:
             mpris = getattr(self, "_mpris", None)
             if mpris is not None:
-                cover_path = (_write_mpris_cover(mpris_cover_raw, token)
+                cover_path = (write_mpris_cover(mpris_cover_raw, token)
                               if mpris_cover_raw else None)
                 mpris.set_cover_path(cover_path)
         except Exception:
@@ -3602,109 +3125,75 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def _compute_replaygain(self, track):
-        """读取当前曲目的 ReplayGain 增益值（返回 float 或 None，不碰 UI/后端）。"""
-        try:
-            cfg = get_config()
-            params = cfg.get("dsp_params")
-            if not isinstance(params, dict):
-                return None
-            if not params.get("replaygain_enabled"):
-                return None
-            from models.replaygain import read_replaygain
-            mode = params.get("replaygain_mode", "track")
-            path = getattr(track, "filepath", "") or ""
-            return read_replaygain(path, mode) if path else None
-        except Exception as exc:
-            log.debug("计算 ReplayGain 失败: %s", exc)
-            return None
+        """读取当前曲目的 ReplayGain 增益值（委托 core.replaygain_apply）。"""
+        from core.replaygain_apply import read_track_gain
+        return read_track_gain(track, get_config().get("dsp_params"))
 
     def _apply_replaygain_value(self, gain) -> None:
-        """主线程：把 ReplayGain 增益下发 DSP 并持久化。
+        """应用 ReplayGain 增益（委托 core.replaygain_apply）。
 
-        修复（关键）：不再「重读 config + 直接 set_dsp」。
-        旧实现会带来竞态：切歌的 ReplayGain 是后台线程算的，回到主线程时
-        用户可能已切换总开关；此时重读 config 可能拿到旧值（enabled=false），
-        直接 set_dsp 会把刚打开的总开关打回去，且绕过统一下发（不发 YAML），
-        导致 Camilla 卷积等不恢复。
-
-        现在改为：以主窗口参数宿主 dsp_page._params 为权威当前值，
-        只改 replaygain_db，走 _push_dsp_to_engine 统一下发（含 Camilla YAML），
-        不触碰 enabled 等其它字段。
+        只改 replaygain_db，走 DspState 统一下发（避免与总开关切换竞态）。
         """
+        from core.replaygain_apply import apply_gain
+        page = getattr(self, "dsp_page", None)
+        fallback = None
         try:
-            params = None
-            page = getattr(self, "dsp_page", None)
             if page is not None:
-                try:
-                    params = page.params()
-                except Exception:
-                    params = None
-            if not isinstance(params, dict):
-                # 回退：从 config 读（兼容无 dsp_page 的场景）
-                cfg = get_config()
-                _p = cfg.get("dsp_params")
-                params = dict(_p) if isinstance(_p, dict) else None
-            if not isinstance(params, dict):
-                return
-            params["replaygain_db"] = float(gain) if gain is not None else 0.0
-            # 走单一真相源：写 DspState（广播 → 各视图刷新 + 统一下发）。
-            # 旧实现直接 set_dsp 且重读 config，会与总开关切换竞态（已修）。
-            wrote = False
-            if getattr(self, "_dsp_state", None) is not None:
-                try:
-                    # 只改 replaygain_db，不碰其它字段（避免覆盖 enabled 等）
-                    self._dsp_state.patch({"replaygain_db": params["replaygain_db"]}, source=self)
-                    wrote = True
-                except Exception:
-                    wrote = False
-            if not wrote:
-                self._push_dsp_to_engine(params, debounce=False)
-            get_config().set("dsp_params", params)
-        except Exception as exc:
-            log.debug("应用 ReplayGain 失败: %s", exc)
-
-    def _apply_replaygain(self, track) -> None:
-        """兼容旧调用：同步计算并应用（保留给其它调用点）。"""
-        gain = self._compute_replaygain(track)
-        if gain is not None:
-            self._apply_replaygain_value(gain)
+                fallback = page.params()
+        except Exception:
+            fallback = None
+        if not isinstance(fallback, dict):
+            _p = get_config().get("dsp_params")
+            fallback = dict(_p) if isinstance(_p, dict) else None
+        apply_gain(
+            gain,
+            dsp_state=getattr(self, "_dsp_state", None),
+            push_dsp=lambda p: self._push_dsp_to_engine(p, debounce=False),
+            fallback_params=fallback,
+            persist=lambda p: get_config().set("dsp_params", p),
+        )
 
     # ============================================================
     # 播放控制
     # ============================================================
     def _is_casting(self) -> bool:
         """当前是否处于 DLNA 投送模式（控制发给远端设备）。"""
-        return bool(getattr(self, "_dlna_casting", False))
+        return self._cast.is_casting()
+
+    # ---- CastController 与 UI 的桥接回调（供控制器反调）----
+    def _cast_ui_set_playing(self, playing: bool) -> None:
+        try:
+            self.player_panel.set_playing(playing)
+            self.now_playing.set_playing(playing)
+        except Exception:
+            pass
+
+    def _cast_ui_set_position(self, sec: float) -> None:
+        try:
+            self.player_panel.set_position(sec)
+            self.now_playing.set_position(sec)
+        except Exception:
+            pass
+
+    def _cast_ui_set_duration(self, sec: float) -> None:
+        try:
+            self.player_panel.set_duration(sec)
+            self.now_playing.set_duration(sec)
+        except Exception:
+            pass
+
+    def _mpris_notify_cast(self) -> None:
+        m = getattr(self, "_mpris", None)
+        if m is not None:
+            try:
+                m.notify_cast_changed()
+            except Exception:
+                pass
 
     def _on_play_pause(self) -> None:
         # DLNA 投送模式：控制发给远端设备（本机不放）。
         if self._is_casting():
-            try:
-                from core.dlna_push import get_dlna_pusher
-                pusher = get_dlna_pusher()
-                # 状态完全由本机操作维护（轮询不再改它），方向判断可靠：
-                # 正在播放 → 本次暂停；已暂停 → 本次恢复。
-                is_playing = bool(getattr(self, "_dlna_remote_playing", True))
-                log.debug("[投送] 播放键: _dlna_remote_playing=%s → 发送 %s",
-                          is_playing, "Pause" if is_playing else "Play")
-                if is_playing:
-                    pusher.pause()
-                    new_state = False
-                else:
-                    pusher.resume()
-                    new_state = True
-                self._dlna_remote_playing = new_state
-                self.player_panel.set_playing(new_state)
-                self.now_playing.set_playing(new_state)
-                # 通知 MPRIS：投送播放/暂停状态变化 → 系统媒体控件同步。
-                try:
-                    m = getattr(self, "_mpris", None)
-                    if m is not None:
-                        m.notify_cast_changed()
-                except Exception:
-                    pass
-            except Exception:
-                log.debug("DLNA 投送播放/暂停失败", exc_info=True)
+            self._cast.play_pause()
             return
         state = self.player.state()
         if state == "playing":
@@ -3728,23 +3217,13 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_seek(self, seconds: float) -> None:
         # DLNA 投送模式：seek 发给远端设备（AVTransport Seek）。
         if self._is_casting():
+            self._cast.seek(seconds)
+            # 远端进度无法实时回读，本地进度条先跳到目标位置。
             try:
-                from core.dlna_push import get_dlna_pusher
-                pusher = get_dlna_pusher()
-                pusher.seek(seconds)
-                # seek 后远端会（继续/开始）播放。统一把本机意图与按钮
-                # 同步为「播放中」，避免按钮仍显示暂停与实际不符。
-                self._dlna_remote_playing = True
-                try:
-                    self.player_panel.set_playing(True)
-                    self.now_playing.set_playing(True)
-                except Exception:
-                    pass
-                # 远端进度无法实时回读，本地进度条先跳到目标位置。
                 self.player_panel.set_position(seconds)
                 self.now_playing.set_position(seconds)
             except Exception:
-                log.debug("DLNA 投送 seek 失败", exc_info=True)
+                pass
             return
         self.player.seek_seconds(seconds)
 
@@ -3778,16 +3257,21 @@ class MainWindow(Adw.ApplicationWindow):
                 except Exception:
                     log.debug("选预设写 DspState 失败", exc_info=True)
             if not _wrote:
-                # 回退：无 DspState 时直接下发（兼容/降级）
+                # 降级：无 DspState 时直接下发 + 持久化（避免配置丢失）
                 self._push_dsp_to_engine(params, debounce=False)
-            cfg = get_config()
-            cfg.set("dsp_params", params)
+                try:
+                    get_config().set("dsp_params", params)
+                except Exception:
+                    pass
             # 当前音效走单一状态源：会广播到所有订阅者（音效弹窗自动高亮）。
             try:
                 from core.effect_state import get_effect_state
                 get_effect_state().set_current(key)
             except Exception:
-                cfg.set("effect_preset", key)
+                try:
+                    get_config().set("effect_preset", key)
+                except Exception:
+                    pass
             # 注：不再手工同步设置页 / 高级窗口 —— DspState 广播已覆盖。
         except Exception as exc:
             log.debug("应用音效预设失败: %s", exc)
@@ -3811,24 +3295,6 @@ class MainWindow(Adw.ApplicationWindow):
                 self.player_panel.set_effect_presets([], name)
         except Exception:
             pass
-
-    @staticmethod
-    def _any_camilla_feature(params: dict) -> bool:
-        """判断任一 Camilla 功能是否开着（决定 Camilla 引擎是否参与）。"""
-        p = params or {}
-        try:
-            return (
-                (bool(p.get("gain_enabled", False))
-                 and abs(float(p.get("pre_gain_db", 0.0) or 0.0)) > 1e-6)
-                or bool(p.get("eq_enabled", False))
-                or bool(p.get("peq_enabled", False))
-                or bool(p.get("convolution_enabled", False))
-                or bool(p.get("bass_enabled", False))
-                or abs(float(p.get("treble_gain_db", 0.0) or 0.0)) > 1e-6
-                or bool(p.get("loudness_enabled", False))
-            )
-        except Exception:
-            return False
 
     def _init_effect_menu(self) -> None:
         """初始化：应用已保存的 DSP 参数。"""
@@ -4248,7 +3714,7 @@ class MainWindow(Adw.ApplicationWindow):
         if path:
             rows.append(("文件路径", path))
             try:
-                rows.append(("文件大小", _human_size(_os.path.getsize(path))))
+                rows.append(("文件大小", human_size(_os.path.getsize(path))))
             except OSError:
                 pass
         return rows
@@ -4268,7 +3734,7 @@ class MainWindow(Adw.ApplicationWindow):
         box.set_margin_end(16)
         for label, value in rows:
             lb = Gtk.Label()
-            lb.set_markup(f"<b>{_glib_escape(label)}</b>")
+            lb.set_markup(f"<b>{glib_escape(label)}</b>")
             lb.set_halign(Gtk.Align.START)
             box.append(lb)
             vl = Gtk.Label(label=value or "—")
@@ -4747,7 +4213,7 @@ class MainWindow(Adw.ApplicationWindow):
             pass
 
     def _on_position_update(self, _player, seconds: float) -> None:
-        # 投送模式：本机后端已 stop，进度条由远端轮询（_apply_cast_position）
+        # 投送模式：本机后端已 stop，进度条由远端轮询（CastController._apply_position）
         # 驱动。此处忽略本地 position——否则本机若仍有余留位置事件，会与
         # 远端进度交替覆盖，导致进度条左右抽搐。
         if self._is_casting():
@@ -5021,16 +4487,13 @@ class MainWindow(Adw.ApplicationWindow):
                         chosen = get_config().get_str("online_quality", "lossless")
                     except Exception:
                         chosen = "lossless"
-                _exp = {"standard": "mp3", "high": "mp3", "lossless": "cd",
-                        "hires": "hr", "master": "hr"}.get(chosen, "")
-                from core.quality import spec_rank
+                from core.quality import spec_rank, quality_expect_spec, spec_display_name
+                _exp = quality_expect_spec(chosen)
                 if _exp and spec_rank(spec) < spec_rank(_exp):
                     names = self._QUALITY_NAMES
-                    spec_names = {"dsd": "DSD", "dxd": "DXD",
-                                  "hr": "Hi-Res", "cd": "无损"}
                     self._toast(_("所选 {a} 不可用，实际为 {b}").format(
                         a=names.get(chosen, chosen),
-                        b=spec_names.get(spec, spec)))
+                        b=spec_display_name(spec)))
         except Exception as exc:
             log.debug("降级提示失败: %s", exc)
 
@@ -5116,22 +4579,6 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception as exc:
             log.debug("下发染色参数失败: %s", exc)
 
-    def _on_open_advanced_dsp(self) -> None:
-        """打开独立高级 DSP 窗口。"""
-        from .advanced_dsp_window import AdvancedDspWindow
-        win = AdvancedDspWindow(
-            parent=self,
-            params=self.dsp_page.params(),
-            on_dsp_changed=self._on_dsp_changed,
-            on_coloring=self._on_coloring_changed,
-            on_viz_changed=self._on_viz_changed,
-            on_open_viz_window=self._on_open_viz_window,
-            on_convolution_ir=self._on_convolution_ir,
-            on_convolution_cleared=self._on_convolution_cleared,
-        )
-        win.present()
-        self._advanced_dsp_win = win
-
     def _on_dsp_state_changed(self, state, params: dict) -> None:
         """DspState 变更 → 统一出口下发。
 
@@ -5205,60 +4652,30 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_dsp_changed(self, params: dict, *, clear_mark: bool = True,
                         immediate: bool = False) -> None:
-        """下发 DSP 参数并持久化。
+        """降级兜底（历史回退路径）：DspState 不可用时由调用方回退到这里。
 
-        - Rust 内置 DSP：通过 set_dsp 下发（camilla 模式下 Rust 会跳过，但无害）
-        - CamillaDSP 模式：同时更新 camilladsp 配置并触发重载
+        正常路径下**不再调用本方法**：各视图直接写 DspState（唯一真相源），
+        由订阅的 _on_dsp_state_changed 统一出口下发（set_dsp + Camilla YAML）。
 
-        clear_mark=True（默认，手动改参数）：因为已不是任何预设，清空「当前
-        音效」标记。clear_mark=False（加载预设等）：保留标记，由调用方随后
-        显式 set_current(预设名)。这样「下发」与「音效标记」解耦，避免下发
-        顺带清空标记导致的高亮丢失。
-
-        immediate=True（开关/按钮等一次性操作）：立即下发 Camilla YAML，
-        不走防抖。**总开关 enabled 变化时必须立即下发**——否则防抖延迟/覆盖
-        会导致重开时 Camilla 管线没更新，卷积等 Camilla 功能不恢复。
+        保留本存根仅为极端异常兜底（如 DspState 构造失败）。为避免“半迁移”
+        双写，这里**不再写 DspState、不再冗余持久化 config**——一旦走到这里，
+        说明 DspState 已不可用，再持久化 config 也无意义（下次启动同样读不到）。
+        仅下发一次，保证后端仍能发声。
         """
-        # 总开关变化 → 强制立即下发（关键状态切换，不能防抖）。
-        enabled = bool(params.get("enabled", False))
-        prev_enabled = getattr(self, "_last_dsp_enabled", None)
-        enabled_changed = (prev_enabled is not None and prev_enabled != enabled)
-        self._last_dsp_enabled = enabled
-        # 立即下发条件：上游要求立即（开关/按钮）或总开关变化。
-        do_immediate = bool(immediate) or enabled_changed
-        # 重构后：不再在此直接下发；统一写 DspState（唯一真相源），
-        # 由订阅的 _on_dsp_state_changed 统一出口下发（含防抖）。
-        wrote_state = False
-        if getattr(self, "_dsp_state", None) is not None:
-            try:
-                self._dsp_state.replace(params, source=self)
-                wrote_state = True
-            except Exception:
-                log.debug("写入 DspState 失败", exc_info=True)
-        if not wrote_state:
-            # 回退：无 DspState 时直接下发（兼容/降级）
-            self._push_dsp_to_engine(params, debounce=not do_immediate)
+        # 兼容：更新总开关状态记录（若有外部读取）
+        self._last_dsp_enabled = bool(params.get("enabled", False))
+        log.warning("走 _on_dsp_changed 降级兜底（DspState 不可用），请检查初始化")
         try:
-            from config.settings import get_config
-            _cfg = get_config()
-            _cfg.set("dsp_params", params)
-            _cfg.set_bool("dsp_enabled", bool(params.get("enabled", False)))
-            if clear_mark:
-                # 手动改参数：清空「当前音效」标记（走单一状态源，广播给所有视图）：
-                # - DSP 关闭 → 高亮「关闭」
-                # - DSP 开着但手动调了参数 → 已不是任何预设，清空标记
-                try:
-                    from core.effect_state import get_effect_state
-                    get_effect_state().set_current(
-                        "关闭" if not params.get("enabled", False) else "")
-                except Exception:
-                    if not params.get("enabled", False):
-                        _cfg.set("effect_preset", "关闭")
-                    else:
-                        _cfg.set("effect_preset", "")
-            # 注：不再手工同步 dsp_page —— DspState 广播已让所有视图自动刷新。
+            self._push_dsp_to_engine(params, debounce=not bool(immediate))
         except Exception:
-            pass
+            log.debug("降级下发 DSP 失败", exc_info=True)
+        if clear_mark:
+            try:
+                from core.effect_state import get_effect_state
+                get_effect_state().set_current(
+                    "关闭" if not params.get("enabled", False) else "")
+            except Exception:
+                pass
 
     def _emit_camilla_yaml_now(self) -> bool:
         """防抖回调：生成并下发 camilla YAML。"""
@@ -5429,15 +4846,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     #: 快捷键动作名（供设置页展示；解析/匹配见 services/shortcuts.py）
     _SHORTCUT_ACTIONS = SHORTCUT_ACTIONS
-
-    @staticmethod
-    def _parse_shortcut(spec: str):
-        """兼容入口：委托 services/shortcuts.parse_shortcut。"""
-        return parse_shortcut(spec)
-
-    def _get_shortcuts(self) -> dict:
-        """兼容入口：委托 services/shortcuts.get_shortcuts。"""
-        return get_shortcuts()
 
     def _on_window_key(self, _ctrl, keyval, _code, state) -> bool:
         """全局快捷键（主界面，非输入框焦点时）。键位来自配置，可自定义。"""
@@ -5610,40 +5018,6 @@ class MainWindow(Adw.ApplicationWindow):
             log.debug("停止托盘失败", exc_info=True)
         self.player.shutdown()
 
-    def _show_shortcuts(self) -> None:
-        """显示键盘快捷键窗口（列出当前应用内绑定的快捷键）。"""
-        try:
-            from core.i18n import _ as _t
-            sc = Gtk.ShortcutsWindow()
-            sc.set_transient_for(self)
-            sc.set_modal(True)
-            section = Gtk.ShortcutsSection()
-            section.set_title(_("播放控制"))
-            group = Gtk.ShortcutsGroup()
-            group.set_title(_("应用"))
-            items = (
-                ("播放 / 暂停", "space"),
-                ("上一首", "Left"),
-                ("下一首", "Right"),
-                ("快退 5 秒", "less"),
-                ("快进 5 秒", "greater"),
-                ("音量 +​", "Up"),
-                ("音量 -​", "Down"),
-                ("设置", "<Ctrl>comma"),
-                ("退出", "<Ctrl>q"),
-            )
-            for title, accel in items:
-                item = Gtk.ShortcutsShortcut()
-                item.set_title(_(title))
-                item.set_accelerator(accel)
-                group.add_shortcut(item)
-            section.add_group(group)
-            sc.add_section(section)
-            sc.present()
-            self._shortcuts_win = sc
-        except Exception:
-            log.debug("显示快捷键窗口失败", exc_info=True)
-
     def _tray_show_window(self) -> None:
         """托盘「显示主窗口」：把窗口置前并恢复可见。"""
         try:
@@ -5781,33 +5155,44 @@ class MainWindow(Adw.ApplicationWindow):
             pass
 
     def _restore_position(self, data: dict) -> None:
-        """延迟恢复播放位置（等当前曲目装载完）。"""
+        """记录「上次播放位置」，供用户点播放时从该处续播。
+
+        修复（关键）：此前在恢复时直接对后端 seek + 设进度条，但**后端尚未
+        播放（恢复不自动播）**，seek 对未加载的流无效；用户随后点播放时
+        _start_playback_if_needed 又从 0 开始 → 进度条回 0 且不推进。
+
+        现改为：只把位置记到 _pending_restore_pos，并在进度条上先显示出来
+        （给用户视觉反馈）；真正的 seek 由 _start_playback_if_needed 在
+        首次播放时执行（此时后端已加载流，seek 有效）。
+        """
         try:
             pos = float(data.get("position", 0.0) or 0.0)
             if pos <= 0.5:
+                self._pending_restore_pos = 0.0
                 return
-
-            def _seek_restore():
-                try:
-                    cur = self.playlist.current_track()
-                    dur = float(getattr(cur, "duration_seconds", 0.0) or 0.0)
-                    if dur > 0:
-                        self.player_panel.set_duration(dur)
-                        self.now_playing.set_duration(dur)
-                except Exception:
-                    pass
-                try:
-                    self.player.seek_seconds(pos)
-                except Exception:
-                    pass
-                try:
-                    self.player_panel.set_position(pos)
-                    self.now_playing.set_position(pos)
-                except Exception:
-                    pass
-                return False
-
-            GLib.timeout_add(800, _seek_restore)
+            self._pending_restore_pos = pos
+            # 记下所属曲目 key：只有当前曲目匹配时才应用恢复位置。
+            try:
+                _cur = self.playlist.current_track()
+                self._pending_restore_key = (
+                    getattr(_cur, "source_id", "") or getattr(_cur, "filepath", "")
+                    or getattr(_cur, "title", "") or "")
+            except Exception:
+                self._pending_restore_key = ""
+            # UI 先显示恢复位置（此时未播放，仅视觉；真正 seek 待首次播放）。
+            try:
+                cur = self.playlist.current_track()
+                dur = float(getattr(cur, "duration_seconds", 0.0) or 0.0)
+                if dur > 0:
+                    self.player_panel.set_duration(dur)
+                    self.now_playing.set_duration(dur)
+            except Exception:
+                pass
+            try:
+                self.player_panel.set_position(pos)
+                self.now_playing.set_position(pos)
+            except Exception:
+                pass
         except Exception:
             pass
 

@@ -532,6 +532,13 @@ class NowPlayingPage(Gtk.Overlay):
         纹理由后台线程用 make_blurred_bg 生成好，主线程只 set_paintable。
         dark: True/False 显式指定背景明暗（切换前景色）；None 时不动。
         """
+        # 显式断开旧纹理再设新：Gtk.Picture.set_paintable(new) 理论上会替换
+        # 旧 paintable，但 GDK 对旧纹理的释放有延迟/可能被渲染缓存持有，
+        # 表现为「切歌越多内存越涨且不回落」。先置 None 促使旧纹理尽快释放。
+        try:
+            self._bg_picture.set_paintable(None)
+        except Exception:
+            pass
         self._bg_tex = texture
         try:
             self._bg_picture.set_paintable(texture)
@@ -559,6 +566,8 @@ class NowPlayingPage(Gtk.Overlay):
         self._bg_tex_dark = None
         if texture is not None:
             try:
+                # 显式断开旧封面纹理再设新（促使 GDK 释放旧纹理，见 set_bg_texture）
+                self._cover.set_paintable(None)
                 self._cover.set_paintable(texture)
                 _px = getattr(self, "_current_cover_px", self._COVER_PX)
                 self._cover.set_size_request(_px, _px)

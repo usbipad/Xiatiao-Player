@@ -656,6 +656,14 @@ class LocalLibraryPage(Gtk.Box):
             pass
 
     def _render_tracks(self, tracks: List[TrackItem]) -> None:
+        # 优化（内存）：GTK 每次 splice 整表替换都会重建整列 cell，旧的进复用池
+        # 且不易释放——频繁「数据其实没变」的 set_tracks（切页/刷新/tab 切换）
+        # 会不断触发重建，导致 cell/PlayingIndicator 累积。
+        # 这里先判断：若新 tracks 与当前 store 内的项「逐一同引用」，则跳过
+        # splice（不触发任何重建），仅刷新空状态。数据真变时才重建。
+        if self._store_matches(tracks):
+            self._sync_empty_label(len(tracks) == 0)
+            return
         self._suppress_selection = True
         try:
             self._store.splice(0, self._store.get_n_items(), tracks)
@@ -664,21 +672,69 @@ class LocalLibraryPage(Gtk.Box):
             self._suppress_selection = False
         self._sync_empty_label(len(tracks) == 0)
 
+    def _store_matches(self, tracks: List[TrackItem]) -> bool:
+        """store 内现有项是否与新 tracks「逐一同引用」。
+
+        快速判等，避免为「数据未变」的调用重建整表（内存优化）。
+        只在长度一致且每项 is 相同才判为「未变」；任何差异都返回 False
+        （保证数据真变时正常重建，不遗漏刷新）。
+        """
+        try:
+            n = self._store.get_n_items()
+            if n != len(tracks):
+                return False
+            for i, t in enumerate(tracks):
+                if self._store.get_item(i) is not t:
+                    return False
+            return True
+        except Exception:
+            return False
+
     def _render_grid(self, tracks: List[TrackItem]) -> None:
+        # 指纹去重（内存/性能）：分组结果未变时**跳过整片卡片重建**。
+        # 此前每次 _apply_filter（进入/退出卡片详情、切歌刷新、切视图）都
+        # 无条件清空+重建所有分组卡片，每张卡片重新解码封面（CARD_COVER_PX
+        # 纹理）——表现为「进出主页专辑/艺术家卡片一次涨几~几十 MB」。
+        # 指纹含：视图模式 + 分组过滤 + 是否折叠 + 分组键集合/各组曲目数。
+        _groups_pre = {}
+        for _t in tracks:
+            if self._view_mode == VIEW_ALBUMS:
+                _k = (getattr(_t, "album", "") or "未知专辑").strip() or "未知专辑"
+            else:
+                _k = (getattr(_t, "artist", "") or "未知艺术家").strip() or "未知艺术家"
+            _groups_pre[_k] = _groups_pre.get(_k, 0) + 1
+        _fp = (self._view_mode, getattr(self, "_group_filter", ""),
+               bool(getattr(self, "_collapsed", False)),
+               tuple(sorted(_groups_pre.items())))
+        if _fp == getattr(self, "_grid_fp", None):
+            return
+        self._grid_fp = _fp
         try:
             self._grid_flow.set_visible(False)
             self._hbox.set_visible(False)
         except Exception:
             pass
+        # 移除旧卡片前，先断开其点击 controller（内存泄漏修复）：
+        # 卡片 box 的 add_controller + 闭包捕获 box 形成跨 C/Python 引用环，
+        # 不显式 remove_controller 则卡片（整棵树）永不回收，切专辑累积。
+        from .media_grid import detach_card_click as _detach_card
         c = self._grid_flow.get_first_child()
         while c is not None:
             nxt = c.get_next_sibling()
+            try:
+                _detach_card(c)
+            except Exception:
+                pass
             self._grid_flow.remove(c)
             c = nxt
         try:
             hc = self._hbox.get_first_child()
             while hc is not None:
                 nxt = hc.get_next_sibling()
+                try:
+                    _detach_card(hc)
+                except Exception:
+                    pass
                 self._hbox.remove(hc)
                 hc = nxt
         except Exception:
@@ -789,6 +845,9 @@ class LocalLibraryPage(Gtk.Box):
             self._guard_last_mapped = True
 
         def _tick():
+            # 单一持久 tick：只做状态判断 + 按需重启卡片轮播，**绝不 timeout_add
+            # 自己**（旧实现用「加新 tick + return False」自我复制，逻辑复杂且
+            # 在高频状态变化下有 tick 累积风险）。这里永远 return True。
             try:
                 on = self._card_rotate_enabled()
                 was = getattr(self, "_guard_last_on", on)
@@ -800,24 +859,16 @@ class LocalLibraryPage(Gtk.Box):
                     mapped = True
                 was_mapped = getattr(self, "_guard_last_mapped", mapped)
                 self._guard_last_mapped = mapped
-                if not on and was:
-                    self._clear_grid_rotate_timers()
-                    self._rotate_guard_id = GLib.timeout_add(1000, _tick)
-                    self._guard_last_on = False
-                    self._guard_last_speed = spd
-                    return False
-                if on and not was:
-                    self._restart_card_rotate()
-                elif on and spd != spd_was:
+                if not on:
+                    # 轮播关闭：清掉卡片定时器（幂等，无副作用）。
+                    if was:
+                        self._clear_grid_rotate_timers()
+                elif (not was) or (spd != spd_was):
+                    # 轮播打开（或速度变化）：重启卡片轮播。
                     self._clear_grid_rotate_timers()
                     self._restart_card_rotate()
-                    self._rotate_guard_id = GLib.timeout_add(1000, _tick)
-                    self._guard_last_on = True
-                    self._guard_last_speed = spd
-                    return False
-                elif on and mapped and not was_mapped:
-                    # 页面从不可见恢复：不可见期间各卡片的定时器已在 _rotate_card
-                    # 中提前返回且未重新调度，需要重新拉起，否则轮播永久失效。
+                elif mapped and not was_mapped:
+                    # 页面从不可见恢复：重新拉起卡片定时器。
                     self._restart_card_rotate()
                 self._guard_last_on = on
                 self._guard_last_speed = spd

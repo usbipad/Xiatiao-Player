@@ -67,10 +67,57 @@ ONLINE_QUALITY_LABELS: list[tuple[str, str]] = [
 #: 默认档位（配置缺省）。
 DEFAULT_ONLINE_QUALITY = "lossless"
 
+#: 档位 → 短显示名（不含码率），供按钮/菜单等窄空间复用。
+#: 从 ONLINE_QUALITY_LABELS 派生（去掉尾部「码率」），保证单一数据源——
+#: 改档位清单只需改上面一处，这里自动跟随。
+ONLINE_QUALITY_SHORT: dict[str, str] = {
+    key: (label.split()[0] if label else key)
+    for key, label in ONLINE_QUALITY_LABELS
+}
+
+#: 档位 → 期望「物理规格」（用于「所选音质不可用」降级提示的比对）。
+#: 语义：该档位理论上应达到的规格门槛；实际 < 期望即视为被服务端降级。
+#: standard/high 为有损（mp3），lossless 期望 CD，hires/master 期望 HR。
+ONLINE_QUALITY_EXPECT_SPEC: dict[str, str] = {
+    "standard": "mp3",
+    "high": "mp3",
+    "lossless": "cd",
+    "hires": "hr",
+    "master": "hr",
+}
+
 
 def quality_to_bitrate(key: str) -> int:
     """档位 key → maxBitRate；未知/空返回 0（不限制）。"""
     return ONLINE_QUALITY_BITRATE.get(str(key or "").strip().lower(), 0)
+
+
+def quality_short(key: str) -> str:
+    """档位 key → 短显示名；未知返回原 key。"""
+    k = str(key or "").strip().lower()
+    return ONLINE_QUALITY_SHORT.get(k, key or "")
+
+
+def quality_expect_spec(key: str) -> str:
+    """档位 key → 期望物理规格（用于降级比对）；未知返回空串。"""
+    return ONLINE_QUALITY_EXPECT_SPEC.get(str(key or "").strip().lower(), "")
+
+
+#: 物理规格 → 简短显示名（用于「所选 X 不可用，实际为 Y」提示）。
+#: 口径：cd 显示「无损」（用户语言），非「CD」（规格术语）。
+#: 注：与 models.track.quality_badge（用「CD」）语义不同，勿混用。
+SPEC_DISPLAY_NAME: dict[str, str] = {
+    "dsd": "DSD",
+    "dxd": "DXD",
+    "hr": "Hi-Res",
+    "cd": "无损",
+}
+
+
+def spec_display_name(spec: str) -> str:
+    """物理规格 → 简短显示名；未知返回原 spec。"""
+    k = str(spec or "").strip().lower()
+    return SPEC_DISPLAY_NAME.get(k, spec or "")
 
 
 def _to_int(v) -> int:

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import weakref
 from typing import Callable, Optional
 
 from gi.repository import Adw, Gdk, GLib, Gtk
@@ -205,10 +206,22 @@ class PlaylistsPage(Gtk.Box):
         self._new_btn.set_visible(True)
         self._title.set_text(_("歌单"))
         self._stack.set_visible_child_name("cards")
-        # 清空卡片
+        # 清空卡片（先断开每张卡片的点击/右键 controller——内存泄漏修复：
+        # rclick 闭包捕获 box，不断开则卡片永不回收，反复刷新歌单累积）。
         c = self._flow.get_first_child()
         while c is not None:
             nxt = c.get_next_sibling()
+            for _attr in ("_click_ctrl", "_rclick_ctrl"):
+                _ctrl = getattr(c, _attr, None)
+                if _ctrl is not None:
+                    try:
+                        c.remove_controller(_ctrl)
+                    except Exception:
+                        pass
+                    try:
+                        setattr(c, _attr, None)
+                    except Exception:
+                        pass
             self._flow.remove(c)
             c = nxt
         try:
@@ -314,6 +327,10 @@ class PlaylistsPage(Gtk.Box):
         rclick.set_button(3)
         rclick.connect("pressed", lambda g, n, x, y, p=pl: self._card_menu(box, p, x, y))
         box.add_controller(rclick)
+        # 存 controller 引用：卡片被清空/重建时需断开，否则右键手势的闭包
+        # （捕获了 box）与 box 形成跨 C/Python 引用环，卡片无法回收。
+        box._click_ctrl = click
+        box._rclick_ctrl = rclick
         return box
 
     def _load_card_cover_async(self, pid, frame, pic, size: int) -> None:

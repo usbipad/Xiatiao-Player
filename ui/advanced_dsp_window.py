@@ -164,16 +164,18 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
 
     def _emit_now(self) -> bool:
         self._emit_timer = None
-        # 重构后：统一写 DspState（唯一真相源）→ 广播 → window 统一下发。
+        clear = getattr(self, "_pending_clear_mark", True)
+        # 统一写 DspState（唯一真相源）→ 广播 → window 统一下发。
         if getattr(self, "_dsp_state", None) is not None:
             try:
                 self._dsp_state.replace(dict(self._params), source=self)
+                if clear:
+                    self._clear_effect_mark()
                 return False
             except Exception:
                 log.debug("写 DspState 失败，回退旧路径", exc_info=True)
         # 回退：无 DspState 时走旧直调回调（兼容/降级）
         if self._on_dsp_changed is not None:
-            clear = getattr(self, "_pending_clear_mark", True)
             try:
                 self._on_dsp_changed(dict(self._params), clear_mark=clear, immediate=True)
             except TypeError:
@@ -182,6 +184,15 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
                 except TypeError:
                     self._on_dsp_changed(dict(self._params))
         return False
+
+    def _clear_effect_mark(self) -> None:
+        """手动改参数 → 清空「当前音效」标记（走单一状态源广播）。"""
+        try:
+            from core.effect_state import get_effect_state
+            enabled = bool(self._params.get("enabled", False))
+            get_effect_state().set_current("关闭" if not enabled else "")
+        except Exception:
+            log.debug("清空音效标记失败", exc_info=True)
 
     def _on_dsp_state_changed(self, _state, params) -> None:
         """DspState 变更 → 从单一源刷新本窗口各功能页 + 染色页（只读）。

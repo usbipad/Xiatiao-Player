@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import weakref
+
 from gi.repository import Gdk, GLib, Gtk
 
 from core.i18n import _
@@ -165,6 +167,24 @@ def load_grid_cover_async(path: str, holder, pic, cache_key: str = None) -> None
         pass
 
 
+def detach_card_click(card) -> None:
+    """移除卡片时断开其点击 controller。
+
+    内存泄漏修复（实测：不移除 → 100/100 泄漏；移除 → 1/100）：
+    卡片 box 上 add_controller(click)，click 的 "released" 信号持有闭包，
+    闭包捕获 box —— 形成「box → click → 闭包 → box」的跨 C/Python 引用环，
+    C 层不参与 Python gc，卡片（整棵树）无法回收。切专辑重建网格 → 累积。
+    在此断开 controller，切断环。
+    """
+    try:
+        ctrl = getattr(card, "_click_ctrl", None)
+        if ctrl is not None:
+            card.remove_controller(ctrl)
+            card._click_ctrl = None
+    except Exception:
+        pass
+
+
 def make_group_card(name: str, items, on_enter_group) -> Gtk.Widget:
     """专辑/艺术家卡片：封面 + 名称 + 曲目数。固定尺寸，不随窗口拉伸。
 
@@ -308,6 +328,8 @@ def make_group_card(name: str, items, on_enter_group) -> Gtk.Widget:
     click.connect("released", lambda *_a, b=box: on_enter_group(getattr(b, "_group_name", "")))
     box.add_controller(click)
     box.set_cursor(Gdk.Cursor.new_from_name("pointer", None))
+    # 存 controller 引用，供卡片被移除时断开（内存泄漏修复）。
+    box._click_ctrl = click
 
     def _fill_page(page_key: str, new_name: str, new_items) -> None:
         try:

@@ -856,14 +856,12 @@ class PlayerPanel(Gtk.Box):
             self.user_avatar.set_tooltip_text(nick)
         self.user_avatar.set_visible(bool(url))
 
-    #: 在线音质档位（key → 显示名）；key 与 config.online_quality 一致
-    _QUALITY_LABELS = [
-        ("standard", "标准"),
-        ("high", "高品"),
-        ("lossless", "无损"),
-        ("hires", "Hi-Res"),
-        ("master", "母带"),
-    ]
+    #: 在线音质档位（key → 显示名）；单一数据源见 core.quality。
+    #: 下拉框用带码率的 ONLINE_QUALITY_LABELS；按钮用短名 ONLINE_QUALITY_SHORT。
+    from core.quality import (
+        ONLINE_QUALITY_LABELS as _QUALITY_LABELS,
+        ONLINE_QUALITY_SHORT as _QUALITY_SHORT,
+    )
 
     def _current_quality(self) -> str:
         """当前生效的音质档位：运行时优先，其次配置。
@@ -959,7 +957,7 @@ class PlayerPanel(Gtk.Box):
                 if not key:
                     continue
                 name = str(item.get("name", "") or "") or \
-                    dict(self._QUALITY_LABELS).get(key, key)
+                    self._QUALITY_SHORT.get(key, key)
                 out.append((key, name))
             if out:
                 return out
@@ -977,15 +975,6 @@ class PlayerPanel(Gtk.Box):
         except Exception:
             pass
         self._set_quality(key)
-
-    #: 档位短标签（用于按钮上显示，宽度自适应）。
-    _QUALITY_SHORT = {
-        "standard": "标准",
-        "high": "高品",
-        "lossless": "无损",
-        "hires": "Hi-Res",
-        "master": "母带",
-    }
 
     def set_quality_dropdown(self, key: str) -> None:
         """同步按钮显示到当前所选档位（宽度随文字自适应）。"""

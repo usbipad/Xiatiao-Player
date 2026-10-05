@@ -22,6 +22,7 @@ from typing import Optional
 from gi.repository import GLib
 
 from .audio_backend import AudioBackend, PlayerState
+from .ipc_protocol import Cmd, Evt, Field
 
 log = logging.getLogger(__name__)
 
@@ -328,33 +329,33 @@ class RustBackend(AudioBackend):
         # 用 warning 而非静默，便于排查自愈后的异常行为。
         try:
             if self._volume is not None:
-                self._send({"cmd": "set_volume", "value": float(self._volume)})
+                self._send({Field.CMD: Cmd.SET_VOLUME, Field.VALUE: float(self._volume)})
         except Exception as exc:
             log.warning("自愈后恢复音量失败: %s", exc)
         try:
             if self._dsp:
-                self._send({"cmd": "set_dsp", "params": dict(self._dsp)})
+                self._send({Field.CMD: Cmd.SET_DSP, Field.PARAMS: dict(self._dsp)})
         except Exception as exc:
             log.warning("自愈后恢复 DSP 失败: %s", exc)
         try:
-            self._send({"cmd": "set_dsd_mode", "mode": self._dsd_mode or "auto"})
+            self._send({Field.CMD: Cmd.SET_DSD_MODE, Field.MODE: self._dsd_mode or "auto"})
         except Exception as exc:
             log.warning("自愈后恢复 DSD 模式失败: %s", exc)
         try:
-            self._send({"cmd": "set_output_device", "name": self._output_device or ""})
+            self._send({Field.CMD: Cmd.SET_OUTPUT_DEVICE, Field.NAME: self._output_device or ""})
         except Exception as exc:
             log.warning("自愈后恢复输出设备失败: %s", exc)
 
     def _dispatch(self, evt: dict) -> bool:
         """主线程：把后端事件转为信号。"""
-        name = evt.get("event")
+        name = evt.get(Field.EVENT)
         # 位置事件太频繁，降噪：仅在非 position 时打印
         if name != "position":
             log.debug("[IPC←] %s", json.dumps(evt, ensure_ascii=False))
-        if name == "position":
+        if name == Evt.POSITION:
             # 播放代次过滤：切歌/切音质后，旧代次的 position 事件可能仍在路上，
             # 若不过滤会把进度条拉回旧值（回 0 再跳回 / 闪回上一首进度）。
-            gen = evt.get("gen")
+            gen = evt.get(Field.GEN)
             if gen is not None:
                 gen = int(gen)
                 if gen != self._pos_gen:
@@ -363,7 +364,7 @@ class RustBackend(AudioBackend):
                         self._pos_gen = gen
                     else:
                         return False
-            pos = float(evt.get("sec", 0.0))
+            pos = float(evt.get(Field.SEC, 0.0))
             # 期望位置过滤：切歌/切音质后，同代次的 position 只接受接近
             # 目标位置的（跳过切换瞬间残留的旧位置）。达成或超时即解除。
             exp = self._expected_pos
@@ -387,22 +388,22 @@ class RustBackend(AudioBackend):
                     return False
             self._position = pos
             self.emit("position-update", self._position)
-        elif name == "duration":
-            self.emit("duration-changed", float(evt.get("sec", 0.0)))
-        elif name == "state":
-            self._state = evt.get("state", PlayerState.STOPPED)
+        elif name == Evt.DURATION:
+            self.emit("duration-changed", float(evt.get(Field.SEC, 0.0)))
+        elif name == Evt.STATE:
+            self._state = evt.get(Field.STATE, PlayerState.STOPPED)
             self.emit("play-state-changed", self._state)
-        elif name == "end_of_stream":
+        elif name == Evt.END_OF_STREAM:
             self.emit("end-of-stream")
-        elif name == "error":
-            self.emit("error-occur", str(evt.get("message", "")))
-        elif name == "audio_info":
-            info = evt.get("info") or {}
+        elif name == Evt.ERROR:
+            self.emit("error-occur", str(evt.get(Field.MESSAGE, "")))
+        elif name == Evt.AUDIO_INFO:
+            info = evt.get(Field.INFO) or {}
             if isinstance(info, dict):
                 self._audio_info = info
                 self.emit("audio-info", info)
-        elif name == "effect":
-            self._effect = evt.get("preset", "off")
+        elif name == Evt.EFFECT:
+            self._effect = evt.get(Field.PRESET, "off")
             self.emit("effect-changed", self._effect)
         return False
 
@@ -427,7 +428,7 @@ class RustBackend(AudioBackend):
             log.warning("连接后端失败（获取设备列表）: %s", exc)
             return []
         try:
-            s.sendall((json.dumps({"cmd": "list_output_devices"}) + "\n").encode("utf-8"))
+            s.sendall((json.dumps({Field.CMD: Cmd.LIST_OUTPUT_DEVICES}) + "\n").encode("utf-8"))
             buf = b""
             deadline = time.time() + timeout
             while time.time() < deadline:
@@ -446,8 +447,8 @@ class RustBackend(AudioBackend):
                         evt = json.loads(line.decode("utf-8"))
                     except Exception:
                         continue
-                    if evt.get("event") == "output_devices":
-                        return [d for d in (evt.get("devices") or [])
+                    if evt.get(Field.EVENT) == Evt.OUTPUT_DEVICES:
+                        return [d for d in (evt.get(Field.DEVICES) or [])
                                 if isinstance(d, dict)]
         except Exception as exc:
             log.warning("获取设备列表失败: %s", exc)
@@ -491,7 +492,7 @@ class RustBackend(AudioBackend):
         if not self._alive or self._sock is None:
             # 断线：尝试重连一次
             if not self._try_reconnect():
-                log.warning("[IPC→] 丢弃(未连接): %s", obj.get("cmd"))
+                log.warning("[IPC→] 丢弃(未连接): %s", obj.get(Field.CMD))
                 return False
         try:
             with self._send_lock:
@@ -499,7 +500,7 @@ class RustBackend(AudioBackend):
                 # 后台 _restart_backend 置 None（TOCTOU），导致 AttributeError。
                 sock = self._sock
                 if sock is None:
-                    log.warning("[IPC→] 丢弃(连接已关闭): %s", obj.get("cmd"))
+                    log.warning("[IPC→] 丢弃(连接已关闭): %s", obj.get(Field.CMD))
                     return False
                 sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
                 return True
@@ -522,7 +523,7 @@ class RustBackend(AudioBackend):
         # 立即本地进入播放态，UI 按钮能马上响应
         self._state = PlayerState.PLAYING
         self._position = 0.0
-        if not self._send({"cmd": "play", "path": path}):
+        if not self._send({Field.CMD: Cmd.PLAY, Field.PATH: path}):
             # 后端未启动/未连接：命令被丢弃。明确告知用户并回退状态，
             # 避免静默失败后由「卡住检测」给出笼统的「播放失败，已跳过」。
             self._state = PlayerState.STOPPED
@@ -535,19 +536,19 @@ class RustBackend(AudioBackend):
         log.info("[API] pause")
         # 立即本地更新状态，避免依赖异步事件导致 UI 判断滞后
         self._state = PlayerState.PAUSED
-        self._send({"cmd": "pause"})
+        self._send({Field.CMD: Cmd.PAUSE})
 
     def resume(self) -> None:
         log.info("[API] resume")
         self._state = PlayerState.PLAYING
-        self._send({"cmd": "resume"})
+        self._send({Field.CMD: Cmd.RESUME})
 
     def stop(self) -> None:
-        self._send({"cmd": "stop"})
+        self._send({Field.CMD: Cmd.STOP})
         self._position = 0.0
 
     def seek_seconds(self, seconds: float) -> None:
-        self._send({"cmd": "seek", "seconds": max(0.0, float(seconds))})
+        self._send({Field.CMD: Cmd.SEEK, Field.SECONDS: max(0.0, float(seconds))})
 
     #: 期望位置达成容差（秒）。
     _EXPECT_TOLERANCE = 1.0
@@ -573,48 +574,44 @@ class RustBackend(AudioBackend):
     def set_volume(self, v: float) -> None:
         v = max(0.0, min(1.0, float(v)))
         self._volume = v
-        self._send({"cmd": "set_volume", "value": v})
+        self._send({Field.CMD: Cmd.SET_VOLUME, Field.VALUE: v})
 
     def set_effect(self, preset: str) -> None:
         self._effect = preset or "off"
-        self._send({"cmd": "set_effect", "preset": self._effect})
+        self._send({Field.CMD: Cmd.SET_EFFECT, Field.PRESET: self._effect})
 
     def set_dsp(self, params: dict) -> None:
         """下发完整 DSP 参数（实时生效）。"""
         self._dsp = dict(params or {})
-        self._send({"cmd": "set_dsp", "params": self._dsp})
+        self._send({Field.CMD: Cmd.SET_DSP, Field.PARAMS: self._dsp})
 
     def set_camilla_yaml(self, yaml_str: str) -> None:
         """下发嵌入式 camillalib 配置（YAML 字符串）。"""
         if not yaml_str:
             return
-        self._send({"cmd": "set_camilla_yaml", "yaml": yaml_str})
-
-    def set_engine(self, camilla: bool = False) -> None:
-        """兼容接口：Camilla 是否参与由后端按 DSP 参数自动推导，此命令仅占位。"""
-        self._send({"cmd": "set_engine", "camilla": bool(camilla)})
+        self._send({Field.CMD: Cmd.SET_CAMILLA_YAML, Field.YAML: yaml_str})
 
     def set_coloring(self, tube_drive: float, bbe_amount: float) -> None:
         """下发音色染色参数（电子管 drive / BBE amount）。"""
         log.debug("下发音色染色: td=%s ba=%s alive=%s",
                   tube_drive, bbe_amount, self._alive)
-        self._send({"cmd": "set_coloring",
-                    "tube_drive": float(tube_drive),
-                    "bbe_amount": float(bbe_amount)})
+        self._send({Field.CMD: Cmd.SET_COLORING,
+                    Field.TUBE_DRIVE: float(tube_drive),
+                    Field.BBE_AMOUNT: float(bbe_amount)})
 
     def reset_dsp(self) -> None:
         """重置 DSP 到默认参数。"""
-        self._send({"cmd": "reset_dsp"})
+        self._send({Field.CMD: Cmd.RESET_DSP})
 
     def set_dsd_mode(self, mode: str) -> None:
         """下发 DSD 输出模式（auto/native/dop/pcm）。"""
         self._dsd_mode = mode or "auto"
-        self._send({"cmd": "set_dsd_mode", "mode": self._dsd_mode})
+        self._send({Field.CMD: Cmd.SET_DSD_MODE, Field.MODE: self._dsd_mode})
 
     def set_output_device(self, name: str) -> None:
         """下发输出设备（PipeWire sink 名；空=默认）。"""
         self._output_device = name or ""
-        self._send({"cmd": "set_output_device", "name": self._output_device})
+        self._send({Field.CMD: Cmd.SET_OUTPUT_DEVICE, Field.NAME: self._output_device})
 
     def is_alive(self) -> bool:
         """后端进程/连接是否可用（未启动或已断开 → False）。
@@ -637,7 +634,7 @@ class RustBackend(AudioBackend):
 
     def shutdown(self) -> None:
         self._closing = True
-        self._send({"cmd": "shutdown"})
+        self._send({Field.CMD: Cmd.SHUTDOWN})
         self._alive = False
         try:
             if self._sock is not None:

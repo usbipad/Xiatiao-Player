@@ -53,6 +53,9 @@ class SeekBar(Gtk.DrawingArea):
         self._value = 0.0          # 当前值（秒）
         self._duration = 0.0
         self._seeking = False
+        #: 是否处于「拖动中」（drag-begin 到 drag-end 之间）。
+        #: 用于让 _freeze_after_seek 的定时解冻不打断正在进行的拖动。
+        self._dragging = False
         self._start_x = 0.0
         # seek 后冻结倒计时句柄：期间忽略外部位置更新，避免进度条闪回
         self._seek_freeze_id = None
@@ -123,6 +126,7 @@ class SeekBar(Gtk.DrawingArea):
 
     def _on_drag_begin(self, gesture, start_x, _start_y) -> None:
         self._seeking = True
+        self._dragging = True
         self._start_x = start_x
         self._value = self._value_for_x(start_x)
         self.queue_draw()
@@ -134,6 +138,15 @@ class SeekBar(Gtk.DrawingArea):
             pass
 
     def _on_drag_update(self, _gesture, offset_x, _offset_y) -> None:
+        # 关键修复：拖动过程中**持续**确保处于 seek 态。
+        #
+        # 真凶（由实机日志定位）：拖动期间若有一个「上次 seek/切歌」遗留的
+        # _freeze_after_seek 定时器（1.5s）到期，其 _unfreeze 会把 _seeking
+        # 置回 False；此后 position-update 到达时 set_position 的守卫失效，
+        # 把进度条拉回实际播放位置，下一帧 drag-update 又跳回——表现为
+        # 「一弹一弹」（200ms 一次，随 position 事件频率）。
+        # 这里每次拖动更新都重申 _seeking=True，且 _unfreeze 感知拖动（见下）。
+        self._seeking = True
         current_x = self._start_x + offset_x
         self._value = self._value_for_x(current_x)
         self.queue_draw()
@@ -144,6 +157,7 @@ class SeekBar(Gtk.DrawingArea):
         current_x = self._start_x + offset_x
         self._value = self._value_for_x(current_x)
         self.queue_draw()
+        self._dragging = False
         if self._on_seek is not None:
             self._on_seek(self._value)
         # seek 是异步的：保持“冻结”一小段时间，期间忽略外部位置更新，
@@ -162,6 +176,11 @@ class SeekBar(Gtk.DrawingArea):
 
         def _unfreeze():
             self._seek_freeze_id = None
+            # 若用户正在拖动（drag-begin 已触发、drag-end 未到），不要解冻——
+            # 否则会打断拖动，导致 position 把进度条拉回（「一弹一弹」）。
+            # 拖动的解冻由 drag-end 的 _freeze_after_seek 负责。
+            if self._dragging:
+                return False
             self._seeking = False
             return False
 

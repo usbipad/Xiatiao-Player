@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import weakref
 from typing import List
 
 from gi.repository import Gdk, Gtk

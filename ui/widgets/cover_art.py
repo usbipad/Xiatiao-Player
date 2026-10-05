@@ -154,6 +154,9 @@ class CoverArt(Gtk.Box):
             # 无封面：保留当前显示（占位或旧图）由调用方决定；这里不动
             return
         try:
+            # 显式断开旧纹理再设新：促使 GDK 释放旧纹理，避免切歌累积
+            # （GDK 对 set_paintable 替换的旧纹理释放有延迟）。
+            self._cover_picture.set_paintable(None)
             self._cover_picture.set_paintable(texture)
             self._cover_stack.set_visible_child_name("cover")
         except Exception:

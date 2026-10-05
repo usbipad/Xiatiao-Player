@@ -151,12 +151,6 @@ class PlayerCore(GObject.Object):
         if callable(fn):
             fn(yaml_str)
 
-    def set_engine(self, camilla: bool = False) -> None:
-        """兼容接口：Camilla 是否参与由后端自动推导。"""
-        fn = getattr(self._backend, "set_engine", None)
-        if callable(fn):
-            fn(camilla)
-
     def set_coloring(self, tube_drive: float, bbe_amount: float) -> None:
         """下发音色染色参数。"""
         fn = getattr(self._backend, "set_coloring", None)

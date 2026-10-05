@@ -18,8 +18,6 @@ pub enum Request {
     SetDsp { params: serde_json::Value },
     /// 嵌入式 camillalib 配置（YAML 字符串），实时生效。
     SetCamillaYaml { yaml: String },
-    /// 运行时切换引擎参与：camilla=true 时 Camilla 引擎参与串联。
-    SetEngine { camilla: bool },
     /// 音色染色参数（电子管 drive / BBE amount），实时生效。
     SetColoring { tube_drive: f32, bbe_amount: f32 },
     /// 重置 DSP 到默认参数，返回默认参数。

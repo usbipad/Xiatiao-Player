@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import urllib.request
+import weakref
 from typing import Callable, List, Optional
 
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, GObject, Gtk

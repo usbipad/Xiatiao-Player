@@ -163,9 +163,15 @@ class DspState(GObject.Object):
             log.warning("DspState.patch 在广播回调中被再次调用，已忽略: %r",
                         list(changes.keys()))
             return
-        # 合并（深拷贝，隔离外部引用）
+        # 合并（深拷贝，隔离外部引用）。
+        # 只接受已知字段（与 replace 一致）：未知键写入毫无意义——它会被
+        # 持久化进 config，也会下发给 Rust（serde 忽略但配置残留垃圾）。
+        unknown = [k for k in changes if k not in self._params]
+        if unknown:
+            log.warning("DspState.patch 忽略未知字段: %r", unknown)
         for k, v in changes.items():
-            self._params[k] = copy.deepcopy(v)
+            if k in self._params:
+                self._params[k] = copy.deepcopy(v)
         if persist:
             self._persist()
         self._emit_changed("changed", source)

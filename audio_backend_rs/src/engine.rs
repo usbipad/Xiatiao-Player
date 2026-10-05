@@ -258,10 +258,6 @@ impl Engine {
                 }
                 Event::Ack { cmd: "set_coloring".into() }
             }
-            Request::SetEngine { .. } => {
-                // Camilla 是否参与由 DSP 参数自动推导，此命令保留兼容
-                Event::Ack { cmd: "set_engine".into() }
-            }
             Request::ResetDsp => {
                 // 重置为默认参数
                 let default = crate::dsp::DspParams::default();

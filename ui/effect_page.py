@@ -1698,18 +1698,20 @@ class EffectPage(Adw.PreferencesPage):
 
     def _emit_now(self) -> bool:
         self._emit_timer = None
-        # 重构后：统一写 DspState（唯一真相源），由 window 订阅广播下发。
+        clear = getattr(self, "_pending_clear_mark", True)
+        # 统一写 DspState（唯一真相源），由 window 订阅广播下发。
         # 不再直接调 _on_dsp_changed（多入口是历史竞态的根源）。
         if getattr(self, "_dsp_state", None) is not None:
             try:
                 self._dsp_state.replace(dict(self._params), source=self)
+                if clear:
+                    self._clear_effect_mark()
                 return False
             except Exception:
                 import logging as _lg
                 _lg.getLogger(__name__).debug("写 DspState 失败，回退旧路径", exc_info=True)
         # 回退：无 DspState 时走旧的直调回调（兼容/降级）
         if self._on_dsp_changed is not None:
-            clear = getattr(self, "_pending_clear_mark", True)
             try:
                 self._on_dsp_changed(dict(self._params), clear_mark=clear, immediate=True)
             except TypeError:
@@ -1718,6 +1720,21 @@ class EffectPage(Adw.PreferencesPage):
                 except TypeError:
                     self._on_dsp_changed(dict(self._params))
         return False
+
+    def _clear_effect_mark(self) -> None:
+        """手动改参数 → 清空「当前音效」标记（走单一状态源广播）。
+
+        语义：改参数后已不是任何预设；DSP 总开关关闭时标记为「关闭」。
+        原来由 window._on_dsp_changed 顺带做，现随下发路径移到触发点
+        （谁改参数谁负责清标记），消除对回退路径的隐式依赖。
+        """
+        try:
+            from core.effect_state import get_effect_state
+            enabled = bool(self._params.get("enabled", False))
+            get_effect_state().set_current("关闭" if not enabled else "")
+        except Exception:
+            import logging as _lg
+            _lg.getLogger(__name__).debug("清空音效标记失败", exc_info=True)
 
     def params(self) -> dict:
         return dict(self._params)
