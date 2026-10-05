@@ -110,6 +110,16 @@ class PlayerCore(GObject.Object):
     def seek_seconds(self, seconds: float) -> None:
         self._backend.seek_seconds(seconds)
 
+    def expect_position(self, seconds: float) -> None:
+        """声明「期望位置」（切歌 target=0 / 切音质 target=当前进度）。
+
+        转发给后端：过滤切换瞬间可能残留的旧位置，避免进度条回跳。
+        后端不支持时静默跳过（兼容降级），不抛异常。
+        """
+        fn = getattr(self._backend, "expect_position", None)
+        if callable(fn):
+            fn(seconds)
+
     def set_volume(self, v: float) -> None:
         try:
             v = max(0.0, min(1.0, float(v)))

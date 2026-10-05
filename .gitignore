@@ -21,6 +21,10 @@ tools/camilladsp-src/.vscode/
 # 本地代码快照备份
 backups/
 
+# 外部 API 服务端项目（独立仓库，软链接到此，不入库）
+# 注：不带斜杠，确保软链接形式也能匹配（带斜杠只匹配真实目录）。
+xiatiao-api
+
 # 补丁残留文件（*.bak / *.tmp / *.orig / *.pre_* / 编辑器临时文件）
 *.bak
 *.bak_*

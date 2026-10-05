@@ -237,22 +237,7 @@ class PlayerPanel(Gtk.Box):
         self.label_artist.set_hexpand(False)
         # 左右渐隐遮罩：与歌词区 np-fade 同机制（覆盖条 + CSS 渐变）。
         # 让跑马灯文字滚到两端时柔和淡出，而非硬切。
-        # 歌名行：Overlay —— 歌名（跑马灯 + 渐隐）为底，音质徽章叠在右侧。
-        # 徽章不参与横向排布，避免被跑马灯 300 宽挤掉/盖住。
-        _title_overlay = Gtk.Overlay()
-        _title_overlay.set_halign(Gtk.Align.CENTER)
-        _title_overlay.set_child(self._wrap_with_fade(self.label_track))
-        # 歌名旁：只读「实际音质」徽章（不可点；选档按钮已移到技术信息行）。
-        # 样式类由 apply_quality_badge / set_quality_info 按规格动态添加
-        # （dsd256-badge / hires-badge …），与列表封面保持一致，故不再加旧
-        # 的 quality-badge 类（其两重选择器会压过规格类）。
-        self.quality_badge = Gtk.Label(label="")
-        self.quality_badge.set_valign(Gtk.Align.CENTER)
-        self.quality_badge.set_halign(Gtk.Align.END)
-        self.quality_badge.set_margin_end(4)
-        self.quality_badge.set_visible(False)
-        _title_overlay.add_overlay(self.quality_badge)
-        info_box.append(_title_overlay)
+        info_box.append(self._wrap_with_fade(self.label_track))
         info_box.append(self._wrap_with_fade(self.label_artist))
         # 套 WindowHandle：拖动歌名/歌手区域也能移动窗口（纯文字，无交互冲突）
         info_handle = Gtk.WindowHandle()
@@ -317,10 +302,17 @@ class PlayerPanel(Gtk.Box):
         self._fmt_box = _fmt_box
         self.label_time_right = Gtk.Label(label="0:00")
         self.label_time_right.add_css_class("caption")
-        # CenterBox：中间留空，两侧时间对齐。
+        # 音质「实际规格」徽章（不可点）：放在进度条下方时间行正中。
+        # 样式类由 apply_quality_badge / set_quality_info 按规格动态添加
+        # （dsd256-badge / hires-badge …），与列表封面保持一致。
+        self.quality_badge = Gtk.Label(label="")
+        self.quality_badge.set_valign(Gtk.Align.CENTER)
+        self.quality_badge.set_visible(False)
+        # CenterBox：中间放徽章，两侧时间对齐。
         # 左右 margin 与进度条一致（24px），使两端时间与进度条对齐。
         time_box = Gtk.CenterBox()
         time_box.set_start_widget(self.label_time_left)
+        time_box.set_center_widget(self.quality_badge)
         time_box.set_end_widget(self.label_time_right)
         time_box.set_margin_start(24)
         time_box.set_margin_end(24)
@@ -1499,8 +1491,8 @@ class PlayerPanel(Gtk.Box):
     def reset_position(self) -> None:
         """切歌时重置进度显示，避免沿用上一首的位置。
 
-        旧曲目的 position 事件由后端 play_gen 过滤（RustBackend._dispatch
-        丢弃旧代次事件），此处无需额外冻结。
+        过滤由 RustBackend 的「代次 gen + 期望位置 expected_pos」完成
+        （见 _dispatch），此处仅做 UI 清零。
         """
         self.progress.reset()
         self.label_time_left.set_text("0:00")

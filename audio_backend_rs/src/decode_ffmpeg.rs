@@ -12,6 +12,32 @@ use std::sync::Arc;
 use crate::dsp::DspParams;
 use crate::shared::{viz_fifo_path, Shared};
 
+/// 是否网络流（http/https）。仅这类输入需要 ffmpeg 重连，
+/// 本地文件不需要（本地 read 返回 0 基本就是真 EOF）。
+pub(crate) fn is_network_stream(path: &str) -> bool {
+    path.starts_with("http://") || path.starts_with("https://")
+}
+
+/// 给 ffmpeg 输入参数追加「网络重连」选项（仅网络流）。
+///
+/// 标准做法：让 ffmpeg 自身处理断流重连，上层无需感知网络抖动。
+///   -reconnect 1              允许 HTTP 重连
+///   -reconnect_streamed 1     对流式输入也重连（我们的场景）
+///   -reconnect_delay_max 2    每次重连最多等 2s，之后继续（勿设太大以免静默过久）
+///   -reconnect_at_eof 0       真 EOF 时不重连（保证正常结束能触发 end_of_stream）
+/// 注意：这些选项必须放在 `-i` 之前（作用于输入）。
+fn push_input_args(cmd: &mut std::process::Command, path: &str) {
+    if is_network_stream(path) {
+        cmd.args([
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "2",
+            "-reconnect_at_eof", "0",
+        ]);
+    }
+    cmd.arg("-i").arg(path);
+}
+
 /// 启动 pw-cat 子进程，声明原始采样率/声道，返回其 stdin 对应的子进程。
 ///
 /// 用 PIPEWIRE_PROPS 覆盖 PipeWire 客户端属性，使媒体控件显示为播放器名。
@@ -161,9 +187,11 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
         None
     };
     // 启动 ffmpeg：不加 -ar / -af，用 ffmpeg 默认采样率输出（保持原样）。
-    let mut ff = crate::deps::command("ffmpeg")
-        .args(["-v", "error", "-nostdin"])
-        .args(["-i", path])
+    // 网络流额外启用重连（标准做法），本地文件不加。
+    let mut cmd = crate::deps::command("ffmpeg");
+    cmd.args(["-v", "error", "-nostdin"]);
+    push_input_args(&mut cmd, path);
+    let mut ff = cmd
         .args(["-f", "f32le", "-ac", &ch.to_string(), "-"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -181,6 +209,9 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
     // 同时避免无限重试死循环。声明在 loop 外，否则 continue 会被重置。
     let mut seek_eof_retries: u32 = 0;
     const SEEK_EOF_MAX_RETRIES: u32 = 150;
+    // 「已播时长 vs 总时长」判定用：允许已播比总时长略短仍算播完
+    // （编码器尾部 padding / 时长元数据误差）。取 2 秒。
+    const EOF_DURATION_TOLERANCE_SECS: f64 = 2.0;
     // seek 后待恢复 Playing 的标志：必须跨迭代保持（读到第一块新数据才清），
     // 否则 EOF 重试时 just_seeked 被重置为 false，重试逻辑失效。
     let mut just_seeked = false;
@@ -218,9 +249,10 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             carry.clear();
 
             let ss = seek_ms as f64 / 1000.0;
-            ff = crate::deps::command("ffmpeg")
-                .args(["-v", "error", "-nostdin", "-ss", &format!("{ss}")])
-                .args(["-i", path])
+            let mut scmd = crate::deps::command("ffmpeg");
+            scmd.args(["-v", "error", "-nostdin", "-ss", &format!("{ss}")]);
+            push_input_args(&mut scmd, path);
+            ff = scmd
                 .args(["-f", "f32le", "-ac", &ch.to_string(), "-"])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -253,7 +285,14 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             }
         }
 
-        let n = ff_out.read(&mut buf).unwrap_or(0);
+        let n = match ff_out.read(&mut buf) {
+            Ok(n) => n,
+            // 被信号打断：非错误，重试。
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            // 其它读取错误（管道断裂等）：不是「播完」，当作「暂时无数据」
+            // 交给下方证据判定，避免把真错误伪装成正常结束。
+            Err(_) => 0,
+        };
         if n == 0 {
             // 【关键】read 返回 0 不等于「整首播完」。以下情况都会返回 0
             // 但并非真结束：
@@ -264,9 +303,24 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             // 若直接把 0 判为 EOF，会向客户端误报 end_of_stream，导致
             // 播放器「自动下一首」并陷入无限切歌。
             //
-            // 故：任何一次读到 0 都先重试，累计重试达到上限（或超过最长
-            // 静默时长）才认定为真 EOF。seek 后的重试沿用同一计数。
-            if seek_eof_retries < SEEK_EOF_MAX_RETRIES {
+            // 【证据判定】用「已播时长 vs 总时长」作为决定性依据：
+            //   只要已播时长明显不足总时长，就绝不判 EOF，继续等待
+            //   （ffmpeg 已启用 -reconnect，网络抖动由其内部重连消化）。
+            //   只有「已播 ≈ 总时长」才是真结束。未知时长（total==0）
+            //   才退回固定重试次数兜底。
+            let played_secs = frames_written as f64 / in_rate.max(1) as f64;
+            let total_secs = shared.duration_ms.load(Ordering::SeqCst) as f64 / 1000.0;
+            let known_duration = total_secs > 0.0;
+            let near_end = known_duration
+                && played_secs >= (total_secs - EOF_DURATION_TOLERANCE_SECS);
+
+            if known_duration && !near_end {
+                // 铁证：远没播完 → 绝不 EOF。继续等待/重试（不设判 EOF 上限）。
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
+            // 已播 ≈ 总时长（真结束）；或未知时长且重试超限（兜底）。
+            if !known_duration && seek_eof_retries < SEEK_EOF_MAX_RETRIES {
                 seek_eof_retries += 1;
                 std::thread::sleep(std::time::Duration::from_millis(20));
                 continue;

@@ -107,6 +107,8 @@ class LocalLibraryPage(Gtk.Box):
 
         self._empty_label = Gtk.Label(label=empty_text)
         self._empty_label.add_css_class("dim-label")
+        #: 列表「本来为空」时的固定提示（区别于「搜索无结果」）
+        self._empty_text_idle = self._empty_text
         # 空提示文案为空时隐藏（不占位）。
         if not empty_text:
             self._empty_label.set_visible(False)
@@ -147,6 +149,26 @@ class LocalLibraryPage(Gtk.Box):
         self._content_overlay.add_overlay(self._locate_btn)
         self.append(self._content_overlay)
         self._apply_filter()
+
+    def _sync_empty_label(self, is_empty: bool) -> None:
+        """按「是否搜索态」显示空提示：
+
+        - 有搜索词且无结果 → 「无结果」（不显示固定提示，避免误导）；
+        - 无搜索词且列表为空 → 固定提示（如「尚未添加音乐目录」）。
+        """
+        if not is_empty:
+            self._empty_label.set_visible(False)
+            return
+        searching = bool(self._filter_text or self._group_filter)
+        if searching:
+            self._empty_label.set_text(_("无结果"))
+        else:
+            self._empty_label.set_text(self._empty_text_idle)
+        # 原文案为空且非搜索态 → 不显示
+        if not searching and not self._empty_text_idle:
+            self._empty_label.set_visible(False)
+            return
+        self._empty_label.set_visible(True)
 
     # ------------------------------------------------------------
     # 构建辅助
@@ -640,7 +662,7 @@ class LocalLibraryPage(Gtk.Box):
             self._selection.set_selected(Gtk.INVALID_LIST_POSITION)
         finally:
             self._suppress_selection = False
-        self._empty_label.set_visible(len(tracks) == 0)
+        self._sync_empty_label(len(tracks) == 0)
 
     def _render_grid(self, tracks: List[TrackItem]) -> None:
         try:
@@ -668,7 +690,7 @@ class LocalLibraryPage(Gtk.Box):
             else:
                 key = (getattr(t, "artist", "") or "未知艺术家").strip() or "未知艺术家"
             groups.setdefault(key, []).append(t)
-        self._empty_label.set_visible(len(groups) == 0)
+        self._sync_empty_label(len(groups) == 0)
         self._clear_grid_rotate_timers()
         self._grid_groups = dict(groups)
         # 只构建「当前可见」的那一份卡片：

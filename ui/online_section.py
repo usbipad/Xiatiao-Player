@@ -177,9 +177,13 @@ class CardSection(Gtk.Box):
 
         self._hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self._hbox.set_valign(Gtk.Align.START)
+        # 内容比视口窄时，ScrolledWindow 默认会把子项居中 → 单个/少量卡片
+        # 会「飘在中间」。强制 _hbox 靠左，卡片从左边排起。
+        self._hbox.set_halign(Gtk.Align.START)
         self._h_scroll = Gtk.ScrolledWindow()
         self._h_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
         self._h_scroll.set_size_request(-1, _ROW_H)
+        self._h_scroll.set_halign(Gtk.Align.FILL)
         self._h_scroll.set_child(self._hbox)
         self.append(self._h_scroll)
         self.set_visible(False)

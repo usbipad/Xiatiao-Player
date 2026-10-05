@@ -41,6 +41,11 @@ class TrackItem(GObject.Object):
     #: 该曲目支持的音质档位列表（在线歌，来自后端扩展字段）。
     #: 形如 [{"key":"lossless","name":"无损","br":999}, ...]；空=未知→回退默认五档。
     quality_levels = GObject.Property(type=object, default=None)
+    #: 后端声明的真实音频格式（扩展名，小写，如 flac/dsf/dff/mp3）。
+    #: 在线歌：Navidrome 等返回的 `suffix` 字段；本地为空（用 filepath 推）。
+    #: 用途：在线流的 stream_url 扩展名是 `view`（端点名），无法判格式，
+    #: 故用本字段判无损/DSD，避免高解析在线歌误判。
+    format_hint = GObject.Property(type=str, default="")
 
     def __init__(
         self,
@@ -60,6 +65,7 @@ class TrackItem(GObject.Object):
         channels: int = 0,
         bitrate: int = 0,
         quality_levels: list | None = None,
+        format_hint: str = "",
     ) -> None:
         super().__init__()
         self.title = title
@@ -78,8 +84,23 @@ class TrackItem(GObject.Object):
         self.channels = channels
         self.bitrate = bitrate
         self.quality_levels = quality_levels or None
+        self.format_hint = str(format_hint or "").strip().lower()
 
     # ---- 便捷方法 ----
+
+    @property
+    def is_private_backend(self) -> bool:
+        """是否来自「私有协议后端」（相对标准 Subsonic）。
+
+        判据（单一真相）：全局后端类型标志——连接时 ping 探测的 type
+        字段，白名单只认 xiatiao-api；其它（标准/未知/空）一律非私有。
+        所有「私有 vs 标准」的分支都应走本属性。
+        """
+        try:
+            from providers.subsonic import is_private_backend as _ipb
+            return bool(_ipb())
+        except Exception:
+            return False
 
     @property
     def is_local(self) -> bool:
@@ -158,10 +179,15 @@ class TrackItem(GObject.Object):
             return False
 
     def _lossless_ext(self) -> str:
-        """从 filepath 提取扩展名（小写，不含点）；无则返回空串。
+        """音频格式扩展名（小写，不含点）；无则返回空串。
 
-        用于判断是否无损格式。在线曲目用 stream_url 兜底。
+        优先用后端声明的 format_hint（在线歌 suffix=flac/dsf…）；
+        否则从 filepath / stream_url 提取（在线流的扩展名是 `view` 等，
+        不代表格式，此时依赖 format_hint）。
         """
+        hint = str(getattr(self, "format_hint", "") or "").strip().lower()
+        if hint:
+            return hint
         src = self.filepath or self.stream_url or ""
         if "." not in src:
             return ""
@@ -191,10 +217,11 @@ class TrackItem(GObject.Object):
         except Exception:
             return ""
 
-    #: 无损音频格式扩展名集合
-    _LOSSLESS_EXTS = frozenset(
-        {"flac", "ape", "wav", "wv", "alac", "aiff", "aif", "dsf", "dff"}
-    )
+    #: 无损音频格式扩展名集合（与 core.quality.LOSSLESS_CODECS 对齐）。
+    _LOSSLESS_EXTS = frozenset({
+        "flac", "ape", "wav", "wv", "wavpack", "alac", "aiff", "aif",
+        "dsf", "dff", "tta", "tak", "shn", "thd", "mlp",
+    })
 
     @property
     def is_dsd(self) -> bool:
@@ -212,23 +239,13 @@ class TrackItem(GObject.Object):
     def dsd_label(self) -> str:
         """DSD 细分标签（DSD64/DSD128/…）；非 DSD 返回空串。
 
-        按采样率 / 2822400 取倍数；无法判定时退回 'DSD'。
+        委托 core.quality.dsd_spec_from_rate（统一采样率口径容错）。
         """
         try:
             if not self.is_dsd:
                 return ""
-            sr = int(self.sample_rate or 0)
-            if sr <= 0:
-                return "DSD"
-            # DSD 倍数基准 = 44.1kHz（DSD64=64×44100=2822400）。
-            mult = round(sr / 44100)
-            if mult in (64, 128, 256, 512, 1024):
-                return f"DSD{mult}"
-            if mult > 0 and abs(mult - min((64, 128, 256, 512, 1024),
-                                           key=lambda m: abs(m - mult))) <= 8:
-                nearest = min((64, 128, 256, 512, 1024), key=lambda m: abs(m - mult))
-                return f"DSD{nearest}"
-            return "DSD"
+            from core.quality import dsd_spec_from_rate
+            return dsd_spec_from_rate(int(self.sample_rate or 0)).upper()
         except Exception:
             return "DSD"
 

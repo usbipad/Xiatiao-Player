@@ -975,6 +975,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_add_to_playlist=self._on_add_tracks_to_playlist,
             on_online_load_more=self._on_online_library_load,
             track_actions=_track_actions,
+            on_tab_changed=self._on_library_tab_changed,
         )
         # 兼容：原 local_page 引用指向本地列表
         self.local_page = self.library_page.local_list
@@ -1114,6 +1115,34 @@ class MainWindow(Adw.ApplicationWindow):
         self._update_online_nav_state()
         if not ok:
             return
+        # 连接成功：重新探测后端类型（用户可能刚切换了后端）。
+        # 后台 ping 一次，把 type 记入全局标志（决定音质档位等）。
+        try:
+            from core.tasks import run_async
+            from providers.subsonic import SubsonicProvider, set_backend_type
+
+            def _work():
+                try:
+                    return SubsonicProvider()._request("ping", timeout=5.0)
+                except Exception:
+                    return {}
+
+            def _done(body):
+                try:
+                    set_backend_type((body or {}).get("type", ""))
+                except Exception:
+                    pass
+                # 类型可能变化 → 刷新当前面板（音质下拉可见性）
+                try:
+                    cur = self.playlist.current_track()
+                    if cur is not None:
+                        self._update_panel_format(cur)
+                except Exception:
+                    pass
+
+            run_async(work=_work, on_done=_done)
+        except Exception:
+            pass
         # 连接成功：强制重新拉取在线数据（清掉「已加载」标记）
         self._online_loaded = False
         try:
@@ -1176,6 +1205,21 @@ class MainWindow(Adw.ApplicationWindow):
 
         def _done(result):
             self._subsonic_online = bool(result)
+            # 记录后端类型（标准 Subsonic vs 私有协议后端）。
+            # 私有后端返回自定义 type（如 xiatiao-api）；标准返回
+            # navidrome/subsonic 等。据此决定是否显示音质档位等。
+            try:
+                from providers.subsonic import set_backend_type
+                set_backend_type((result or {}).get("type", ""))
+            except Exception:
+                pass
+            # 后端类型可能变化（用户切换后端）→ 刷新当前面板。
+            try:
+                cur = self.playlist.current_track()
+                if cur is not None:
+                    self._update_panel_format(cur)
+            except Exception:
+                pass
             self._update_online_nav_state()
             # 启动预加载：连通且尚未加载过 → 后台拉在线数据，
             # 这样用户进「在线」页时即已就绪（无需等待）。
@@ -1270,11 +1314,20 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_nav_clicked(self, _btn, key: str) -> None:
         self._switch_page(key)
 
+    def _on_library_tab_changed(self, which: str) -> None:
+        """曲库页切换本地/在线 tab → 记录（供搜索框区分走哪条搜索）。"""
+        self._library_tab = which or "local"
+
     def _on_global_search(self, entry) -> None:
         """HeaderBar 搜索框：在线页走异步搜索，其他页过滤当前页。"""
         text = entry.get_text().strip()
-        # 在线页：搜索走 Subsonic 异步（防抖在 provider 侧无，这里直接用）
+        # 在线页：搜索走 Subsonic 异步
         if getattr(self, "_active_source", None) == "online":
+            self._online_search_input(text)
+            return
+        # 曲库页的「在线」tab：也走在线搜索
+        if (getattr(self, "_active_source", None) == "local"
+                and getattr(self, "_library_tab", "local") == "online"):
             self._online_search_input(text)
             return
         page = None
@@ -1283,14 +1336,12 @@ class MainWindow(Adw.ApplicationWindow):
         elif self._active_source == "liked":
             page = getattr(self, "liked_page", None)
         elif self._active_source == "home":
-            # 主页：过滤专辑 / 艺术家两块（历史不过滤）
             for pg in (getattr(self.home_page, "albums_page", None),
                        getattr(self.home_page, "artists_page", None)):
                 if pg is not None and hasattr(pg, "set_filter_text"):
                     pg.set_filter_text(text)
             return
         elif self._active_source == "playlists":
-            # 歌单页不支持搜索过滤
             return
         elif self._active_source == "albums":
             page = getattr(self, "albums_page", None)
@@ -1659,8 +1710,14 @@ class MainWindow(Adw.ApplicationWindow):
                 pass
             self._online_search_timer = 0
         if not text:
+            # 清空搜索：在线页回浏览视图；曲库页在线 tab 重拉在线曲库首屏
+            # （原列表已被搜索结果覆盖，无法就地恢复，只能重拉）。
             try:
-                self.online_page.show_browse()
+                if getattr(self, "_active_source", None) == "local":
+                    self.library_page.reset_online()
+                    self._on_online_library_load(0, 100)
+                else:
+                    self.online_page.show_browse()
             except Exception:
                 pass
             return
@@ -1668,6 +1725,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._online_search_timer = GLib.timeout_add(500, self._online_search_fire, text)
 
     def _online_search_fire(self, text: str) -> bool:
+        log.info("[在线搜索fire] text=%r", text)
         self._online_search_timer = 0
         if not self._subsonic_usable():
             return False
@@ -1676,9 +1734,16 @@ class MainWindow(Adw.ApplicationWindow):
             if p is None:
                 self.online_page.show_status(_("在线音源未配置"))
                 return False
-            if not getattr(self, "_online_search_connected", False):
-                p.connect("search-finished", self._on_online_search_finished)
-                self._online_search_connected = True
+            # 确保 search-finished 一定连上：用 provider 身份记录已连对象，
+            # provider 换了才重连（旧的一次性布尔标志会在 provider 替换后
+            # 漏连，导致结果发不出、卡「搜索中」）。
+            _pid = id(p)
+            if getattr(self, "_search_connected_pid", None) != _pid:
+                try:
+                    p.connect("search-finished", self._on_online_search_finished)
+                    self._search_connected_pid = _pid
+                except Exception as exc:
+                    log.warning("连接 search-finished 失败: %s", exc)
             self.online_page.show_status(_("搜索中…"))
             p.search_async(text)
         except Exception as exc:
@@ -1686,10 +1751,26 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def _on_online_search_finished(self, _p, query: str, result) -> None:
+        log.info("[在线搜索完成回调] query=%r 数=%d active=%r",
+                 query, len(list(result or [])), getattr(self, "_active_source", None))
+        # 结果显示在「用户当前所在的页」：
+        # - 曲库页（在线 tab）搜 → 结果填曲库页的在线列表；
+        # - 在线页搜 → 结果填在线页的结果视图。
         try:
-            self.online_page.show_results(query, result)
-        except Exception:
-            pass
+            if getattr(self, "_active_source", None) == "local":
+                _lst = list(result or [])
+                self.library_page.online_list.set_tracks(_lst)
+                # 搜索无结果 → 提示「无结果」，而非固定空提示。
+                if not _lst:
+                    try:
+                        self.library_page.online_list._empty_label.set_text(_("无结果"))
+                        self.library_page.online_list._empty_label.set_visible(True)
+                    except Exception:
+                        pass
+            else:
+                self.online_page.show_results(query, result)
+        except Exception as exc:
+            log.warning("[在线搜索完成回调] 显示结果失败: %s", exc)
 
     def _on_online_search_more(self, query: str, offset: int, count: int) -> None:
         """搜索结果滚动到底 → 拉下一页并追加。"""
@@ -1870,8 +1951,8 @@ class MainWindow(Adw.ApplicationWindow):
             pass
         cur = None
         try:
-            p = self._get_provider("subsonic")
-            # 遍历队列，把在线歌的 stream_url 按新档位重建
+            # 遍历队列，把在线歌的 stream_url 按新档位重建。
+            # 统一走 _subsonic_stream_url：私有后端按档位、标准直传。
             try:
                 tracks = self.playlist.tracks()
             except Exception:
@@ -1880,16 +1961,16 @@ class MainWindow(Adw.ApplicationWindow):
                 try:
                     if getattr(t, "source_type", "") == "subsonic":
                         sid = getattr(t, "source_id", "") or ""
-                        if p is not None and sid:
-                            t.stream_url = p.stream_url(sid)
+                        if sid:
+                            t.stream_url = self._subsonic_stream_url(sid)
                 except Exception:
                     continue
             # 当前曲目：更新其 URL
             cur = self.playlist.current_track()
             if cur is not None and getattr(cur, "source_type", "") == "subsonic":
                 sid = getattr(cur, "source_id", "") or ""
-                if p is not None and sid:
-                    cur.stream_url = p.stream_url(sid)
+                if sid:
+                    cur.stream_url = self._subsonic_stream_url(sid)
         except Exception as exc:
             log.debug("切换音质失败: %s", exc)
         # 同步下拉框选中项（不触发回调）；徽章先按所选占位，
@@ -1917,7 +1998,12 @@ class MainWindow(Adw.ApplicationWindow):
                 if url:
                     # 后端未连接时 play_file 返回 False 并已发出明确错误，
                     # 此时不能谎报「已无缝切换」。
-                    # （重载流的进度回跳由后端 play_gen 过滤解决，无需冻结。）
+                    # 声明期望位置 = 当前进度：过滤重载瞬间后端归零的位置，
+                    # 进度条停在原位不跳；seek 回到 pos 后达成即恢复跟随。
+                    try:
+                        self.player.expect_position(pos)
+                    except Exception as exc:
+                        log.debug("expect_position 失败: %s", exc)
                     if self.player.play_file(url):
                         if pos > 0.5:
                             # 稍等新流就绪再 seek 到原位置
@@ -1968,16 +2054,20 @@ class MainWindow(Adw.ApplicationWindow):
         box.set_margin_top(4)
         box.set_margin_bottom(4)
 
-        # 音质下拉
-        qrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        qrow.append(Gtk.Label(label=_("音质"), xalign=0))
-        q_dropdown = Gtk.DropDown.new_from_strings([label for _, label in QUALITY_LABELS])
-        q_dropdown.set_hexpand(True)
+        # 音质档位：仅私有协议后端可选。
+        # 标准 Subsonic 不按档位转码——下载原文件，故不显示音质选项。
+        _is_private = bool(getattr(track, "is_private_backend", False))
         keys = [k for k, _ in QUALITY_LABELS]
-        if cur_q in keys:
-            q_dropdown.set_selected(keys.index(cur_q))
-        qrow.append(q_dropdown)
-        box.append(qrow)
+        q_dropdown = None
+        if _is_private:
+            qrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            qrow.append(Gtk.Label(label=_("音质"), xalign=0))
+            q_dropdown = Gtk.DropDown.new_from_strings([label for _, label in QUALITY_LABELS])
+            q_dropdown.set_hexpand(True)
+            if cur_q in keys:
+                q_dropdown.set_selected(keys.index(cur_q))
+            qrow.append(q_dropdown)
+            box.append(qrow)
 
         # 目录行
         drow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -2002,7 +2092,8 @@ class MainWindow(Adw.ApplicationWindow):
         dlg = Adw.MessageDialog(
             transient_for=self,
             heading=_("下载"),
-            body=_("选择音质与保存位置"),
+            body=(_("选择音质与保存位置") if _is_private
+                  else _("选择保存位置")),
         )
         dlg.set_extra_child(box)
         dlg.add_response("cancel", _("取消"))
@@ -2031,8 +2122,10 @@ class MainWindow(Adw.ApplicationWindow):
         def _on_resp(_dlg, resp):
             if resp != "ok":
                 return
-            idx = q_dropdown.get_selected()
-            quality = keys[idx] if 0 <= idx < len(keys) else cur_q
+            quality = cur_q
+            if q_dropdown is not None:
+                idx = q_dropdown.get_selected()
+                quality = keys[idx] if 0 <= idx < len(keys) else cur_q
             dest = dir_entry.get_text().strip() or default_dir
             name = name_entry.get_text().strip() or default_name
             # 记住目录（下次默认）。
@@ -2058,8 +2151,13 @@ class MainWindow(Adw.ApplicationWindow):
             p = self._get_provider("subsonic")
             if p is None:
                 raise RuntimeError("在线音源不可用")
-            # 按所选档位构造下载 URL（兼容标准 Subsonic）。
-            url = p.download_url(sid, quality)
+            # 私有协议后端才按所选档位下载；
+            # 标准 Subsonic 不按档位转码——下载原文件直传（maxBitRate=0）。
+            _is_private = bool(getattr(track, "is_private_backend", False))
+            if _is_private:
+                url = p.download_url(sid, quality)
+            else:
+                url = p.stream_url(sid, max_bit_rate=0)
             path = _dl.download_audio(url, dest_dir, base_name)
             # 元数据（尽力而为，失败不影响音频）。
             meta_err = ""
@@ -2104,6 +2202,8 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_online_playlist_click(self, pl) -> None:
         """点击在线歌单卡片：异步拉歌曲，填详情页并切换过去。"""
         from core.tasks import run_async
+        import time as _t
+        _t0 = _t.monotonic()
 
         def _work():
             # 用 playlist_tracks_safe：区分「空歌单」与「加载失败」。
@@ -2111,18 +2211,32 @@ class MainWindow(Adw.ApplicationWindow):
             p = self._get_provider("subsonic")
             if p is None:
                 return ([], "在线音源未就绪")
-            return p.playlist_tracks_safe(pl.id)
+            _ta = _t.monotonic()
+            result = p.playlist_tracks_safe(pl.id)
+            log.info("[歌单计时] 网络拉取+转换 %.0fms（%d 首）",
+                     (_t.monotonic() - _ta) * 1000, len(result[0] or []))
+            return result
 
         def _done(result):
             try:
+                _tb = _t.monotonic()
                 tracks, err = result
                 if err:
                     self._toast(_("歌单加载失败：{err}").format(err=err))
                 self._online_detail_tracks = list(tracks or [])
                 self.online_page.show_playlist_detail(getattr(pl, "name", ""), tracks or [])
+                log.info("[歌单计时] 渲染+切换 %.0fms | 端到端 %.0fms（%d 首）",
+                         (_t.monotonic() - _tb) * 1000,
+                         (_t.monotonic() - _t0) * 1000, len(tracks or []))
             except Exception:
                 pass
 
+        # 立即切到详情页 + 显示「加载中」：大歌单网络拉取可能数秒，
+        # 先给反馈，避免界面像卡死（无任何提示）。
+        try:
+            self.online_page.show_detail_loading(getattr(pl, "name", ""))
+        except Exception:
+            pass
         run_async(work=_work, on_done=_done)
 
     def _play_from_list(self, track, tracks) -> None:
@@ -2655,6 +2769,11 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
+        # 先显示「加载中」，避免网络拉取期间无反馈。
+        try:
+            self.online_page.show_detail_loading(name or "")
+        except Exception:
+            pass
         run_async(work=_work, on_done=_done)
 
     def _recommendation_cards(self, cards) -> list:
@@ -2700,6 +2819,11 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
+        # 先显示「加载中」，避免网络拉取期间无反馈。
+        try:
+            self.online_page.show_detail_loading(name or "")
+        except Exception:
+            pass
         run_async(work=_work, on_done=_done)
 
     def _song_nodes_to_cards(self, tracks) -> list:
@@ -2737,23 +2861,45 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
+        # 先显示「加载中」，避免网络拉取期间无反馈。
+        try:
+            self.online_page.show_detail_loading(name or "")
+        except Exception:
+            pass
         run_async(work=_work, on_done=_done)
+
+    def _subsonic_stream_url(self, sid: str) -> str:
+        """按「后端类型」构造在线歌 stream_url（单一入口，避免各处漏判）。
+
+        私有协议后端：按当前音质档位（maxBitRate=999/1400/2000…）。
+        标准 Subsonic：不按档位转码——原文件直传（maxBitRate=0）。
+        无 provider / 出错返回空串。
+        """
+        if not sid:
+            return ""
+        try:
+            p = self._get_provider("subsonic")
+            if p is None:
+                return ""
+            from providers.subsonic import is_private_backend
+            if is_private_backend():
+                return p.stream_url(sid)
+            return p.stream_url(sid, max_bit_rate=0)
+        except Exception as exc:
+            log.debug("构造在线 stream_url 失败: %s", exc)
+            return ""
 
     def _row_stream_url(self, row: dict) -> str:
         """从历史/收藏的 DB 行，动态构造在线歌的 stream_url。
 
         本地歌返回空串（用 filepath）。历史/收藏不存 stream_url，
         因为 token 有时效；这里按 source_id 现场构造。
+        后端类型判断统一走 _subsonic_stream_url。
         """
         src = row.get("source_type") or SOURCE_LOCAL
         sid = row.get("source_id") or ""
         if src == "subsonic" and sid:
-            try:
-                p = self._get_provider("subsonic")
-                if p is not None:
-                    return p.stream_url(sid)
-            except Exception:
-                pass
+            return self._subsonic_stream_url(sid)
         return ""
 
     def _refresh_liked_page(self) -> None:
@@ -3073,6 +3219,16 @@ class MainWindow(Adw.ApplicationWindow):
             self.player_panel.set_track_info(track.title, track.artist)
             self._update_panel_format(track)
             self.now_playing.set_track(track.title, track.artist)
+            # 兜底时长：曲目元数据里的 duration_seconds 先撑起进度条，
+            # 使在线流即便 ffprobe 拿不到时长也能拖动 seek；
+            # 后端实测时长到达后会覆盖（见 _on_duration_changed）。
+            try:
+                _dur = float(getattr(track, "duration_seconds", 0) or 0)
+                if _dur > 0:
+                    self.player_panel.set_duration(_dur)
+                    self.now_playing.set_duration(_dur)
+            except Exception:
+                pass
         except Exception:
             pass
         # 通知各列表页记录当前播放曲目（供「定位当前播放」按钮使用）
@@ -3111,6 +3267,12 @@ class MainWindow(Adw.ApplicationWindow):
             return
         if self.playlist.is_playable(track):
             url = self._play_url_for(track)
+            # 声明期望位置 0（新曲目从头）：过滤切换瞬间可能残留的旧位置，
+            # 避免进度条「回 0 再跳回上一首」。达成/超时自动解除。
+            try:
+                self.player.expect_position(0.0)
+            except Exception as exc:
+                log.debug("expect_position 失败: %s", exc)
             started = self.player.play_file(url)
             if not started:
                 # 后端未连接/未启动：play_file 已发出明确错误（error-occur
@@ -3142,7 +3304,12 @@ class MainWindow(Adw.ApplicationWindow):
             try:
                 p = self._get_provider("subsonic")
                 if p is not None and sid:
-                    url = p.stream_url(sid)
+                    # 私有协议后端才按音质档位请求；
+                    # 标准 Subsonic 不按档位转码——有什么歌播什么歌
+                    # （maxBitRate=0 原文件直传，避免被服务端降码率）。
+                    _is_private = bool(getattr(track, "is_private_backend", False))
+                    url = (p.stream_url(sid) if _is_private
+                           else p.stream_url(sid, max_bit_rate=0))
                     track.stream_url = url  # 回写，保持一致
                     return url
             except Exception as exc:
@@ -4464,8 +4631,12 @@ class MainWindow(Adw.ApplicationWindow):
             self._stuck_checked = False
 
     def _on_duration_changed(self, _player, seconds: float) -> None:
-        self.player_panel.set_duration(seconds)
-        self.now_playing.set_duration(seconds)
+        # 后端实测时长（ffprobe）。部分在线流的 ffprobe 拿不到时长（dur=0），
+        # 若用 0 覆盖，SeekBar 会变成「无时长」→ 拖动无效、无法 seek。
+        # 故仅在拿到有效时长时覆盖，否则保留曲目元数据兜底的时长。
+        if seconds and seconds > 0:
+            self.player_panel.set_duration(seconds)
+            self.now_playing.set_duration(seconds)
 
     def _on_end_of_stream(self, _player) -> None:
         # 秒 eos 检测：失效曲目（流拿不到 / 文件已删）会「刚播就结束」，
@@ -4614,14 +4785,18 @@ class MainWindow(Adw.ApplicationWindow):
                 q = self.player_panel._current_quality()
             except Exception:
                 q = "lossless"
+            # 该歌支持的音质档位；仅私有协议后端才显示音质下拉框。
+            qlevels = getattr(track, "quality_levels", None)
+            is_private = bool(getattr(track, "is_private_backend", False))
             try:
-                self.player_panel.set_available_qualities(None)
+                self.player_panel.set_available_qualities(qlevels)
             except Exception:
                 pass
-            # 显示音质选择下拉框，并同步选中到当前档位（不触发回调）。
+            # 显示音质选择下拉框（仅私有协议后端），并同步选中到当前档位。
             try:
-                self.player_panel.quality_dropdown.set_visible(True)
-                self.player_panel.set_quality_dropdown(q)
+                self.player_panel.quality_dropdown.set_visible(is_private)
+                if is_private:
+                    self.player_panel.set_quality_dropdown(q)
             except Exception as exc:
                 log.warning("[面板格式] 显示音质下拉框失败: %s", exc)
             # 规格徽章只表示「实际音质」：切歌瞬间尚未探测，先隐藏，
@@ -4691,9 +4866,10 @@ class MainWindow(Adw.ApplicationWindow):
             self.player_panel.set_quality_info(spec, actual=True, multichannel=mc)
         except Exception as exc:
             log.debug("校正实际音质徽章失败: %s", exc)
-        # 降级提示：仅在线歌（本地无「所选档位」概念），且实际低于所选时。
+        # 降级提示：仅私有协议后端 + 在线歌，且实际低于所选时。
+        # 标准 Subsonic 不按档位转码，无「所选档位」概念，故不提示。
         try:
-            if (getattr(track, "source_type", "") == "subsonic"
+            if (getattr(track, "is_private_backend", False)
                     and spec and mc == ""):
                 chosen = ""
                 try:
@@ -5408,10 +5584,9 @@ class MainWindow(Adw.ApplicationWindow):
             for t in tracks:
                 try:
                     if getattr(t, "source_type", "") == "subsonic" and not getattr(t, "stream_url", ""):
-                        p = self._get_provider("subsonic")
                         sid = getattr(t, "source_id", "") or ""
-                        if p is not None and sid:
-                            t.stream_url = p.stream_url(sid)
+                        if sid:
+                            t.stream_url = self._subsonic_stream_url(sid)
                 except Exception:
                     pass
             idx = int(data.get("index", 0) or 0)

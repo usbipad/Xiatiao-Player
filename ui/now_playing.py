@@ -995,7 +995,8 @@ class NowPlayingPage(Gtk.Overlay):
     def reset_position(self) -> None:
         """切歌时重置进度显示，避免沿用上一首的位置或卡住 seeking。
 
-        旧曲目的 position 事件由后端 play_gen 过滤，无需额外冻结。
+        过滤由 RustBackend 的「代次 gen + 期望位置 expected_pos」完成
+        （见 _dispatch），此处仅做 UI 清零。
         """
         self._progress.reset()
         self._time_left.set_text("0:00")

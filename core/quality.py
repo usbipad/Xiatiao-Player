@@ -20,9 +20,15 @@ from __future__ import annotations
 SPEC_ORDER = ["mp3", "hq", "cd", "hr", "dxd", "dsd"]
 
 #: 无损 codec / 扩展名（小写）。
+#: 说明：
+#:   - ffprobe 与 symphonia 报的名字可能不同（如 WavPack ffprobe 报
+#:     `wavpack`、WAV 报 `pcm_*`），都需覆盖；
+#:   - `wv`/`wavpack` 是 WavPack；`tta`/`tak`/`shorten` 等为无损压缩；
+#:   - `mlp`/`truehd` 为无损多声道。
 LOSSLESS_CODECS = frozenset({
-    "flac", "alac", "wav", "ape", "wv", "aiff", "aif",
+    "flac", "alac", "wav", "ape", "wv", "wavpack", "aiff", "aif",
     "dsd", "dsf", "dff",
+    "tta", "tak", "shorten", "wmalossless", "mlp", "truehd",
 })
 
 #: DSD 扩展名。
@@ -93,12 +99,11 @@ def spec_from_info(info: dict) -> str:
     sample_rate = _to_int(info.get("sample_rate"))
     bit_depth = _to_int(info.get("bit_depth"))
 
-    # DSD：codec 以 dsd 开头（dsd / dsd_lsbf_planar / …）。
-    # 软解时 ffprobe 报的是 PCM 等效采样率（= DSD 原始率 / 8）：
-    #   DSD64 原始 2822400 → 等效 352800；DSD512 → 等效 2822400。
-    # 故 ×8 还原原始率再判倍数。
-    if codec.startswith("dsd"):
-        return dsd_spec_from_rate(sample_rate * 8)
+    # DSD：codec 以 dsd 开头（dsd / dsd_lsbf_planar / …），或扩展名
+    # dsf/dff（symphonia 路径用扩展名当 codec）。采样率口径由
+    # dsd_spec_from_rate 内部对「原值 / ×8 / ÷8」容错。
+    if codec.startswith("dsd") or codec in DSD_EXTS:
+        return dsd_spec_from_rate(sample_rate)
     # codec 缺失：按采样率/位深兜底（无法判有损，宁可显示规格）。
     # 用于音频后端未上报 codec 的路径（如某些本地格式）。
     if not codec:
@@ -112,7 +117,9 @@ def spec_from_info(info: dict) -> str:
             return "cd"
         return ""
     # 无损才继续判规格；有损直接返回空（不显示徽章）。
-    if codec not in LOSSLESS_CODECS:
+    # PCM 变体（WAV 文件 ffprobe 常报 pcm_s16le / pcm_s24le / pcm_f32le 等，
+    # 而非 "wav"）本质是无损，一并按无损处理，否则 WAV 无损歌不显示徽标。
+    if codec not in LOSSLESS_CODECS and not codec.startswith("pcm_"):
         return ""
     if sample_rate >= _DXD_MIN_RATE:
         return "dxd"
@@ -134,20 +141,30 @@ _DSD_MULT_BASE = 44_100
 def dsd_spec_from_rate(sample_rate: int) -> str:
     """按 DSD 采样率返回细分规格 key（dsd64/dsd128/…/dsd1024）。
 
-    倍数 = round(rate / 44100)（DSD64=64×44.1k=2822400）。
-    无法判定倍数（rate 为 0 或异常）时返回 'dsd'。
+    倍数基准 = CD 采样率 44.1kHz（DSD64 = 64×44100 = 2822400）。
+
+    采样率口径不确定：ffmpeg/ffprobe 常报「PCM 等效率」(= 原始率 ÷ 8，
+    如 DSD64 → 352800)；也有后端直接报原始率。故对三种口径
+    （原值 / ×8 / ÷8）都试，取最接近标准倍数(64/128/256/512/1024)的那个。
+    无法判定时返回 'dsd'。
     """
     rate = _to_int(sample_rate)
     if rate <= 0:
         return "dsd"
-    mult = round(rate / _DSD_MULT_BASE)
-    if mult in (64, 128, 256, 512, 1024):
-        return f"dsd{mult}"
-    # 非常规倍数：就近归入最接近的标准档，或退回通用 DSD。
-    if mult <= 0:
-        return "dsd"
-    nearest = min((64, 128, 256, 512, 1024), key=lambda m: abs(m - mult))
-    return f"dsd{nearest}" if abs(nearest - mult) <= 8 else "dsd"
+    _std = (64, 128, 256, 512, 1024)
+    best = None  # (偏差, 倍数)
+    for cand in (rate, rate * 8, rate / 8):
+        mult = round(cand / _DSD_MULT_BASE)
+        if mult in _std:
+            return f"dsd{mult}"
+        if mult > 0:
+            nearest = min(_std, key=lambda m: abs(m - mult))
+            dev = abs(nearest - mult)
+            if best is None or dev < best[0]:
+                best = (dev, nearest)
+    if best is not None and best[0] <= 8:
+        return f"dsd{best[1]}"
+    return "dsd"
 
 
 def is_multichannel(info: dict) -> bool:

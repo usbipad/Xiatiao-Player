@@ -77,6 +77,13 @@ class RustBackend(AudioBackend):
         self._socket_path = os.environ.get("XIATIAO_BACKEND_SOCKET", DEFAULT_SOCKET)
         #: 已接受的播放代次（Position 事件按此过滤过期事件）。
         self._pos_gen = 0
+        #: 期望位置（秒）——切歌/切音质后的「目标位置」。设置后，同代次的
+        #: position 只接受接近它的（±_EXPECT_TOLERANCE），直到达成或超时。
+        #: 用于跳过切换瞬间后端可能残留的旧位置（gen 无法覆盖的窗口）。
+        self._expected_pos: Optional[float] = None
+        #: 期望位置的达成时间戳（单调时钟），用于超时兜底（防 seek/加载失败
+        #: 导致位置永不达成而永久卡住）。
+        self._expected_deadline = 0.0
         self._proc: Optional[subprocess.Popen] = None
         self._sock: Optional[socket.socket] = None
         self._reader_thread: Optional[threading.Thread] = None
@@ -356,7 +363,29 @@ class RustBackend(AudioBackend):
                         self._pos_gen = gen
                     else:
                         return False
-            self._position = float(evt.get("sec", 0.0))
+            pos = float(evt.get("sec", 0.0))
+            # 期望位置过滤：切歌/切音质后，同代次的 position 只接受接近
+            # 目标位置的（跳过切换瞬间残留的旧位置）。达成或超时即解除。
+            exp = self._expected_pos
+            if exp is not None:
+                import time as _t
+                # 注意：gen 变化（切歌/切音质都会 gen+1）时**不清除期望**——
+                # 期望位置在新代次里依然有效（切歌期望 0、切音质期望原进度）。
+                # 仅当「位置接近期望」或「超时」才解除。
+                if abs(pos - exp) <= self._EXPECT_TOLERANCE:
+                    # 达成目标位置：恢复正常跟随。
+                    log.debug("[expect] 达成→接受（pos=%.3f exp=%.3f）", pos, exp)
+                    self._expected_pos = None
+                elif _t.monotonic() >= self._expected_deadline:
+                    # 超时兜底：放弃过滤，避免位置永不达成导致永久卡住。
+                    log.debug("[expect] 超时兜底→接受（pos=%.3f exp=%.3f）", pos, exp)
+                    self._expected_pos = None
+                else:
+                    # 仍在过渡中且位置远离目标：忽略本次（不更新进度）。
+                    log.debug("[expect] 过滤丢弃（pos=%.3f exp=%.3f 差=%.3f）",
+                              pos, exp, abs(pos - exp))
+                    return False
+            self._position = pos
             self.emit("position-update", self._position)
         elif name == "duration":
             self.emit("duration-changed", float(evt.get("sec", 0.0)))
@@ -519,6 +548,27 @@ class RustBackend(AudioBackend):
 
     def seek_seconds(self, seconds: float) -> None:
         self._send({"cmd": "seek", "seconds": max(0.0, float(seconds))})
+
+    #: 期望位置达成容差（秒）。
+    _EXPECT_TOLERANCE = 1.0
+    #: 期望位置超时（秒）：超过仍未达成则强制放弃过滤（防永久卡死）。
+    _EXPECT_TIMEOUT = 3.0
+
+    def expect_position(self, seconds: float) -> None:
+        """声明「目标位置」：之后的同代次 position 只接受接近它的。
+
+        用于切歌（target=0）/ 切音质（target=当前进度）：跳过切换瞬间
+        后端可能残留的旧位置（gen 过滤无法覆盖「新代次 + 旧值」窗口）。
+        位置达成（±容差）或超时（防卡死）后自动恢复正常跟随。
+        """
+        try:
+            import time as _t
+            self._expected_pos = max(0.0, float(seconds))
+            self._expected_deadline = _t.monotonic() + self._EXPECT_TIMEOUT
+            log.debug("[expect] 设置期望位置=%.3fs（容差%.1f 超时%.1fs）",
+                      self._expected_pos, self._EXPECT_TOLERANCE, self._EXPECT_TIMEOUT)
+        except Exception:
+            self._expected_pos = None
 
     def set_volume(self, v: float) -> None:
         v = max(0.0, min(1.0, float(v)))

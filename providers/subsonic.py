@@ -97,6 +97,44 @@ def set_runtime_quality(key: str) -> None:
     _RUNTIME_QUALITY = str(key or "")
 
 
+#: 当前后端类型标识（来自 ping 的 type 字段；连接时探测一次）。
+#: 标准 Subsonic 服务端返回 navidrome / subsonic / airsonic 等；
+#: 私有协议后端返回自定义标识（如 xiatiao-api）。
+_BACKEND_TYPE = ""
+
+#: 私有协议后端的 type 白名单。只有明确列在这里的 type 才算「私有后端」
+#: （支持音质档位）；其它一律视为「非私有」（不显示档位）——
+#: 这样未知的标准 Subsonic 服务端也不会被误判为私有。
+_PRIVATE_BACKEND_TYPES = frozenset({
+    "xiatiao-api",
+})
+
+
+def set_backend_type(t: str) -> None:
+    """记录后端类型（连接/探测时调用）。"""
+    global _BACKEND_TYPE
+    _BACKEND_TYPE = str(t or "").strip()
+
+
+def get_backend_type() -> str:
+    """当前后端类型标识（空 = 未探测）。"""
+    return _BACKEND_TYPE
+
+
+def is_private_backend() -> bool:
+    """当前后端是否为「私有协议后端」（相对标准 Subsonic）。
+
+    判据（白名单，单一真相，基于 ping 的 type 字段）：
+      - type 在 _PRIVATE_BACKEND_TYPES 白名单里 → 私有（支持音质档位）；
+      - 其它一切（标准 Subsonic、未知服务端、type 为空）→ 非私有。
+
+    用白名单而非黑名单：只有明确认识的后端才启用私有增强，
+    避免未知的标准服务端被误判。与曲目无关；所有分支都应调本函数。
+    """
+    t = _BACKEND_TYPE.strip().lower()
+    return bool(t) and t in _PRIVATE_BACKEND_TYPES
+
+
 class SubsonicProvider(BaseMusicProvider):
     """通用 Subsonic 客户端。"""
 
@@ -338,18 +376,70 @@ class SubsonicProvider(BaseMusicProvider):
                     continue
                 aid = str(a.get("id", ""))
                 if aid:
-                    # coverArt 非 Subsonic 标准字段；
-                    # 标准服务端不返回（前端占位），
-                    # 支持的后端（含扩展的国内流媒体中转）可返回封面 id/URL。
-                    cover_id = str(a.get("coverArt", "") or "")
-                    cover_url = self.cover_art_url(cover_id) if cover_id else ""
+                    # 艺术家封面来源（按可靠性排序）：
+                    #   1) artistImageUrl —— Navidrome 直接给完整图片 URL（可含 token）
+                    #   2) coverArt —— 取封面 id，再拼 getCoverArt URL
+                    # 两者都无 → 空串（前端占位；该艺术家在服务端本就无图）。
+                    _img = str(a.get("artistImageUrl", "") or "")
+                    if _img:
+                        cover_url = _img
+                    else:
+                        cover_id = str(a.get("coverArt", "") or "")
+                        cover_url = self.cover_art_url(cover_id) if cover_id else ""
                     out.append({
                         "id": aid,
                         "name": str(a.get("name", "") or ""),
                         "album_count": int(a.get("albumCount", 0) or 0),
                         "cover_url": cover_url,
                     })
+        # 无封面艺术家：用其「第一首歌封面」兜底（主流客户端做法）。
+        # 代价：每个要 getArtist → getAlbum 两次请求，故只补前 _ARTIST_FALLBACK_MAX
+        # 个（艺术家区块本来就只显示前 30），避免艺术家多时拖慢加载。
+        _missing = [x for x in out if not x.get("cover_url")][:self._ARTIST_FALLBACK_MAX]
+        for x in _missing:
+            try:
+                url = self._artist_first_song_cover(x["id"])
+                if url:
+                    x["cover_url"] = url
+            except Exception:
+                continue
         return out
+
+    #: 无封面艺术家补图的最大数量（避免大量额外请求拖慢加载）。
+    _ARTIST_FALLBACK_MAX = 30
+
+    def _artist_first_song_cover(self, artist_id: str) -> str:
+        """取艺术家「第一首歌」的封面 URL（艺术家无图时的兜底）。
+
+        路径：getArtist（专辑列表）→ 首张 getAlbum（歌曲列表）→ 首曲 coverArt。
+        失败返回空串。
+        """
+        try:
+            body = self._request("getArtist", [("id", artist_id)])
+        except Exception:
+            return ""
+        node = body.get("artist") or {}
+        albums = node.get("album")
+        if isinstance(albums, dict):
+            albums = [albums]
+        if not isinstance(albums, list) or not albums:
+            return ""
+        aid = str((albums[0] or {}).get("id", "") or "")
+        if not aid:
+            return ""
+        try:
+            abody = self._request("getAlbum", [("id", aid)])
+        except Exception:
+            return ""
+        anode = abody.get("album") or {}
+        songs = anode.get("song")
+        if isinstance(songs, dict):
+            songs = [songs]
+        if not isinstance(songs, list) or not songs:
+            return ""
+        s0 = songs[0] or {}
+        cover_id = str(s0.get("coverArt", "") or s0.get("id", "") or "")
+        return self.cover_art_url(cover_id) if cover_id else ""
 
     def artist_tracks(self, artist_id: str) -> List[TrackItem]:
         """艺术家的歌曲（getArtist → 各专辑的歌曲）。"""
@@ -442,14 +532,12 @@ class SubsonicProvider(BaseMusicProvider):
 
     # ---- 下载辅助（同时兼容标准 Subsonic）----
     def download_url(self, song_id: str, quality: str = "") -> str:
-        """按指定音质档位构造下载 URL。
+        """按指定音质档位构造下载 URL（面向私有协议后端）。
 
-        兼容性：
-        - 标准 Subsonic 只认 maxBitRate（128/320/999/1400/2000 会由服务端
-          按自身能力处理，不支持的档位也不会报错，最多原样返回）。
-        - 本项目的私有后端额外识别 quality 参数（master/hires…），
-          因此这里同时带上 maxBitRate 与 quality：标准服务端忽略未知的
-          quality，私有后端则精确命中。
+        - 私有后端：识别 maxBitRate 档位语义（128/320/999/1400/2000）
+          与 quality 参数（master/hires…），精确命中。
+        - 标准 Subsonic：不按档位转码——调用方应改用
+          stream_url(song_id, max_bit_rate=0) 原文件直传，不要走本方法。
         - quality 为空 → 用配置/运行时档位（沿用 stream_url 默认行为）。
         """
         from core.quality import quality_to_bitrate
@@ -491,15 +579,18 @@ class SubsonicProvider(BaseMusicProvider):
         return ""
 
     # ---- URL 构造（交给播放器/图片用）----
-    def stream_url(self, song_id: str, max_bit_rate: int = 0,
+    def stream_url(self, song_id: str, max_bit_rate: int | None = None,
                    fmt: str = "") -> str:
         """音频流 URL。
 
-        max_bit_rate=0 表示不限制（原文件直传，支持无损/Range seek）。
+        max_bit_rate=None（默认）：读用户配置/运行时音质档位
+            —— 私有后端用档位语义（999/1400/2000）。
+        max_bit_rate=0：不限制，原文件直传
+            —— 标准 Subsonic 用（有什么歌播什么歌，不按档位转码）。
+        max_bit_rate>0：指定码率。
         fmt 可指定转码格式（如 mp3），留空=不转码。
-        未显式指定 max_bit_rate 时，读取用户配置的音质档位。
         """
-        if not max_bit_rate:
+        if max_bit_rate is None:
             try:
                 max_bit_rate = self._configured_quality_br()
             except Exception:
@@ -670,6 +761,15 @@ class SubsonicProvider(BaseMusicProvider):
         sample_rate = int(song.get("samplingRate", 0) or 0)
         bit_depth = int(song.get("bitDepth", 0) or 0)
         channels = int(song.get("channelCount", 0) or 0)
+        # 真实音频格式：Navidrome/OpenSubsonic 返回 suffix（flac/dsf/dff/mp3…）。
+        # 在线流的 stream_url 扩展名是 `view`，无法判格式，故用 suffix。
+        suffix = str(song.get("suffix", "") or "").strip().lower()
+        # 私有协议后端才按音质档位请求；标准 Subsonic 不按档位转码
+        # ——有什么歌播什么歌（maxBitRate=0 直传）。
+        # 注意：判据用「全局后端类型标志」（连接时 ping 探测），
+        # 不能只看本曲的 qualityLevels——私有后端未必逐曲返回该字段。
+        _surl = (self.stream_url(sid) if is_private_backend()
+                 else self.stream_url(sid, max_bit_rate=0))
         return TrackItem(
             title=str(song.get("title", "Unknown") or "Unknown"),
             artist=str(song.get("artist", "Unknown") or "Unknown"),
@@ -679,13 +779,14 @@ class SubsonicProvider(BaseMusicProvider):
             filepath="",
             source_type="subsonic",
             source_id=sid,
-            stream_url=self.stream_url(sid),
+            stream_url=_surl,
             cover_url=self.cover_art_url(cover_id),
             bitrate=bitrate,
             sample_rate=sample_rate,
             bit_depth=bit_depth,
             channels=channels,
             quality_levels=qlevels,
+            format_hint=suffix,
         )
 
     @staticmethod
@@ -713,14 +814,19 @@ class SubsonicProvider(BaseMusicProvider):
         return [self._song_to_track(s) for s in songs]
 
     def search_async(self, query: str) -> None:
+        log.info("[search_async] 进入 query=%r configured=%s", query, self.is_configured())
         if not self.is_configured():
             self.emit("search-finished", query, [])
             return
 
         def _work():
-            return self.search(query)
+            log.info("[search_async] 后台请求 query=%r", query)
+            r = self.search(query)
+            log.info("[search_async] 后台完成 query=%r 结果数=%d", query, len(r))
+            return r
 
         def _done(result):
+            log.info("[search_async] emit search-finished query=%r 数=%d", query, len(result))
             self._tracks = list(result)
             self.emit("search-finished", query, result)
 

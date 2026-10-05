@@ -146,7 +146,33 @@ class OnlineSearchPage(Gtk.Box):
             show_locate=False,
         )
         self.detail_list.set_vexpand(True)
-        detail.append(self.detail_list)
+        # detail 内层 Stack：loading（spinner）/ content（歌曲列表）。
+        # 点歌单 → 先显示 loading（大歌单网络拉取可能数秒），数据到了再切列表。
+        self._detail_stack = Gtk.Stack()
+        try:
+            self._detail_stack.set_vhomogeneous(False)
+            self._detail_stack.set_hhomogeneous(False)
+        except Exception:
+            pass
+        _d_loading = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        _d_loading.set_valign(Gtk.Align.CENTER)
+        _d_loading.set_halign(Gtk.Align.CENTER)
+        _d_loading.set_vexpand(True)
+        _d_spin = Gtk.Spinner()
+        _d_spin.set_size_request(40, 40)
+        try:
+            _d_spin.start()
+        except Exception:
+            pass
+        _d_spin.set_halign(Gtk.Align.CENTER)
+        _d_loading.append(_d_spin)
+        _d_lbl = Gtk.Label(label=_("加载中…"))
+        _d_lbl.add_css_class("dim-label")
+        _d_loading.append(_d_lbl)
+        self._detail_stack.add_named(_d_loading, "loading")
+        self._detail_stack.add_named(self.detail_list, "content")
+        self._detail_stack.set_visible_child_name("content")
+        detail.append(self._detail_stack)
         self._stack.add_named(detail, "detail")
 
         # ---- result：搜索结果 ----
@@ -564,6 +590,29 @@ class OnlineSearchPage(Gtk.Box):
         except Exception:
             pass
 
+    def show_detail_loading(self, name: str = "") -> None:
+        """进入歌单详情并显示「加载中」（数据未到前）。
+
+        点歌单后立即调用：先切到 detail 视图 + loading，避免大歌单网络
+        拉取数秒期间界面像卡死（无任何反馈）。数据到达后调
+        show_playlist_detail 切换到列表。
+        """
+        try:
+            cur = self._stack.get_visible_child_name()
+            if cur in ("browse", "section", "result", "detail"):
+                self._detail_from = cur
+        except Exception:
+            pass
+        try:
+            self._detail_title.set_text(name or "")
+        except Exception:
+            pass
+        try:
+            self._detail_stack.set_visible_child_name("loading")
+        except Exception:
+            pass
+        self._stack.set_visible_child_name("detail")
+
     def show_playlist_detail(self, name: str, tracks) -> None:
         # 记住来源视图（browse / section），返回时回退到它
         try:
@@ -574,6 +623,10 @@ class OnlineSearchPage(Gtk.Box):
             pass
         self._detail_title.set_text(name or "")
         self.detail_list.set_tracks(list(tracks or []))
+        try:
+            self._detail_stack.set_visible_child_name("content")
+        except Exception:
+            pass
         self._stack.set_visible_child_name("detail")
 
     def _detail_back(self) -> None:

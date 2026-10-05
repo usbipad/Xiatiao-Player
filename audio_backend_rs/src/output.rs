@@ -211,6 +211,10 @@ struct Shared {
     drain_done: AtomicBool,
     /// 请求 RT flush PipeWire stream（清服务端已 dequeue 的缓冲）。
     flush_req: AtomicBool,
+    /// 距上次 flush 的帧计数（饱和）。用于判定「切歌/切音质清缓冲后的
+    /// 空窗」：空窗内补齐部分应淡出到 0（而非硬 hold 旧样本），避免
+    /// 旧歌末尾样本被当直流电平输出、新数据接入时的阶跃爆音。
+    frames_since_flush: AtomicU64,
 }
 
 impl Shared {
@@ -273,6 +277,7 @@ impl PipewireOutput {
                 state: AtomicU8::new(STATE_PLAYING),
                 drain_done: AtomicBool::new(true),
                 flush_req: AtomicBool::new(false),
+                frames_since_flush: AtomicU64::new(u64::MAX),
             }),
             fmt: Mutex::new(None),
             device: Mutex::new(String::new()),
@@ -528,6 +533,8 @@ fn run_pipewire(
             if sh.flush_req.swap(false, Ordering::SeqCst) {
                 let _ = stream.flush(false);
                 sh.drain_done.store(true, Ordering::SeqCst);
+                // 标记「刚 flush」，供后续判定切歌/切音质清缓冲后的空窗。
+                sh.frames_since_flush.store(0, Ordering::Relaxed);
             }
 
             let state = sh.state();
@@ -562,6 +569,9 @@ fn run_pipewire(
                     } else {
                         0
                     };
+                    // 距 flush 帧数递增（饱和）。供下方判定「切歌空窗」。
+                    { let s = sh.frames_since_flush.load(Ordering::Relaxed);
+                      if s != u64::MAX { sh.frames_since_flush.store(s.saturating_add(1), Ordering::Relaxed); } }
                     if got_frames > 0 {
                         sh.started.store(true, Ordering::Relaxed);
                         sh.played_frames.fetch_add(got_frames as u64, Ordering::Relaxed);
@@ -586,9 +596,31 @@ fn run_pipewire(
                             eprintln!("[output] UNDERRUN#{u}: want={} got={} short={}（补 hold）",
                                 total_frames, got_frames, total_frames - got_frames);
                         }
-                        for f in got_frames..total_frames {
-                            dst[f * ch] = ud.0;
-                            if ch > 1 { dst[f * ch + 1] = ud.1; }
+                        // 补齐不足部分。分两种情形：
+                        //  A) 正常播放中的瞬时欠载（距 flush 较久）→ 延续上一帧
+                        //     （hold）最自然：欠载是连续播放里的瞬时抖动，
+                        //     延续能避免咔哒。
+                        //  B) 切歌/切音质清缓冲后的空窗（距 flush 很近）→ **淡出到 0**。
+                        //     此时 ring 已被 flush 清空，ud.0 是「上一首的末尾样本」，
+                        //     若硬 hold 会把它当直流电平持续输出，新歌数据一到即产生
+                        //     阶跃 → 「啪」爆音（在线流因等网络，空窗长，尤其明显）。
+                        //     淡出到 0 后，新数据由 ud.2 从 0 淡入，衔接平滑。
+                        let since_flush = sh.frames_since_flush.load(Ordering::Relaxed);
+                        let flush_window = since_flush <= 30;   // ≈30 帧（RT 周期）内视为切歌空窗
+                        if flush_window {
+                            for f in got_frames..total_frames {
+                                if ud.2 > 0.0 {
+                                    ud.2 = (ud.2 - fade_step).max(0.0);
+                                }
+                                let g = ud.2;
+                                dst[f * ch] = ud.0 * g;
+                                if ch > 1 { dst[f * ch + 1] = ud.1 * g; }
+                            }
+                        } else {
+                            for f in got_frames..total_frames {
+                                dst[f * ch] = ud.0;
+                                if ch > 1 { dst[f * ch + 1] = ud.1; }
+                            }
                         }
                     }
                 }

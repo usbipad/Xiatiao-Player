@@ -34,44 +34,252 @@ def extract_cover(path: str) -> bytes | None:
         return None
 
 
+def _cover_from_id3_tags(tags) -> bytes | None:
+    """从 ID3 标签取第一张 APIC（内嵌封面）字节；无则 None。
+
+    mp3 / DSD(.dsf/.dff) / WAV / AIFF / AAC 等的内嵌封面都存在
+    ID3v2 的 APIC 帧里，统一在此读取。
+    """
+    if not tags:
+        return None
+    try:
+        keys = list(tags.keys())
+    except Exception:
+        return None
+    for key in keys:
+        if str(key).startswith("APIC"):
+            try:
+                return bytes(tags[key].data)
+            except Exception:
+                continue
+    return None
+
+
+#: 图片文件头魔术字节（用于在任意标签值里定位内嵌封面）。
+_IMAGE_MAGIC = (
+    b"\xff\xd8\xff",           # JPEG
+    b"\x89PNG\r\n\x1a\n",      # PNG
+    b"GIF87a", b"GIF89a",      # GIF
+    b"II*\x00", b"MM\x00*",    # TIFF
+)
+
+
+def _find_image_in_bytes(data) -> bytes | None:
+    """在字节串里定位图片起点，返回从起点到末尾的字节；无则 None。
+
+    兜底用：不解析具体标签结构，直接在值里找图片魔术字节。
+    """
+    if not isinstance(data, (bytes, bytearray)) or not data:
+        return None
+    best = -1
+    for magic in _IMAGE_MAGIC:
+        idx = data.find(magic)
+        if idx >= 0 and (best < 0 or idx < best):
+            best = idx
+    return bytes(data[best:]) if best >= 0 else None
+
+
+def _cover_from_apev2(path: str) -> bytes | None:
+    """从 APEv2 标签取封面（Monkey's Audio / WavPack / Musepack 等）。
+
+    APEv2 封面键名含 "cover art"，值为「文件名\\0图片字节」。
+    """
+    try:
+        from mutagen.apev2 import APEv2
+        tags = APEv2(path)
+    except Exception:
+        return None
+    if not tags:
+        return None
+    try:
+        for key in tags.keys():
+            if "cover art" in str(key).lower():
+                val = bytes(tags[key].value)
+                nul = val.find(b"\x00")
+                return _find_image_in_bytes(val[nul + 1:] if nul >= 0 else val)
+    except Exception:
+        pass
+    return None
+
+
+def _cover_from_ogg_picture(audio) -> bytes | None:
+    """Ogg 系（Vorbis / Opus）的 metadata_block_picture（base64 FLAC Picture）。"""
+    try:
+        covers = audio.get("metadata_block_picture")
+    except Exception:
+        return None
+    if not covers:
+        return None
+    import base64
+
+    from mutagen.flac import Picture
+
+    pic = Picture(base64.b64decode(covers[0]))
+    return bytes(pic.data)
+
+
+def _cover_from_asf(path: str) -> bytes | None:
+    """从 ASF / WMA 的 WM/Picture 取封面。"""
+    try:
+        from mutagen.asf import ASF
+        audio = ASF(path)
+    except Exception:
+        return None
+    tags = getattr(audio, "tags", None)
+    if not tags:
+        return None
+    try:
+        pics = tags.get("WM/Picture")
+    except Exception:
+        pics = None
+    if not pics:
+        return None
+    for p in pics:
+        raw = getattr(p, "value", None)
+        if raw is None:
+            raw = p
+        if not isinstance(raw, (bytes, bytearray)):
+            try:
+                raw = bytes(raw)
+            except Exception:
+                continue
+        img = _find_image_in_bytes(raw)
+        if img:
+            return img
+    return None
+
+
+def _scan_tags_for_image(tags) -> bytes | None:
+    """遍历标签值，找含图片魔术字节的项（通用兜底）。"""
+    if not tags:
+        return None
+    try:
+        values = list(tags.values())
+    except Exception:
+        return None
+    for val in values:
+        cands = val if isinstance(val, (list, tuple)) else [val]
+        for item in cands:
+            raw = getattr(item, "data", None)
+            if raw is None:
+                raw = getattr(item, "value", None)
+            if raw is None:
+                raw = item
+            if isinstance(raw, (bytes, bytearray)):
+                img = _find_image_in_bytes(bytes(raw))
+                if img:
+                    return img
+    return None
+
+
 def _extract(path: str) -> bytes | None:
+    """按扩展名提取内嵌封面；覆盖主流音频格式。
+
+    格式 → 封面存放位置：
+      mp3          ID3v2 APIC
+      dsf/dff(DSD) ID3v2 APIC（DSF 的 ID3 在文件尾）
+      flac         FLAC PICTURE 块
+      m4a/mp4/m4b  MP4 atom `covr`
+      ogg/oga/opus Vorbis comment `metadata_block_picture`
+      wav/aiff/aac ID3v2 APIC（WAV 的 'id3 ' chunk / AIFF 的 'ID3 ' chunk）
+      tta/tak/mp2  ID3v2 APIC
+      ape/wv/mpc/ofr APEv2 `Cover Art (Front)`
+      wma/asf      ASF `WM/Picture`
+      其它         mutagen 通用 + 各标签兜底扫描
+    """
     ext = os.path.splitext(path)[1].lower()
 
-    if ext == ".mp3":
-        try:
-            tags = ID3(path)
-        except Exception:
-            return None
-        for key in tags.keys():
-            if key.startswith("APIC"):
-                return bytes(tags[key].data)
-        return None
-
+    # ---- 专用容器 ----
     if ext == ".flac":
         audio = FLAC(path)
-        if audio.pictures:
-            return bytes(audio.pictures[0].data)
-        return None
+        return bytes(audio.pictures[0].data) if audio.pictures else None
 
     if ext in (".m4a", ".mp4", ".m4b"):
         audio = MP4(path)
         covers = audio.tags.get("covr") if audio.tags else None
-        if covers:
-            return bytes(covers[0])
+        return bytes(covers[0]) if covers else None
+
+    if ext in (".ogg", ".oga"):
+        # Ogg 容器：可能含 Vorbis / FLAC / Opus / Speex，逐个试。
+        for mod_name, cls_name in (("oggvorbis", "OggVorbis"),
+                                   ("oggflac", "OggFLAC"),
+                                   ("oggopus", "OggOpus"),
+                                   ("oggspeex", "OggSpeex")):
+            try:
+                mod = __import__("mutagen." + mod_name, fromlist=[cls_name])
+                data = _cover_from_ogg_picture(getattr(mod, cls_name)(path))
+                if data:
+                    return data
+            except Exception:
+                continue
         return None
 
-    if ext == ".ogg":
-        audio = OggVorbis(path)
-        covers = audio.get("metadata_block_picture")
-        if covers:
-            import base64
+    if ext in (".opus", ".spx"):
+        try:
+            from mutagen.oggopus import OggOpus
+            return _cover_from_ogg_picture(OggOpus(path))
+        except Exception:
+            pass
+        try:
+            from mutagen.oggspeex import OggSpeex
+            return _cover_from_ogg_picture(OggSpeex(path))
+        except Exception:
+            return None
 
-            from mutagen.flac import Picture
+    # ---- DSD：DSF 与 DFF 是不同容器，各用专用类 ----
+    #   .dsf → mutagen.dsf.DSF（ID3 在文件尾）
+    #   .dff → mutagen.dsdiff.DSDIFF（IFF 容器，ID3 chunk）
+    if ext == ".dsf":
+        try:
+            from mutagen.dsf import DSF
+            data = _cover_from_id3_tags(getattr(DSF(path), "tags", None))
+            if data:
+                return data
+        except Exception:
+            pass
+    elif ext == ".dff":
+        try:
+            from mutagen.dsdiff import DSDIFF
+            data = _cover_from_id3_tags(getattr(DSDIFF(path), "tags", None))
+            if data:
+                return data
+        except Exception:
+            pass
+    if ext in (".dsf", ".dff"):
+        # 回退：直接按 ID3 读（能从文件尾/ID3 chunk 读到标签）
+        try:
+            return _cover_from_id3_tags(ID3(path))
+        except Exception:
+            return None
 
-            pic = Picture(base64.b64decode(covers[0]))
-            return bytes(pic.data)
+    # ---- ID3 系（mp3 / wav / aiff / aac / tta / tak / mp2）----
+    if ext in (".mp3", ".wav", ".aif", ".aiff", ".aac",
+               ".tta", ".tak", ".mp2", ".mp1"):
+        try:
+            data = _cover_from_id3_tags(ID3(path))
+            if data:
+                return data
+        except Exception:
+            pass
+        # WAV/AIFF 的 ID3 chunk 有时只有 mutagen 专用类能读
+        try:
+            audio = MutagenFile(path)
+            data = _cover_from_id3_tags(getattr(audio, "tags", None))
+            if data:
+                return data
+        except Exception:
+            pass
         return None
 
+    # ---- APEv2 系（ape / wv / mpc / ofr）----
+    if ext in (".ape", ".wv", ".mpc", ".wavpack", ".ofr"):
+        return _cover_from_apev2(path)
+
+    # ---- ASF / WMA ----
+    if ext in (".wma", ".asf"):
+        return _cover_from_asf(path)
+
+    # ---- 通用兜底：mutagen 识别 → 依次试各标签 ----
     audio = MutagenFile(path)
     if audio is None:
         return None
@@ -79,7 +287,13 @@ def _extract(path: str) -> bytes | None:
         return bytes(audio.pictures[0].data)
     if audio.tags and "covr" in audio.tags:
         return bytes(audio.tags["covr"][0])
-    return None
+    data = _cover_from_id3_tags(getattr(audio, "tags", None))
+    if data:
+        return data
+    data = _cover_from_apev2(path)
+    if data:
+        return data
+    return _scan_tags_for_image(getattr(audio, "tags", None))
 
 
 # ----------------------------------------------------------------

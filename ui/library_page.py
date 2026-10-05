@@ -30,9 +30,14 @@ class LibraryPage(Gtk.Box):
                  on_local_refresh: Optional[Callable] = None,
                  on_add_to_playlist: Optional[Callable] = None,
                  on_online_load_more: Optional[Callable[[int, int], None]] = None,
-                 track_actions: Optional[dict] = None) -> None:
+                 track_actions: Optional[dict] = None,
+                 on_tab_changed: Optional[Callable[[str], None]] = None,
+                 on_online_track_search: Optional[Callable] = None,
+                 on_search_back: Optional[Callable] = None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._on_online_load_more = on_online_load_more
+        self._on_tab_changed = on_tab_changed
+        self._on_search_back = on_search_back
         self._online_loaded = 0
         self._online_total_hint = -1
         self._loading = False
@@ -85,10 +90,65 @@ class LibraryPage(Gtk.Box):
         )
         self._stack.add_named(self.online_list, "online")
 
+        # 搜索结果视图（本地/在线 tab 之外的第三视图）：
+        # 顶栏搜索非空时切到它显示结果；带「返回」按钮回上一页。
+        self.search_view = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        _s_head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._search_back_btn = Gtk.Button(icon_name="go-previous-symbolic")
+        self._search_back_btn.add_css_class("flat")
+        self._search_back_btn.set_tooltip_text(_("返回"))
+        self._search_back_btn.connect("clicked", lambda *_: self._fire_search_back())
+        _s_head.append(self._search_back_btn)
+        self._search_title = Gtk.Label(label=_("搜索结果"))
+        self._search_title.add_css_class("heading")
+        self._search_title.set_halign(Gtk.Align.START)
+        self._search_title.set_hexpand(True)
+        _s_head.append(self._search_title)
+        self.search_view.append(_s_head)
+        # 搜索结果列表（复用 LocalLibraryPage 渲染）
+        self.search_list = LocalLibraryPage(
+            on_track_activated=on_online_track_search,
+            track_actions=track_actions,
+            initial_view=VIEW_SONGS,
+            empty_text="无结果",
+        )
+        self.search_view.append(self.search_list)
+        self._stack.add_named(self.search_view, "search")
+
         # 在线滚动到底 → 加载更多
         self._setup_scroll_hook()
 
         self._switch("local")
+
+    def _fire_search_back(self) -> None:
+        if callable(self._on_search_back):
+            try:
+                self._on_search_back()
+            except Exception:
+                pass
+
+    def show_search_results(self, query: str, tracks) -> None:
+        """显示搜索结果（切到 search 视图）。"""
+        try:
+            self._search_title.set_text(
+                (_("搜索：{q}") .format(q=query)) if query else _("搜索结果"))
+        except Exception:
+            pass
+        try:
+            self.search_list.set_tracks(list(tracks or []))
+        except Exception:
+            pass
+        self._stack.set_visible_child_name("search")
+        # 结果视图无 tab 高亮（不属本地/在线）
+        self._btn_local.remove_css_class("nav-active")
+        self._btn_online.remove_css_class("nav-active")
+        self._online_active = False
+
+    def is_search_view(self) -> bool:
+        try:
+            return self._stack.get_visible_child_name() == "search"
+        except Exception:
+            return False
 
     def _setup_scroll_hook(self) -> None:
         """给在线列表的滚动窗口挂"接近底部"检测。"""
@@ -137,6 +197,13 @@ class LibraryPage(Gtk.Box):
         self._btn_local.remove_css_class("nav-active")
         self._btn_online.remove_css_class("nav-active")
         (self._btn_online if which == "online" else self._btn_local).add_css_class("nav-active")
+        # 通知外部（window）：用于区分「曲库页当前在本地还是在线 tab」，
+        # 决定搜索框搜索走本地过滤还是在线搜索。
+        if callable(self._on_tab_changed):
+            try:
+                self._on_tab_changed(which)
+            except Exception:
+                pass
         # 首次切到在线 → 拉第一页
         if which == "online" and self._online_loaded == 0 and not self._loading:
             self._request_more()
