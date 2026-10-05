@@ -349,8 +349,8 @@ def structured_lyrics_to_lrc(body: dict) -> str:
                             sec = float(sec)
                         except Exception:
                             sec = 0.0
-                        if sec > 10000:
-                            sec = sec / 1000.0
+                        # OpenSubsonic 规定 start 为毫秒，直接归一。
+                        sec = sec / 1000.0
                         m = int(sec // 60)
                         s = sec - m * 60
                         lines_out.append(f"[{m:02d}:{s:05.2f}]{val}")

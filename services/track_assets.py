@@ -139,11 +139,18 @@ def load_cover_assets(cover_raw: bytes | None,
 
 
 def _is_dark_background(png_bytes: bytes, threshold: float):
-    """计算模糊背景的 WCAG 相对亮度，判断是否偏暗；失败返回 None。
+    """判断模糊背景是否偏暗（决定沉浸页前景黑白）；失败返回 None。
 
-    与 models.coverart / core.color_contrast 的前景决策使用同一套亮度公式
-    （含 sRGB 伽马校正），避免「背景判暗、前景却按亮算」的两套逻辑打架。
-    阈值默认 0.38（旧版是 299/587/114 近似公式 + 0.65，两者不可比）。
+    改进（相比旧的「整图算术平均」）：
+      1) **区域加权**：沉浸页前景（歌词在右、控件在底）实际只压在
+         画面右侧与底部；整图平均会被左侧封面区/局部深色块带偏
+         （几何封面「左黑右白」会被平均成中灰 → 误判暗 → 前景用白）。
+         故按「右列歌词区、底部控件区」加大权重。
+      2) **截尾**：去掉最暗/最亮各 15% 像素（边框/纯黑 logo 不代表主体）。
+      3) **中位数**：取加权后亮度中位数，抗离群值（非算术平均）。
+
+    与 core.color_contrast 用同一套 WCAG 亮度公式（含 sRGB 伽马校正）。
+    阈值默认 0.38。
     """
     try:
         import gi
@@ -154,31 +161,66 @@ def _is_dark_background(png_bytes: bytes, threshold: float):
         st = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(png_bytes))
         pb = GdkPixbuf.Pixbuf.new_from_stream(st, None)
         w, h = pb.get_width(), pb.get_height()
+        if w <= 0 or h <= 0:
+            return None
         data = bytes(pb.get_pixels())
         stride = pb.get_rowstride()
         nch = pb.get_n_channels()
-        sr = sg = sb = n = 0
-        step = max(1, min(w, h) // 16)
+        step = max(1, min(w, h) // 24)
+
+        weighted_lums: list[tuple[float, float]] = []   # (亮度, 权重)
         for y in range(0, h, step):
             base = y * stride
+            fy = y / h            # 0(顶)..1(底)
             for x in range(0, w, step):
                 o = base + x * nch
-                sr += data[o]
-                sg += data[o + 1]
-                sb += data[o + 2]
-                n += 1
-        if not n:
+                r, g, b = data[o], data[o + 1], data[o + 2]
+                lum = relative_luminance((r, g, b))
+                fx = x / w        # 0(左)..1(右)
+                # 区域权重：右侧歌词区权重最高，底部控件区次之。
+                wgt = 0.25
+                if fx >= 0.45:                       # 右半：歌词区
+                    wgt = 1.0
+                elif fx >= 0.30:                     # 中右过渡
+                    wgt = 0.6
+                if fy >= 0.80:                       # 底部：控件区
+                    wgt += 0.6
+                elif fy >= 0.65:
+                    wgt += 0.2
+                if fy <= 0.10:                       # 顶部栏
+                    wgt += 0.2
+                weighted_lums.append((lum, wgt))
+        if not weighted_lums:
             return None
-        avg = (sr // n, sg // n, sb // n)
-        lum = relative_luminance(avg)
+
+        # 截尾：按亮度排序，去掉最暗/最亮各 15%（按数量）。
+        weighted_lums.sort(key=lambda t: t[0])
+        total = len(weighted_lums)
+        lo = int(total * 0.15)
+        hi = int(total * 0.85)
+        core = weighted_lums[lo:hi] or weighted_lums
+
+        # 加权分位数（p75）：按权重累积到总权重 75% 时的亮度。
+        # 用 p75 而非中位数——中位数会被「底部暗角 / 封面深色块」拉低，
+        # 把「浅灰背景」误判成暗（前景用白字，实际对比不足）。
+        # p75 代表「较亮的那部分背景」，前景要在其上也可读：
+        #   若连较亮区域都够亮 → 背景偏亮 → 用深色前景。
+        core_sorted = sorted(core, key=lambda t: t[0])
+        total_w = sum(w2 for _l, w2 in core_sorted) or 1.0
+        acc = 0.0
+        median_lum = core_sorted[len(core_sorted) // 2][0]
+        for lum, wgt in core_sorted:
+            acc += wgt
+            if acc >= total_w * 0.75:
+                median_lum = lum
+                break
+
         try:
             thr = float(threshold)
         except Exception:
             thr = 0.38
-        # 兼容旧配置：旧默认 0.65 是按 299/587/114 公式定的，
-        # 换到 WCAG 公式后量纲不同，若仍是旧值则映射到 0.38。
         if thr > 0.55:
             thr = 0.38
-        return lum < thr
+        return median_lum < thr
     except Exception:
         return None

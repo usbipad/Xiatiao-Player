@@ -130,6 +130,10 @@ class MprisService:
         self._started = False
         # 定时广播 Position 的 source id（0 表示未启动）
         self._pos_timer_id = 0
+        # 投送（DLNA）提供者：投送模式下，状态/控制改走远端设备。
+        self._cast_is = None
+        self._cast_playing = None
+        self._cast_control = None
 
     def set_cover_path(self, path: Optional[str]) -> None:
         """设置当前曲目封面的本地文件路径，并广播 Metadata 更新。
@@ -156,6 +160,34 @@ class MprisService:
     def set_quit_callback(self, cb: Optional[Callable[[], None]]) -> None:
         """设置 Quit 方法回调（退出应用）。"""
         self._quit_cb = cb
+
+    def set_cast_provider(self, is_casting, remote_playing, control,
+                          remote_position=None) -> None:
+        """注册投送（DLNA）提供者：投送模式下 MPRIS 状态/控制/位置改走远端。"""
+        self._cast_is = is_casting
+        self._cast_playing = remote_playing
+        self._cast_control = control
+        self._cast_position = remote_position
+
+    def notify_cast_changed(self) -> None:
+        """投送状态变化（播放/暂停/进入退出/位置跳变）时广播 MPRIS 属性。
+
+        本机 player 信号在投送模式下不反映远端真实状态，故由窗口在
+        投送状态变化时主动调用，让系统媒体控件正确显示 Playing/Paused。
+        """
+        try:
+            self._emit_props(IFACE_PLAYER, {
+                "PlaybackStatus": GLib.Variant("s", self._status()),
+                "Position": GLib.Variant("x", self._position_us()),
+            })
+        except Exception:
+            log.debug("MPRIS: 广播投送状态失败", exc_info=True)
+
+    def _is_casting(self) -> bool:
+        try:
+            return bool(self._cast_is and self._cast_is())
+        except Exception:
+            return False
 
     # ------------------------------------------------------------
     # 生命周期
@@ -355,6 +387,12 @@ class MprisService:
     # 属性
     # ------------------------------------------------------------
     def _status(self) -> str:
+        # 投送模式：本机不播，状态以远端为准（否则系统控件显示已暂停/停止）。
+        if self._is_casting():
+            try:
+                return "Playing" if (self._cast_playing and self._cast_playing()) else "Paused"
+            except Exception:
+                return "Paused"
         try:
             st = self._player.state()
         except Exception:
@@ -433,6 +471,14 @@ class MprisService:
             return None
 
     def _position_us(self) -> int:
+        # 投送模式：本机不播，位置以远端上报为准（否则进度条不走）。
+        if self._is_casting():
+            try:
+                if self._cast_position is not None:
+                    return int(float(self._cast_position()) * 1_000_000)
+            except Exception:
+                pass
+            return int(self._last_pos * 1_000_000)
         try:
             pos = float(self._player.position() or 0.0)
         except Exception:
@@ -534,6 +580,36 @@ class MprisService:
     # ------------------------------------------------------------
     def _on_player_call(self, _conn, _sender, _path, _iface, method, params, invocation):
         try:
+            # 投送模式：播放控制转发远端设备（媒体键 / 桌面控件生效）。
+            if self._is_casting() and method in (
+                    "Play", "Pause", "PlayPause", "Stop", "Next", "Previous"):
+                action = {
+                    "Play": "play", "Pause": "pause", "PlayPause": "playpause",
+                    "Stop": "stop", "Next": "next", "Previous": "prev",
+                }.get(method)
+                try:
+                    if self._cast_control is not None and action:
+                        self._cast_control(action)
+                except Exception:
+                    log.debug("MPRIS: 投送控制 %s 失败", method, exc_info=True)
+                invocation.return_value(None)
+                return
+            # 投送模式：进度控制（Seek/SetPosition）转发远端设备。
+            if self._is_casting() and method in ("Seek", "SetPosition"):
+                try:
+                    if method == "Seek":
+                        offset_us = params.unpack()[0]
+                        target = self._position_us() / 1_000_000.0 + offset_us / 1_000_000.0
+                    else:
+                        _tid, pos_us = params.unpack()
+                        target = pos_us / 1_000_000.0
+                    target = max(0.0, float(target))
+                    if self._cast_control is not None:
+                        self._cast_control("seek", target)
+                except Exception:
+                    log.debug("MPRIS: 投送进度控制 %s 失败", method, exc_info=True)
+                invocation.return_value(None)
+                return
             if method == "Play":
                 self._do_play()
             elif method == "Pause":

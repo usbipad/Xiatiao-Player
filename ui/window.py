@@ -435,6 +435,13 @@ class MainWindow(Adw.ApplicationWindow):
             self._mpris = MprisService(self.player, self.playlist)
             self._mpris.set_raise_callback(self._mpris_raise)
             self._mpris.set_quit_callback(self._mpris_quit)
+            # 投送提供者：投送模式下 MPRIS 状态/控制改走远端设备。
+            self._mpris.set_cast_provider(
+                is_casting=lambda: bool(getattr(self, "_dlna_casting", False)),
+                remote_playing=lambda: bool(getattr(self, "_dlna_remote_playing", True)),
+                control=self._mpris_cast_control,
+                remote_position=lambda: float(getattr(self, "_dlna_remote_pos", 0.0) or 0.0),
+            )
             _ok = self._mpris.start()
             log.info("MPRIS 启动结果: %s", _ok)
         except Exception as exc:
@@ -446,6 +453,50 @@ class MainWindow(Adw.ApplicationWindow):
             self.present()
         except Exception:
             pass
+
+    def _mpris_cast_control(self, action: str, value=None) -> None:
+        """MPRIS（系统媒体控件/媒体键）在投送模式下控制远端设备。
+
+        action: playpause / play / pause / next / prev / stop / seek。
+        value: 仅 seek 用（目标秒数，绝对位置）。
+        复用现有投送逻辑（_on_play_pause / _on_next / _on_prev）以保证
+        与界面按钮行为一致。
+        """
+        try:
+            if action == "playpause":
+                self._on_play_pause()
+            elif action == "play":
+                if not bool(getattr(self, "_dlna_remote_playing", True)):
+                    self._on_play_pause()
+            elif action == "pause":
+                if bool(getattr(self, "_dlna_remote_playing", True)):
+                    self._on_play_pause()
+            elif action == "next":
+                self._on_next()
+            elif action == "prev":
+                self._on_prev()
+            elif action == "seek":
+                # 系统媒体控件拖进度条 → 远端设备 AVTransport Seek。
+                from core.dlna_push import get_dlna_pusher
+                sec = max(0.0, float(value or 0.0))
+                get_dlna_pusher().seek(sec)
+                self._dlna_remote_pos = sec
+                try:
+                    self.player_panel.set_position(sec)
+                    self.now_playing.set_position(sec)
+                except Exception:
+                    pass
+            elif action == "stop":
+                from core.dlna_push import get_dlna_pusher
+                get_dlna_pusher().stop()
+                self._dlna_remote_playing = False
+                try:
+                    self.player_panel.set_playing(False)
+                    self.now_playing.set_playing(False)
+                except Exception:
+                    pass
+        except Exception:
+            log.debug("[投送] MPRIS 控制 %s 失败", action, exc_info=True)
 
     def _mpris_quit(self) -> None:
         """MPRIS Quit：退出应用。"""
@@ -1010,6 +1061,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_track_activated=self._on_local_track_activated,
             on_toast=self._toast,
             track_actions=_track_actions,
+            on_playlist_track=self._on_playlist_track,
         )
         self.stack.add_named(self.playlists_page, "playlists")
         # 专辑 / 艺术家页（供主页复用其数据接口，不再单独作为导航页）
@@ -1831,24 +1883,21 @@ class MainWindow(Adw.ApplicationWindow):
 
     @staticmethod
     def _dedupe_lyrics(items: list) -> list:
-        """合并内容相同的连续/重复歌词行，只保留首次时间。
+        """去掉「连续重复」的歌词行（与后端 xiatiao-api 的 dedupTimed 一致）。
 
-        部分后端把歌词按逐字/逐句平铺（同一句多个时间点），
-        或在 LRC 里对一句打多个时间标签，解析后会出现整句重复。
-        这里对「文本相同」的项去重，保留第一次出现的时间点，
-        避免同一句歌词重复显示十几遍。
+        后端已把逐字平铺的歌词合并成句、并做连续去重；本函数只做同样的
+        「相邻相同才合并」兜底。**绝不跨时间全局去重**——否则会把正常
+        重复的副歌（Chorus）删掉，导致歌曲后半段无歌词（如《相思》副歌
+        重复三次，全局去重会删掉第二、三次）。
         """
         out = []
-        seen = set()
+        last_key = None
         for sec, text in (items or []):
             key = (text or "").strip()
-            if not key:
-                # 空行（间奏）保留，但不参与去重
-                out.append((sec, text))
+            if key == last_key:
+                # 与上一行完全相同（逐字/逐句平铺特征）→ 跳过
                 continue
-            if key in seen:
-                continue
-            seen.add(key)
+            last_key = key
             out.append((sec, text))
         return out
 
@@ -1897,10 +1946,11 @@ class MainWindow(Adw.ApplicationWindow):
                                     sec = float(start)
                                 except Exception:
                                     sec = 0.0
-                                # OpenSubsonic 规定 start 为毫秒；但部分后端用秒。
-                                # 大于 10000 视为毫秒，否则视为秒，做启发式归一。
-                                if sec > 10000:
-                                    sec = sec / 1000.0
+                                # OpenSubsonic 规定 start 为**毫秒**，直接归一。
+                                # （旧实现用「>10000 才算毫秒」的启发式，会把
+                                #  6.12s=6120ms 这类 <10000 的毫秒值误当秒，
+                                #  导致开头几句时间轴错乱、歌词不动。）
+                                sec = sec / 1000.0
                                 items.append((sec, val))
                 # 结构化里含 LRC 原文 → 统一解析后合并
                 if raw_lrc_chunks:
@@ -2824,6 +2874,10 @@ class MainWindow(Adw.ApplicationWindow):
                 tracks, err = result
                 if err:
                     self._toast(_("推荐加载失败：{err}").format(err=err))
+                # 记录当前详情曲目：点歌（_on_online_track_activated）据此把
+                # 整个推荐歌单设为播放队列。此前漏设 → 点歌仍用上一次的
+                # 旧队列（表现为「点了没反应，还按旧待播列表放」）。
+                self._online_detail_tracks = list(tracks or [])
                 self.online_page.show_playlist_detail(name or "", tracks or [])
             except Exception:
                 pass
@@ -3122,6 +3176,14 @@ class MainWindow(Adw.ApplicationWindow):
             dur = float(info.get("duration", 0.0))
         except Exception:
             return False
+        # 记录远端位置：供 MPRIS 进度上报使用（投送时本机 player 不动）。
+        self._dlna_remote_pos = pos
+        try:
+            mpris = getattr(self, "_mpris", None)
+            if mpris is not None:
+                mpris.notify_cast_changed()
+        except Exception:
+            pass
         # 标准 DLNA：进度直接采用设备上报的位置/时长（渲染器是权威）。
         try:
             self.player_panel.set_position(pos)
@@ -3634,6 +3696,13 @@ class MainWindow(Adw.ApplicationWindow):
                 self._dlna_remote_playing = new_state
                 self.player_panel.set_playing(new_state)
                 self.now_playing.set_playing(new_state)
+                # 通知 MPRIS：投送播放/暂停状态变化 → 系统媒体控件同步。
+                try:
+                    m = getattr(self, "_mpris", None)
+                    if m is not None:
+                        m.notify_cast_changed()
+                except Exception:
+                    pass
             except Exception:
                 log.debug("DLNA 投送播放/暂停失败", exc_info=True)
             return
@@ -3830,7 +3899,8 @@ class MainWindow(Adw.ApplicationWindow):
 
             tracks = self.playlist.tracks()
             idx = self.playlist.current_index()
-            # 队列指纹：组成不变则只更新高亮，不重建行
+            # 队列指纹：组成不变 → 只更新高亮（不重建，性能好）；
+            # 组成变化 → 重设队列数据。
             ids = tuple(getattr(t, "source_id", "") or getattr(t, "filepath", "") for t in tracks)
             if not force and ids == getattr(self, "_queue_ids", None):
                 self.player_panel.set_queue_current(idx)
@@ -3944,6 +4014,23 @@ class MainWindow(Adw.ApplicationWindow):
         toolbar.set_content(scroll)
         dlg.set_child(toolbar)
         dlg.present(self)
+
+    def _on_playlist_track(self, track, tracks) -> None:
+        """本地歌单内点歌：以「该歌单曲目」作播放队列（非本地曲库）。
+
+        此前歌单页与曲库共用 on_track_activated，导致点歌用本地曲库作
+        队列（待播列表变成整个曲库）。此处用歌单自身曲目 + 定位到该首。
+        """
+        lib = list(tracks or [])
+        if not lib:
+            lib = [track]
+        key = getattr(track, "filepath", "") or getattr(track, "source_id", "")
+        index = 0
+        for i, t in enumerate(lib):
+            if (getattr(t, "filepath", "") or getattr(t, "source_id", "")) == key:
+                index = i
+                break
+        self.playlist.set_tracks(lib, autoplay_index=index)
 
     def _on_playlist_play(self, playlist_id: int) -> None:
         """播放某个歌单（读取其曲目并设为队列）。"""

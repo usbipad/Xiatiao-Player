@@ -82,10 +82,15 @@ class PlaylistsPage(Gtk.Box):
                  on_playlist_play: Optional[Callable[[int], None]] = None,
                  on_track_activated: Optional[Callable[[TrackItem], None]] = None,
                  on_toast: Optional[Callable[[str], None]] = None,
-                 track_actions: Optional[dict] = None) -> None:
+                 track_actions: Optional[dict] = None,
+                 on_playlist_track: Optional[Callable] = None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._on_play = on_playlist_play
         self._on_activated = on_track_activated
+        #: 歌单内点歌回调：on_playlist_track(track, tracks)。
+        #  与曲库共用 on_track_activated 会导致「待播列表 = 本地曲库」
+        #  （曲库回调用 get_library() 作队列）；歌单必须用自身曲目作队列。
+        self._on_playlist_track = on_playlist_track
         self._toast = on_toast
         self._track_actions = track_actions
         self._current_pid = None
@@ -162,8 +167,9 @@ class PlaylistsPage(Gtk.Box):
         page_actions.pop("delete_file", None)
 
         # 页2：曲目列表（曲库同款）
+        # 点歌用「本页内部回调」：以当前歌单曲目作队列，而非本地曲库。
         self._track_page = LocalLibraryPage(
-            on_track_activated=on_track_activated,
+            on_track_activated=self._on_track_in_playlist,
             title="",
             empty_text="此歌单暂无歌曲",
             hide_header=True,
@@ -385,6 +391,15 @@ class PlaylistsPage(Gtk.Box):
                 self._on_play(int(pid))
         except Exception:
             pass
+
+    def _on_track_in_playlist(self, track) -> None:
+        """歌单内点歌：以「当前歌单曲目」作播放队列（非本地曲库）。"""
+        try:
+            lib = list(getattr(self._track_page, "_all_tracks", []) or [])
+        except Exception:
+            lib = []
+        if callable(self._on_playlist_track):
+            self._on_playlist_track(track, lib)
 
     def _on_blank_right_click(self, gesture, _n, x, y) -> None:
         if self._stack.get_visible_child_name() != "cards":

@@ -12,6 +12,7 @@ from typing import Callable
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from core.i18n import _
+from models import TrackItem
 
 from .widgets.cover_art import CoverArt
 from .widgets.lyrics_view import LyricsView
@@ -508,16 +509,30 @@ class PlayerPanel(Gtk.Box):
         self._repeat_mode = 0  # 0=不循环 1=列表循环 2=单曲循环
 
     def _build_queue_view(self) -> Gtk.Widget:
-        """当前播放队列（ListBox：序号 + 封面 + 歌名 + 歌手；点击跳播）。
+        """当前播放队列（**虚拟化** ListView：序号 + 封面 + 歌名 + 歌手；点击跳播）。
 
-        列表上下边缘加渐隐遮罩：滚动时内容淡出到背景，视觉更柔和。
+        用 Gtk.ListView + Gio.ListStore：只渲染可见行，上千首队列也不卡
+        （旧 ListBox 为每首建一个行控件 + 封面，大队列明显卡顿）。
         """
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         box.set_size_request(240, -1)
-        self._queue_list = Gtk.ListBox()
-        self._queue_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        #: 队列数据模型（存 TrackItem）。虚拟列表据此按需建行。
+        self._queue_store = Gio.ListStore.new(TrackItem)
+        self._queue_current = -1
+        self._queue_sel = Gtk.SingleSelection.new(self._queue_store)
+        # 不响应选择（避免键盘/点击产生选中态），仅用 activate 点击。
+        self._queue_sel.set_autoselect(False)
+        self._queue_sel.set_can_unselect(True)
+        self._queue_list = Gtk.ListView.new(self._queue_sel, None)
+        self._queue_list.set_show_separators(False)
         self._queue_list.add_css_class("queue-list")
-        self._queue_list.connect("row-activated", self._on_queue_row_activated)
+        self._queue_list.set_single_click_activate(False)
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self._queue_factory_setup)
+        factory.connect("bind", self._queue_factory_bind)
+        factory.connect("unbind", self._queue_factory_unbind)
+        self._queue_list.set_factory(factory)
+        self._queue_list.connect("activate", self._on_queue_row_activated)
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.set_vexpand(True)
@@ -526,78 +541,141 @@ class PlayerPanel(Gtk.Box):
         box.append(scroll)
         return box
 
-    def set_queue(self, tracks: list, current_index: int = -1) -> None:
-        """刷新队列列表；current_index 高亮当前播放项。"""
+    # ---- 虚拟化队列：行工厂 ----
+    def _queue_factory_setup(self, _f, item) -> None:
+        """建立行控件（只建一次，之后复用）。"""
+        hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        hb.set_margin_start(8)
+        hb.set_margin_end(8)
+        hb.set_margin_top(4)
+        hb.set_margin_bottom(4)
+        # 播放指示器（跳动音符 + 行高亮 effect-selected）：
+        # 复用曲库/历史的 PlayingIndicator——切歌时由全局 set_current_key
+        # 通知，各行自更新显隐与高亮，无需外部遍历行。
+        from ui.widgets.playing_indicator import PlayingIndicator
+        ind = PlayingIndicator(width=14, height=14)
+        ind.set_valign(Gtk.Align.CENTER)
+        ind.set_margin_end(4)
+        ind.set_visible(False)
+        hb.append(ind)
+        num = Gtk.Label(label="")
+        num.add_css_class("dim-label")
+        num.add_css_class("caption")
+        num.set_size_request(24, -1)
+        hb.append(num)
+        cover = self._build_queue_cover(None)   # 占位（bind 时填真封面）
+        hb.append(cover)
+        info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        info.set_hexpand(True)
+        title = Gtk.Label(label="", xalign=0)
+        title.set_ellipsize(3)
+        artist = Gtk.Label(label="", xalign=0)
+        artist.add_css_class("dim-label")
+        artist.add_css_class("caption")
+        artist.set_ellipsize(3)
+        info.append(title)
+        info.append(artist)
+        hb.append(info)
+        item.set_child(hb)
+        # 缓存子控件引用，供 bind 快速填充。
+        item._q_num = num
+        item._q_cover = cover
+        item._q_title = title
+        item._q_artist = artist
+        item._q_indicator = ind
+
+    def _queue_factory_bind(self, _f, item) -> None:
+        """填充一行数据（每次复用时）。"""
         try:
-            # 清空
-            c = self._queue_list.get_first_child()
-            while c is not None:
-                nxt = c.get_next_sibling()
-                self._queue_list.remove(c)
-                c = nxt
-            for i, t in enumerate(tracks or []):
-                row = Gtk.ListBoxRow()
-                hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-                hb.set_margin_start(8)
-                hb.set_margin_end(8)
-                hb.set_margin_top(4)
-                hb.set_margin_bottom(4)
-                num = Gtk.Label(label=str(i + 1))
-                num.add_css_class("dim-label")
-                num.add_css_class("caption")
-                num.set_size_request(24, -1)
-                hb.append(num)
-                # 小封面（含 Hi-Res 徽标叠加）
-                cover_widget = self._build_queue_cover(t)
-                hb.append(cover_widget)
-                info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-                info.set_hexpand(True)
-                title = Gtk.Label(label=getattr(t, "title", "") or _("未知"), xalign=0)
-                title.set_ellipsize(3)
-                artist = Gtk.Label(label=getattr(t, "artist", "") or "", xalign=0)
-                artist.add_css_class("dim-label")
-                artist.add_css_class("caption")
-                artist.set_ellipsize(3)
-                info.append(title)
-                info.append(artist)
-                hb.append(info)
-                row.set_child(hb)
-                row._track = t
-                # 右键菜单：提升到下一首 / 从列表丢弃
-                self._attach_queue_row_menu(row, t)
-                if i == current_index:
-                    row.add_css_class("queue-current")
-                self._queue_list.append(row)
+            track = item.get_item()
+            pos = item.get_position()
+            item._q_num.set_label(str(pos + 1))
+            item._q_title.set_label(getattr(track, "title", "") or _("未知"))
+            item._q_artist.set_label(getattr(track, "artist", "") or "")
+            # 封面：填充（复用 _fill_queue_cover 的缓存逻辑）
+            self._fill_queue_cover(item._q_cover, track)
+            # 当前播放标记（跳动音符 + effect-selected 行高亮）：
+            # 记录本行键，显隐/高亮由 PlayingIndicator 依全局当前键自更新。
+            ind = getattr(item, "_q_indicator", None)
+            if ind is not None:
+                key = (getattr(track, "filepath", "") or getattr(track, "source_id", "")
+                       or getattr(track, "title", ""))
+                ind.set_row_key(key or "")
+                ind.sync_now()
+            # 右键菜单（每次 bind 重挂，item 复用需重置）
+            self._attach_queue_row_menu(item, track)
         except Exception:
-            # 队列重建期间任一行出错会中断后续行；仅记 debug 日志保持容错，
-            # 排查时（DEBUG 级别）可定位到失败点。
+            log.debug("绑定队列行失败", exc_info=True)
+
+    def _queue_factory_unbind(self, _f, item) -> None:
+        child = item.get_child()
+        if child is not None:
+            try:
+                child.remove_css_class("queue-current")
+            except Exception:
+                pass
+        self._detach_queue_row_menu(item)
+
+    def set_queue(self, tracks: list, current_index: int = -1) -> None:
+        """刷新队列列表；current_index 高亮当前播放项。
+
+        虚拟化：只把数据写入 ListStore（splice），行控件由 ListView 按需
+        创建（仅可见行）。大队列不再为每首建行/封面，切换不卡。
+        """
+        try:
+            self._queue_current = int(current_index)
+            store = self._queue_store
+            items = [t for t in (tracks or [])]
+            store.splice(0, store.get_n_items(), items)
+        except Exception:
             log.debug("刷新队列列表失败", exc_info=True)
 
-    def _attach_queue_row_menu(self, row, track) -> None:
-        """给队列行挂右键菜单：提升到下一首 / 从列表丢弃。"""
-        if getattr(row, "_rclick", None) is not None:
+    def _attach_queue_row_menu(self, item, track) -> None:
+        """给队列行挂右键菜单：提升到下一首 / 从列表丢弃。
+
+        虚拟列表要点：
+          1) 右键手势必须挂在「行内容 child」上（ListItem 本身不接鼠标事件）；
+          2) 每次 bind 都重置（行会被复用，旧菜单指向上一首 track，
+             不能因「已挂过」而跳过）。
+        """
+        child = item.get_child()
+        if child is None:
             return
+        self._detach_queue_row_menu(item)   # 先清旧（复用）
         if getattr(self, "_on_queue_action", None) is None:
             return
 
         def on_right_click(gesture, n_press, x, y):
-            # 用 Gtk.Popover + 按钮直接连回调，不经 Gio 动作解析
-            # （PopoverMenu + 动作组在部分容器下点击无反应，与歌单/列表同因）。
-            _popup_menu(row, x, y, [
+            _popup_menu(child, x, y, [
                 (_("提升到下一首"), lambda: self._on_queue_action("promote", track)),
                 (_("从列表丢弃"), lambda: self._on_queue_action("discard", track)),
             ])
 
         g = Gtk.GestureClick()
         g.set_button(3)
+        g.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         g.connect("pressed", on_right_click)
-        row.add_controller(g)
-        row._rclick = g
+        child.add_controller(g)
+        item._rclick = g
+        item._rclick_child = child
+
+    def _detach_queue_row_menu(self, item) -> None:
+        """移除队列行右键控制器（虚拟列表 unbind/重挂时调用）。"""
+        g = getattr(item, "_rclick", None)
+        child = getattr(item, "_rclick_child", None)
+        if g is not None and child is not None:
+            try:
+                child.remove_controller(g)
+            except Exception:
+                pass
+        item._rclick = None
+        item._rclick_child = None
 
     def _build_queue_cover(self, track) -> Gtk.Widget:
-        """队列行小封面：32px 封面图 + 右下角 Hi-Res 徽标。
+        """队列行小封面容器（32px 封面图 + 右下角 Hi-Res 徽标）。
 
-        封面异步加载（复用 ui.pages 的缓存与工具），加载完成前显示占位图标。
+        只建「骨架」，不填数据；封面/徽标由 _fill_queue_cover 在 bind 时填
+        （虚拟列表复用行，每次 bind 需重填）。track=None 即纯骨架。
         """
         _QCOVER = 32
         overlay = Gtk.Overlay()
@@ -617,11 +695,31 @@ class PlayerPanel(Gtk.Box):
         badge.set_valign(Gtk.Align.END)
         badge.set_visible(False)
         overlay.add_overlay(badge)
+        # 缓存子控件引用，供 _fill_queue_cover 快速填充。
+        overlay._q_pic = pic
+        overlay._q_badge = badge
+        if track is not None:
+            self._fill_queue_cover(overlay, track)
+        return overlay
 
+    def _fill_queue_cover(self, overlay, track) -> None:
+        """把曲目的封面/徽标填入已建好的封面骨架（bind 时调用）。"""
+        if overlay is None or track is None:
+            return
+        pic = getattr(overlay, "_q_pic", None)
+        badge = getattr(overlay, "_q_badge", None)
+        if pic is None:
+            return
         # 徽标：按曲目规格显示（统一由公共函数处理）。
+        if badge is not None:
+            try:
+                from ui.pages.common import apply_quality_badge
+                apply_quality_badge(badge, track)
+            except Exception:
+                pass
+        # 先清空旧封面（复用行时避免残留上一首的封面）。
         try:
-            from ui.pages.common import apply_quality_badge
-            apply_quality_badge(badge, track)
+            pic.set_paintable(None)
         except Exception:
             pass
 
@@ -629,16 +727,19 @@ class PlayerPanel(Gtk.Box):
         filepath = getattr(track, "filepath", "") or ""
         cover_url = getattr(track, "cover_url", "") or ""
         if not filepath and not cover_url:
-            return overlay
+            return
         ckey = filepath if filepath else ("url::" + cover_url)
         try:
             from ui.pages import _cache_get, _cache_put, _load_cover_bytes, _MISS
         except Exception:
-            return overlay
+            return
         cached = _cache_get(ckey)
         if cached is not _MISS and cached is not None:
-            pic.set_paintable(cached)
-            return overlay
+            try:
+                pic.set_paintable(cached)
+            except Exception:
+                pass
+            return
         if cached is _MISS:
             # 未缓存：异步加载（复用 pages 的后台读图/下载 + 缓存）。
             # 用封面专用高并发池，避免与在线流代理等长任务共占全局池
@@ -667,32 +768,39 @@ class PlayerPanel(Gtk.Box):
                     run_cover_async(work=lambda: _load_url_cover(cover_url), on_done=_done)
             except Exception:
                 pass
-        return overlay
 
     def set_queue_current(self, current_index: int) -> None:
-        """仅更新队列中「当前播放」高亮，不重建任何行。
+        """更新队列「当前播放」高亮（复用 PlayingIndicator 的全局键机制）。
 
-        切歌时队列组成通常不变，整表重建会明显卡顿；此方法只切 CSS 类。
+        与曲库/历史列表一致：行内的 PlayingIndicator 监听全局当前键，
+        切歌时只需 set_current_key，各行自动更新「跳动音符 + effect-selected
+        行高亮」，无需外部遍历行、不重建数据。
         """
         try:
-            i = 0
-            c = self._queue_list.get_first_child()
-            while c is not None:
-                if i == current_index:
-                    c.add_css_class("queue-current")
-                else:
-                    c.remove_css_class("queue-current")
-                c = c.get_next_sibling()
-                i += 1
+            self._queue_current = int(current_index)
+            key = ""
+            try:
+                n = self._queue_store.get_n_items()
+                if 0 <= self._queue_current < n:
+                    t = self._queue_store.get_item(self._queue_current)
+                    key = (getattr(t, "filepath", "") or getattr(t, "source_id", "")
+                           or getattr(t, "title", "")) or ""
+            except Exception:
+                key = ""
+            from ui.widgets.playing_indicator import set_current_key
+            set_current_key(key)
         except Exception:
             pass
 
-    def _on_queue_row_activated(self, _listbox, row) -> None:
-        """点队列某行 → 跳播（通过 on_next/外部回调）。"""
-        track = getattr(row, "_track", None)
-        if track is not None and getattr(self, "_on_queue_activate", None) is not None:
+    def _on_queue_row_activated(self, _listview, position) -> None:
+        """点队列某行 → 跳播（ListView activate 传 position，非行控件）。"""
+        try:
+            item = self._queue_store.get_item(position)
+        except Exception:
+            item = None
+        if item is not None and getattr(self, "_on_queue_activate", None) is not None:
             try:
-                self._on_queue_activate(track)
+                self._on_queue_activate(item)
             except Exception:
                 pass
 
