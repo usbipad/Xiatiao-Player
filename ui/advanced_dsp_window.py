@@ -67,6 +67,17 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
         # 预设管理
         self._build_presets_page()
 
+        # 关闭时断开全局订阅（内存泄漏修复：否则窗口+功能页永不回收）
+        self.connect("close-request", self._on_close_request)
+
+    def _on_close_request(self, *_a) -> bool:
+        """窗口关闭：断开对全局 DspState 的订阅，使本窗口可被回收。"""
+        try:
+            self.disconnect_global_refs()
+        except Exception:
+            log.debug("断开高级 DSP 窗口全局引用失败", exc_info=True)
+        return False   # 不阻止默认关闭
+
         # 注：不再订阅 EffectState.reset —— DspState 广播已覆盖所有变更来源
         # （预设 / 重置 / 其它视图），_on_dsp_state_changed 统一刷新。
 
@@ -480,6 +491,56 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
                 get_effect_state().set_current(name)
             except Exception:
                 log.debug("记录预设名失败", exc_info=True)
+
+    def disconnect_global_refs(self) -> None:
+        """断开本窗口及其功能页对全局 DspState 单例的订阅。
+
+        内存泄漏修复：DspState 是模块级单例，connect 绑定方法强引用
+        self / 各 EffectPage；关闭本窗口时若不断开，窗口 + 5 个功能页
+        连同整棵控件树永不回收（实测每次创建泄漏 6 个订阅者）。
+        由窗口 close-request 显式调用（不能靠 do_dispose——单例持有 self，
+        refcount 永不归零）。幂等。
+        """
+        # 递归清理功能页（各自订阅了 DspState）
+        for page in getattr(self, "_feature_pages", []) or []:
+            try:
+                # 切断「页 → 窗口」回边：页持有 _on_dsp_changed（= 本窗口的
+                # _make_page_handler 生成的闭包，捕获 self）与 on_* 回调，
+                # 不置空则页会钉住窗口（窗口 ↔ 页 互持有）。
+                for attr in ("_on_dsp_changed", "_on_coloring", "_on_convolution_ir",
+                             "_on_convolution_cleared", "_on_open_advanced"):
+                    if hasattr(page, attr):
+                        try:
+                            setattr(page, attr, None)
+                        except Exception:
+                            pass
+                page.disconnect_global_refs()
+            except Exception:
+                pass
+        st = getattr(self, "_dsp_state", None)
+        if st is not None:
+            for sig in ("changed", "replaced"):
+                try:
+                    st.disconnect_by_func(self._on_dsp_state_changed)
+                except Exception:
+                    pass
+            self._dsp_state = None
+        # 断开本窗口自身控件树的信号连接（染色页的 notify::active lambda 等
+        # 会形成「widget → lambda → self」环，仅靠功能页清理覆盖不到）。
+        try:
+            from ui.gobject_cleanup import disconnect_widget_tree
+            disconnect_widget_tree(self, owner=self)
+        except Exception:
+            pass
+        # 清掉本窗口的防抖定时器，避免其持有 self
+        try:
+            t = getattr(self, "_emit_timer", None)
+            if t is not None:
+                from gi.repository import GLib
+                GLib.source_remove(t)
+        except Exception:
+            pass
+        self._emit_timer = None
 
     def _on_preset_delete(self, _btn) -> None:
         from core.dsp_store import get_dsp_preset_store

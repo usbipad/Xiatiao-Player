@@ -9,7 +9,7 @@ import weakref
 from gi.repository import Gdk, GLib, Gio, Gtk
 
 from core.i18n import _
-from core.tasks import run_async, run_cover_async
+from core.tasks import run_cover_async
 from ui.widgets.playing_indicator import PlayingIndicator
 
 from .common import (

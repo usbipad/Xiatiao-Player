@@ -15,7 +15,6 @@ try:
     from mutagen.flac import FLAC
     from mutagen.id3 import ID3
     from mutagen.mp4 import MP4
-    from mutagen.oggvorbis import OggVorbis
 
     _HAS_MUTAGEN = True
 except Exception:  # pragma: no cover - 环境相关
@@ -711,7 +710,6 @@ def _pixbuf_to_cairo_surface(pixbuf):
     import gi
 
     gi.require_version("GdkPixbuf", "2.0")
-    from gi.repository import GdkPixbuf
 
     # 统一成 8bit RGBA，再拷进连续缓冲区（C 实现，快）
     if not pixbuf.get_has_alpha():
@@ -772,7 +770,7 @@ def make_cover_textures(image_bytes: bytes, sizes, want_color: bool = False):
 
         gi.require_version("GdkPixbuf", "2.0")
         gi.require_version("Gdk", "4.0")
-        from gi.repository import GdkPixbuf, Gdk, Gio, GLib
+        from gi.repository import GdkPixbuf, Gio, GLib
 
         stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(image_bytes))
         base = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
@@ -826,7 +824,7 @@ def _pixbuf_to_texture(pixbuf):
 
     gi.require_version("GdkPixbuf", "2.0")
     gi.require_version("Gdk", "4.0")
-    from gi.repository import GdkPixbuf, Gdk, GLib
+    from gi.repository import Gdk, GLib
 
     if not pixbuf.get_has_alpha():
         pixbuf = pixbuf.add_alpha(True, 255, 255, 255)

@@ -239,18 +239,23 @@ class VizPipeline:
         if self._thread is not None:
             return
         self._alive = True
+        # 复用存活的读线程（内存泄漏修复，实测反复 start/stop 累积线程）：
+        # 读线程可能阻塞在 FIFO open()（无 writer 时），stop() 无法让它立即
+        # 退出。若每次都新建，线程只增不减。改为：线程已存活则只置
+        # _alive=True 复用它；否则才新建。这样 viz-fifo 线程恒为 1 个。
+        if self._thread is not None and self._thread.is_alive():
+            return
         self._thread = threading.Thread(target=self._read_loop, name="viz-fifo", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._alive = False
+        # 不 join、不置 _thread=None：读线程可能正阻塞在 FIFO open()（无 writer），
+        # 强杀不掉。保留引用，下次 start() 复用它（置回 _alive=True），
+        # 避免反复新建导致线程累积。线程卡在 open() 时不影响主线程。
         t = self._thread
-        self._thread = None
         if t is not None:
-            # 读线程是 daemon：_alive=False 后会自行退出，不必 join。
-            # 之前 join(timeout=0.2) 会阻塞主线程最多 200ms，导致退出沉浸页时
-            # 动画/切页明显延迟（线程常阻塞在 f.read，不会立刻退出）。
-            # 这里只给极短等待，几乎不卡主线程。
+            # 短暂等待：若线程恰好不在阻塞（如正在 wait 循环里），能快速退出。
             try:
                 t.join(timeout=0.01)
             except Exception:

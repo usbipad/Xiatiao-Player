@@ -69,11 +69,13 @@ class PeqCurve(Gtk.DrawingArea):
         drag.connect("drag-update", self._on_drag_update)
         drag.connect("drag-end", self._on_drag_end)
         self.add_controller(drag)
+        self._drag_controller = drag
 
         # 滚轮调 Q
         scroll = Gtk.EventControllerScroll.new(Gtk.EventControllerScrollFlags.VERTICAL)
         scroll.connect("scroll", self._on_scroll)
         self.add_controller(scroll)
+        self._scroll_controller = scroll
 
         # 点击选择（用于滚轮调 Q）
         self._selected = -1
@@ -280,3 +282,47 @@ class PeqCurve(Gtk.DrawingArea):
         if self._on_changed is not None:
             self._on_changed([dict(b) for b in self._bands])
         return True
+
+    def disconnect_global_refs(self) -> None:
+        """断开所有指向本控件的绑定方法，使其能被回收。
+
+        内存泄漏修复（实测：反复创建 20 个 PeqCurve 存活 20 个，持有者是
+        5 个绑定方法 self._draw / _on_drag_* / _on_scroll）：
+        - `set_draw_func(self._draw)` 让 GTK 的 C 层持有绑定方法 → self；
+        - add_controller 的 drag/scroll 回调也是绑定方法 → self。
+        C 层不参与 Python gc → 即便无 Python 引用也钉住 widget 无法回收
+        （与 PlayingIndicator 同一模式）。
+        需由持有者在生命周期结束点显式调用（do_unroot 在未 mapped 时不可靠，
+        且 PyGObject 下 set_draw_func(None) 亦不足以解除 C 层持有）。幂等。
+        """
+        try:
+            self.set_draw_func(None, None)
+        except Exception:
+            pass
+        for ctrl_attr in ("_drag_controller", "_scroll_controller"):
+            ctrl = getattr(self, ctrl_attr, None)
+            if ctrl is not None:
+                # 逐个断开 controller 上的绑定方法信号（C 层持有）
+                for sig, meth in (
+                    ("drag-begin", self._on_drag_begin),
+                    ("drag-update", self._on_drag_update),
+                    ("drag-end", self._on_drag_end),
+                    ("scroll", self._on_scroll),
+                ):
+                    try:
+                        ctrl.disconnect_by_func(meth)
+                    except Exception:
+                        pass
+                try:
+                    self.remove_controller(ctrl)
+                except Exception:
+                    pass
+                setattr(self, ctrl_attr, None)
+
+    def do_unroot(self) -> None:
+        """兜底：从控件树移除时也尝试断开（显式调用为主）。"""
+        self.disconnect_global_refs()
+        try:
+            Gtk.DrawingArea.do_unroot(self)
+        except Exception:
+            pass

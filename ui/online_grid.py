@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import urllib.request
-import weakref
 from typing import Callable, List, Optional
 
 from gi.repository import Gdk, GdkPixbuf, Gio, GLib, GObject, Gtk
@@ -76,8 +75,37 @@ def _load_url_cover_async(url: str, on_done: Callable) -> None:
         except Exception:
             return None
 
+    # 缓存键：与 song_list / player_panel 一致（"url::" 前缀，同一 LRU）。
+    ckey = "url::" + url
+    try:
+        from .pages.common import cache_get, cache_put, MISS
+    except Exception:
+        cache_get = cache_put = None
+        MISS = object()
+    if cache_get is not None:
+        cached = cache_get(ckey)
+        if cached is not MISS:
+            on_done(cached)
+            return
+
     def _done(pb):
-        on_done(pb)
+        if pb is None:
+            try:
+                cache_put(ckey, None)
+            except Exception:
+                pass
+            on_done(None)
+            return
+        try:
+            from .online_section import _pixbuf_to_texture
+            tex = _pixbuf_to_texture(pb)
+        except Exception:
+            tex = None
+        try:
+            cache_put(ckey, tex)
+        except Exception:
+            pass
+        on_done(tex)
 
     run_cover_async(work=_work, on_done=_done)
 
@@ -242,15 +270,15 @@ class OnlineCardGrid(Gtk.ScrolledWindow):
             box._busy = True
         except Exception:
             _ca = None
-        def _on_cover(pb, _box=box, _gen=gen):
+        def _on_cover(tex, _box=box, _gen=gen):
             # 过期回填（已被复用/解绑）→ 丢弃
             if getattr(_box, "_gen", 0) != _gen:
                 self._release_busy(_box)
                 return
             try:
-                if pb is not None:
+                if tex is not None:
                     pic = Gtk.Picture()
-                    pic.set_pixbuf(pb)
+                    pic.set_paintable(tex)
                     pic.set_content_fit(Gtk.ContentFit.COVER)
                     pic.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
                     _set_holder_child(_box._holder, pic)

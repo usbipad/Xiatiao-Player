@@ -79,8 +79,13 @@ pub(crate) fn prefer_ffmpeg(path: &str) -> bool {
     matches!(ext.as_str(), "ape" | "wv" | "dsf" | "dff" | "mpc" | "tta")
 }
 
-/// 用 ffprobe 读取 (采样率, 声道, 时长秒, 位深, 码率bps, 编码格式)。
-fn ffprobe_info(path: &str) -> (u32, u32, f64, u32, u64, String) {
+/// 用 ffprobe 读取 (采样率, 声道, 时长秒, 位深, 码率bps, 编码格式, 是否有音频流)。
+///
+/// 末位 `has_audio` 很关键：ffprobe 解析不到音频流时（如服务器返回的
+/// JSON 错误体、损坏文件），其余字段会静默停留在默认值，无法据此区分
+/// 「时长未知的合法流」与「根本不是音频的输入」。故显式返回该判据，
+/// 由调用方在入口处拦截，避免把垃圾输入当合法流一路播到假 EOF。
+fn ffprobe_info(path: &str) -> (u32, u32, f64, u32, u64, String, bool) {
     let out = crate::deps::command("ffprobe")
         .args([
             "-v", "error",
@@ -96,13 +101,19 @@ fn ffprobe_info(path: &str) -> (u32, u32, f64, u32, u64, String) {
     let mut bits = 0u32;
     let mut bitrate = 0u64;
     let mut codec = String::new();
+    // 只要解析到 codec/sample_rate/channels 任一，即认为存在音频流。
+    // 合法格式（含 DSD 软解、DXD、APE/WV/MPC/TTA）都会命中；
+    // JSON 错误体 / 非音频文件则一个都解析不到。
+    let mut has_audio = false;
     if let Ok(o) = out {
         let text = String::from_utf8_lossy(&o.stdout);
         for line in text.lines() {
             if let Some(v) = line.strip_prefix("sample_rate=") {
                 rate = v.trim().parse().unwrap_or(rate);
+                has_audio = true;
             } else if let Some(v) = line.strip_prefix("channels=") {
                 channels = v.trim().parse().unwrap_or(channels);
+                has_audio = true;
             } else if let Some(v) = line.strip_prefix("duration=") {
                 dur = v.trim().parse().unwrap_or(0.0);
             } else if let Some(v) = line.strip_prefix("bits_per_raw_sample=") {
@@ -119,10 +130,11 @@ fn ffprobe_info(path: &str) -> (u32, u32, f64, u32, u64, String) {
                 if codec.is_empty() {
                     codec = v.trim().to_string();
                 }
+                has_audio = true;
             }
         }
     }
-    (rate, channels, dur, bits, bitrate, codec)
+    (rate, channels, dur, bits, bitrate, codec, has_audio)
 }
 
 /// 用 ffmpeg 解码到原始采样率 PCM，再转交输出层。
@@ -141,7 +153,38 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
         return Err(msg);
     }
 
-    let (src_rate, in_channels, dur, bits, bitrate, codec) = ffprobe_info(path);
+    let (src_rate, in_channels, dur, bits, bitrate, codec, has_audio) = ffprobe_info(path);
+
+    // 【关键】入口校验：ffprobe 探测不到音频流 → 输入不是可播放的音频。
+    // 最常见场景：Subsonic 服务器对无法解析的曲目返回「HTTP 200 + JSON
+    // 错误体」，HTTP 层不报错、ffmpeg 也解不出内容；若不在此拦截，后续
+    // 会因 duration=0 走「未知时长重试超限 → 当作正常播完」，把错误伪装
+    // 成 end_of_stream，并让前端兜底成笼统的「已跳过」。这里直接给出明确
+    // 错误（经 Event::Error → error-occur），让用户看到真实原因。
+    //
+    // 兼容性：合法输入（DSD 软解 dsf/dff、DXD、APE/WV/MPC/TTA、网络流）
+    // 均能被 ffprobe 探测到音频流；只有真正的非音频输入会命中此处。
+    if !has_audio {
+        // 曲目标识：不要把完整 URL 放进提示。
+        // 原因：URL 含 & 等字符，而 Adw.Toast 的标题按 Pango markup 解析，
+        // 非法的 &xxx 会被判为实体错误 → 整个提示显示为空白框（实测）。
+        // 故网络流只取 id 参数（纯标识），本地文件取文件名。
+        let short = if is_network_stream(path) {
+            path.split("id=")
+                .nth(1)
+                .and_then(|s| s.split('&').next())
+                .map(|s| format!("曲目 {s}"))
+                .unwrap_or_else(|| "在线曲目".to_string())
+        } else {
+            path.rsplit('/').next().unwrap_or(path).to_string()
+        };
+        let msg = format!(
+            "无法播放：服务器未返回有效音频流（曲目可能无法解析或地址失效）。{short}"
+        );
+        eprintln!("[engine/ffmpeg] {msg}");
+        shared.report_error(msg.clone());
+        return Err(msg);
+    }
 
     // 原则：ffmpeg 解码出什么采样率，就全程保持那个采样率，
     // 不做任何重采样/限幅/滤波。采样率转换交给 PipeWire/DAC。
@@ -191,10 +234,14 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
     let mut cmd = crate::deps::command("ffmpeg");
     cmd.args(["-v", "error", "-nostdin"]);
     push_input_args(&mut cmd, path);
+    // stderr 继承后端进程（写入后端日志），而非丢弃：ffmpeg 的报错
+    // （如 Invalid data found）是定位「解不出音频」的关键证据，丢弃后
+    // 只剩一个笼统的假 EOF，难以排查。ffmpeg 用 -v error，仅错误才输出，
+    // 不会刷屏。
     let mut ff = cmd
         .args(["-f", "f32le", "-ac", &ch.to_string(), "-"])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("spawn ffmpeg: {e}"))?;
     let mut ff_out = ff.stdout.take().ok_or("no ffmpeg stdout")?;
@@ -255,7 +302,7 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
             ff = scmd
                 .args(["-f", "f32le", "-ac", &ch.to_string(), "-"])
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
+                .stderr(Stdio::inherit())
                 .spawn()
                 .map_err(|e| format!("respawn ffmpeg: {e}"))?;
             ff_out = ff.stdout.take().ok_or("no ffmpeg stdout")?;

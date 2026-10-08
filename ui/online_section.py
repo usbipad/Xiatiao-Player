@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import weakref
 from typing import List
 
 from gi.repository import Gdk, Gtk
@@ -39,8 +38,25 @@ def _load_url_cover_async(url: str, on_done) -> None:
         except Exception:
             return None
 
+    # 缓存键：与 song_list / player_panel 保持一致（"url::" 前缀，进同一个 LRU）。
+    ckey = "url::" + url
+    try:
+        from .pages.common import cache_get, cache_put, MISS
+    except Exception:
+        cache_get = cache_put = None
+        MISS = object()
+    if cache_get is not None:
+        cached = cache_get(ckey)
+        if cached is not MISS:
+            on_done(cached)   # 命中：直接回填（Gdk.Texture 或 None）
+            return
+
     def _done(raw):
         if not raw:
+            try:
+                cache_put(ckey, None)
+            except Exception:
+                pass
             on_done(None)
             return
         try:
@@ -58,11 +74,46 @@ def _load_url_cover_async(url: str, on_done) -> None:
                 pb = pb.new_subpixbuf((w - side) // 2, (h - side) // 2, side, side)
             pb = pb.scale_simple(CARD_COVER_PX, CARD_COVER_PX,
                                  GdkPixbuf.InterpType.BILINEAR)
-            on_done(pb)
+            # 转成 Gdk.Texture 再交付/缓存：Picture 用 set_paintable 即可，
+            # 避免每个卡片各持一份 GdkPixbuf（那是 216MB 泄漏的来源）。
+            tex = _pixbuf_to_texture(pb)
+            try:
+                cache_put(ckey, tex)
+            except Exception:
+                pass
+            on_done(tex)
         except Exception:
             on_done(None)
 
     run_cover_async(work=_work, on_done=_done)
+
+
+def _pixbuf_to_texture(pixbuf):
+    """GdkPixbuf -> Gdk.Texture（不经过 PNG 编解码）。
+
+    与 models/coverart._pixbuf_to_texture 同样的做法：紧凑 RGBA 后建
+    MemoryTexture。失败回退 set_pixbuf 路径（返回 None，由调用方兜底）。
+    """
+    try:
+        from gi.repository import Gdk, GLib
+        if not pixbuf.get_has_alpha():
+            pixbuf = pixbuf.add_alpha(True, 255, 255, 255)
+        w, h = pixbuf.get_width(), pixbuf.get_height()
+        stride = pixbuf.get_rowstride()
+        n_ch = pixbuf.get_n_channels()
+        if n_ch == 4 and stride >= w * 4:
+            data = bytes(pixbuf.get_pixels())
+            if stride != w * 4:
+                rows = bytearray()
+                for y in range(h):
+                    rows += data[y * stride: y * stride + w * 4]
+                data = bytes(rows)
+                stride = w * 4
+            return Gdk.MemoryTexture.new(
+                w, h, Gdk.MemoryFormat.R8G8B8A8, GLib.Bytes.new(data), stride)
+    except Exception:
+        pass
+    return None
 
 
 def _make_card(card: dict) -> Gtk.Widget:
@@ -119,11 +170,12 @@ def _make_card(card: dict) -> Gtk.Widget:
         except Exception:
             _ca = None
 
-        def _on_cover(pb):
+        def _on_cover(tex):
             try:
-                if pb is not None:
+                if tex is not None:
                     pic = Gtk.Picture()
-                    pic.set_pixbuf(pb)
+                    # 用 set_paintable（纹理）：不再让 Picture 各持一份 GdkPixbuf。
+                    pic.set_paintable(tex)
                     pic.set_content_fit(Gtk.ContentFit.COVER)
                     pic.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
                     pic.set_hexpand(True)

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Callable, Optional
+from typing import Callable
 
 from gi.repository import Adw, Gio, Gtk
 

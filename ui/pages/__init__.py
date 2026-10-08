@@ -29,7 +29,7 @@ from .common import (
     load_cover_bytes,
     section_title,
 )
-from .media_grid import CARD_COVER_PX, make_group_card
+from .media_grid import make_group_card
 from .song_list import build_track_columnview
 
 #: 展开后网格每行卡片数（保留旧常量名以兼容）

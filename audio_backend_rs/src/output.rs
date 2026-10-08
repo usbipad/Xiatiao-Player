@@ -854,6 +854,7 @@ mod tests {
             state: AtomicU8::new(STATE_PLAYING),
             drain_done: AtomicBool::new(true),
             flush_req: AtomicBool::new(false),
+            frames_since_flush: AtomicU64::new(u64::MAX),
         };
 
         // 正常播放：ring 有数据。

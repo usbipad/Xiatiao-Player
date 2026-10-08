@@ -82,6 +82,10 @@ docs/HANDOVER.md
 # 个人调试工具
 tools/audit_undef.py
 
+# 本地 AI 助手 skill（webcode 用，仅本地留存，不入库）
+.agents/
+.codex/
+
 # 发行说明（放 GitHub Release，不入库）
 release/*.md
 

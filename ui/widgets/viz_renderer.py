@@ -102,7 +102,12 @@ class VizRenderer(Gtk.DrawingArea):
             self._tick_running = False
 
     def stop(self) -> None:
-        """停止帧回调（退出沉浸页时调用），避免后台空转。"""
+        """停止帧回调（退出沉浸页 / 关闭频谱窗口时调用），避免后台空转。
+
+        注意：只 stop **不停** draw_func——沉浸页的 renderer 常驻，退出
+        沉浸页再进入要复用，清掉 draw_func 会导致频谱不再绘制。
+        独立窗口的 renderer 在窗口关闭时应由 disconnect_global_refs 清理。
+        """
         self._tick_running = False
         if self._tick_id is not None:
             try:
@@ -110,6 +115,21 @@ class VizRenderer(Gtk.DrawingArea):
             except Exception:
                 pass
             self._tick_id = None
+
+    def disconnect_global_refs(self) -> None:
+        """断开所有持有，使本控件可被回收（独立窗口关闭时调用）。
+
+        内存泄漏修复：`set_draw_func(self._draw)` 让 GTK 的 C 层持有绑定方法
+        → self，C 层不参与 Python gc → 即便无 Python 引用也钉住 widget 无法
+        回收（与 PlayingIndicator / PeqCurve 同一模式）。
+        数据源是外部传入的绑定方法（如 pipeline.latest），一并清空。
+        """
+        self.stop()
+        try:
+            self.set_draw_func(None, None)
+        except Exception:
+            pass
+        self._data_source = None
 
     def set_data_source(self, fn) -> None:
         """设置数据源（无参函数，返回 List[float]）。None 则停止拉取。"""
@@ -176,9 +196,6 @@ class VizRenderer(Gtk.DrawingArea):
         # 用指数分布，让滑块全程都有可感变化（线性时高端变化太小）。
         self._fall_tau = 0.5 * (0.06 ** s)  # s=0→0.5, s=1→0.03
         self._fall_alpha = _alpha_from_tau(self._fall_tau, 1.0 / 60.0)
-        import os as _os
-        if _os.environ.get("XIATIAO_VIZ_DEBUG"):
-            print(f"[viz-set] set_fall_speed({speed}) -> fall_tau={self._fall_tau:.3f}", flush=True)
 
     def set_rise_speed(self, speed: float) -> None:
         """设置上升速度（0..1，越大上升越快/越硬）。
@@ -191,17 +208,11 @@ class VizRenderer(Gtk.DrawingArea):
         # 用指数分布，让滑块全程都有可感变化（线性时高端变化太小）。
         self._rise_tau = 0.4 * (0.05 ** s)  # s=0→0.4, s=1→0.02
         self._rise_alpha = _alpha_from_tau(self._rise_tau, 1.0 / 60.0)
-        import os as _os
-        if _os.environ.get("XIATIAO_VIZ_DEBUG"):
-            print(f"[viz-set] set_rise_speed({speed}) -> rise_tau={self._rise_tau:.3f}", flush=True)
 
     def set_db_floor(self, db_floor: float) -> None:
         """设置响度映射下限（dB）：越小动态范围越大、小信号越矮。"""
         self._db_floor = min(-6.0, float(db_floor))
         self.queue_draw()
-        import os as _os
-        if _os.environ.get("XIATIAO_VIZ_DEBUG"):
-            print(f"[viz-set] set_db_floor({db_floor}) -> {self._db_floor:.1f}", flush=True)
 
     def set_data(self, data: List[float], redraw: bool = True) -> None:
         """更新幅度数组；redraw=True 时请求重绘（tick 场景传 False）。
@@ -217,17 +228,6 @@ class VizRenderer(Gtk.DrawingArea):
         self._last_data_time = now
         rise_alpha = _alpha_from_tau(self._rise_tau, dt)
         fall_alpha = _alpha_from_tau(self._fall_tau, dt)
-        # ---- 临时诊断 ----
-        import os as _os
-        if _os.environ.get("XIATIAO_VIZ_DEBUG"):
-            self._dbg_n = getattr(self, "_dbg_n", 0) + 1
-            if self._dbg_n % 60 == 0:
-                _d = list(data)
-                _mx = max(_d) if _d else 0.0
-                _mn = min(_d) if _d else 0.0
-                print(f"[viz-renderer] dt={dt*1000:.1f}ms rise_tau={self._rise_tau:.3f} fall_tau={self._fall_tau:.3f} "
-                      f"rise_a={rise_alpha:.3f} fall_a={fall_alpha:.3f} db_floor={self._db_floor:.1f} "
-                      f"data[{_mn:.4f},{_mx:.4f}] peak={self._peak:.4f}", flush=True)
         self._data = list(data)
         self._smoothed = _smooth(self._smoothed, self._data, fall_alpha, rise_alpha)
         # 自适应峰值：慢速跟随，避免 peak 剧烈波动淹没 db_floor/rise/fall 设置。

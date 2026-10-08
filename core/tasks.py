@@ -40,6 +40,30 @@ _COVER_EXECUTOR = ThreadPoolExecutor(max_workers=24, thread_name_prefix="xiatiao
 #: 与本地扫描/封面解码隔离，避免互相排队（否则在线页要等扫描/切歌占满全局池）。
 _NET_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="xiatiao-net")
 
+#: 切歌资产专用池：封面解码 / 歌词 / ReplayGain。
+#  此前每次切歌都 `threading.Thread(...).start()` 起一条裸线程——glibc 会给
+#  每个新线程分配独立 malloc arena，且 arena 内存不归还内核，反复起短命线程
+#  做多 MB 解码分配 → RSS 只涨不落（切歌内存持续增长主因之一）。
+#  改用固定容量池，把所有解码收敛到固定几个 arena。
+#  max_workers=2：切歌本质串行，几乎不会真并发 2 个；留 2 是让新歌不必
+#  死等旧歌（避免极端情况下封面延迟）。
+_ASSET_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="xiatiao-assets")
+
+
+def submit_asset_task(fn: Callable[..., Any], *args: Any):
+    """把切歌资产加载任务提交到专用池。
+
+    注意：**不**额外包 GLib.idle_add——传进来的任务（如
+    window._load_track_assets_bg）内部完成计算后会自行 idle_add 回主线程。
+    池提交失败（如已关闭）时降级为同步执行，保证不丢任务。
+    """
+    try:
+        return _ASSET_EXECUTOR.submit(fn, *args)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("提交切歌资产任务失败，降级同步执行: %s", exc)
+        fn(*args)
+        return None
+
 
 class TaskToken:
     """异步任务句柄，用于取消与查询状态。"""

@@ -7,10 +7,9 @@
 """
 from __future__ import annotations
 
-import weakref
 from typing import Callable, List, Optional
 
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, Gtk
 
 from core.i18n import _
 from core.tasks import run_cover_async
@@ -43,8 +42,25 @@ def _load_url_cover_async(url: str, on_done) -> None:
         except Exception:
             return None
 
+    # 缓存键：与 song_list / player_panel 一致（"url::" 前缀，同一 LRU）。
+    ckey = "url::" + url
+    try:
+        from .pages.common import cache_get, cache_put, MISS
+    except Exception:
+        cache_get = cache_put = None
+        MISS = object()
+    if cache_get is not None:
+        cached = cache_get(ckey)
+        if cached is not MISS:
+            on_done(cached)
+            return
+
     def _done(raw):
         if not raw:
+            try:
+                cache_put(ckey, None)
+            except Exception:
+                pass
             on_done(None)
             return
         try:
@@ -66,7 +82,13 @@ def _load_url_cover_async(url: str, on_done) -> None:
             # 缩放到封面尺寸
             pb = pb.scale_simple(
                 CARD_COVER_PX, CARD_COVER_PX, GdkPixbuf.InterpType.BILINEAR)
-            on_done(pb)
+            from .online_section import _pixbuf_to_texture
+            tex = _pixbuf_to_texture(pb)
+            try:
+                cache_put(ckey, tex)
+            except Exception:
+                pass
+            on_done(tex)
         except Exception:
             on_done(None)
 
@@ -129,11 +151,11 @@ def _make_playlist_card(pl, on_click: Optional[Callable] = None) -> Gtk.Widget:
         except Exception:
             _ca = None
 
-        def _on_cover(pb):
+        def _on_cover(tex):
             try:
-                if pb is not None:
+                if tex is not None:
                     pic = Gtk.Picture()
-                    pic.set_pixbuf(pb)
+                    pic.set_paintable(tex)
                     pic.set_content_fit(Gtk.ContentFit.COVER)
                     pic.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
                     pic.set_hexpand(True)

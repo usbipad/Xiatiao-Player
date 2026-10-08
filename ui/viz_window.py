@@ -61,5 +61,24 @@ class VizWindow(Gtk.Window):
         if 0 <= idx < len(self._style_map):
             self.renderer.set_style(self._style_map[idx])
 
+    def disconnect_global_refs(self) -> None:
+        """断开所有持有，使窗口可被回收（关闭时由主窗口调用）。
+
+        内存泄漏修复（实测：反复创建 8 个 VizWindow 存活 8 个）：
+        - renderer 的 set_draw_func 绑定方法环（见 VizRenderer）；
+        - _style_dd 的 notify::selected-item → self._on_style_changed
+          （绑定方法 → 窗口 → 下拉框，跨 C/Python 环）。
+        需在窗口生命周期结束时显式调用（do_dispose 因环不触发）。幂等。
+        """
+        try:
+            self.renderer.disconnect_global_refs()
+        except Exception:
+            pass
+        try:
+            from ui.gobject_cleanup import disconnect_widget_tree
+            disconnect_widget_tree(self, owner=self)
+        except Exception:
+            pass
+
     def set_data(self, data) -> None:
         self.renderer.set_data(data)

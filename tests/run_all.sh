@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.." || exit 1
 PY="${PYTHON:-python3}"
 FAIL=0
 
-for t in smoke_test test_boundary test_dsp_state test_ipc_protocol test_online_lyrics test_replaygain_apply test_seekbar; do
+for t in smoke_test test_boundary test_dsp_state test_ipc_protocol test_online_lyrics test_replaygain_apply test_seekbar test_dsp_leak_fixed test_peq_leak test_basic_page_leak test_adv_window_leak test_settings_leak test_viz_window_leak test_viz_thread_leak; do
     echo "=== $t ==="
     if ! "$PY" "tests/$t.py"; then
         FAIL=1

@@ -32,7 +32,7 @@ import logging
 import secrets
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 from config.settings import get_config

@@ -75,6 +75,9 @@ class EffectPage(Adw.PreferencesPage):
         except Exception:
             self._dsp_state = None
         self._sliders: dict = {}
+        #: 通过 add_controller 挂上的 gesture（回调是绑定方法 → self）。
+        #: 记录以便清理时断回调并移除（否则跨 C/Python 环留住本页）。
+        self._tracked_controllers: list = []
         # 归 Camilla 负责的控件组（Camilla 关闭时置灰）
         self._camilla_groups: list = []
         # 恢复默认值期间为 True：抑制滑块回调，避免旧值被写回
@@ -161,7 +164,7 @@ class EffectPage(Adw.PreferencesPage):
         row.set_subtitle(_("EQ / 限幅 / 压缩 / 响度 / 卷积 等"))
         row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
         row.set_activatable(True)
-        row.connect("activated", lambda *_: self._on_open_advanced and self._on_open_advanced())
+        row.connect("activated", self._on_advanced_entry_activated)
         group.add(row)
         self.add(group)
 
@@ -636,7 +639,7 @@ class EffectPage(Adw.PreferencesPage):
             reset_btn.set_valign(Gtk.Align.CENTER)
             reset_btn.add_css_class("destructive-action")
             reset_btn.set_tooltip_text(_("把 DSP 音效所有功能恢复为默认值"))
-            reset_btn.connect("clicked", lambda *_: self._reset_all())
+            reset_btn.connect("clicked", self._on_reset_all_clicked)
             row.add_suffix(reset_btn)
         group.add(row)
         # 无「启用 Camilla 引擎」开关：Camilla 是否参与由各功能开关自动决定
@@ -796,6 +799,9 @@ class EffectPage(Adw.PreferencesPage):
             gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
             gesture.connect("pressed", self._on_eq_double_click, scale, i)
             scale.add_controller(gesture)
+            # 记录 gesture：其 "pressed" 回调是绑定方法 → self，
+            # 清理时须断回调并 remove_controller（否则跨 C/Python 环留 self）
+            self._track_controller(scale, gesture, self._on_eq_double_click)
         except Exception:
             pass
 
@@ -1253,6 +1259,15 @@ class EffectPage(Adw.PreferencesPage):
         self._params[key] = bool(row.get_active())
         self._emit()
 
+    def _on_reset_all_clicked(self, *_a) -> None:
+        """「重置所有」按钮回调（原 lambda 改为绑定方法，便于清理时断开）。"""
+        self._reset_all()
+
+    def _on_advanced_entry_activated(self, *_a) -> None:
+        """「高级设置」入口激活回调（原 lambda 改为绑定方法）。"""
+        if self._on_open_advanced:
+            self._on_open_advanced()
+
     # ------------------------------------------------------------
     # Crossfeed（耳机串扰）
     # ------------------------------------------------------------
@@ -1494,6 +1509,7 @@ class EffectPage(Adw.PreferencesPage):
             gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
             gesture.connect("pressed", self._on_scale_double_click, scale, key)
             scale.add_controller(gesture)
+            self._track_controller(scale, gesture, self._on_scale_double_click)
         except Exception:
             pass
 
@@ -1695,6 +1711,83 @@ class EffectPage(Adw.PreferencesPage):
         except Exception:
             # 无 GLib：退化为立即
             self._emit_now()
+
+    def disconnect_global_refs(self) -> None:
+        """断开本页所有外部/内部引用，使其能被回收。
+
+        内存泄漏修复（实测：反复创建 20 个 EffectPage 存活 20 个，线性增长）。
+
+        泄漏有两层：
+        1) **外部**：订阅全局 DspState 单例（与进程同寿），绑定方法强引用 self；
+        2) **内部**（主因）：本页有几十处 `widget.connect(..., self._xxx)`，
+           每处形成「widget(C层) → 绑定方法 → self → widget」的跨 C/Python 环。
+           C 层不参与 Python gc，环破不了 → 整棵控件树永不回收。
+
+        故这里递归遍历整棵控件树，对每个 GObject 断开全部信号 handler，
+        把内环一并拆掉。必须由**持有者在生命周期结束点显式调用**
+        （不能靠 do_dispose——外部单例/内环使 refcount 永不归零，do_dispose 不触发）。
+        幂等：重复调用安全。
+        """
+        # 1) 断开对全局 DspState 单例的订阅
+        st = getattr(self, "_dsp_state", None)
+        if st is not None:
+            for sig in ("changed", "replaced"):
+                try:
+                    st.disconnect_by_func(self._on_dsp_state_changed)
+                except Exception:
+                    pass
+            self._dsp_state = None
+        # 2) 清理显式挂上的 gesture controller（回调是绑定方法 → self）
+        for w, ctrl in list(getattr(self, "_tracked_controllers", [])):
+            for cb in getattr(ctrl, "_effect_cbs", []) or []:
+                try:
+                    ctrl.disconnect_by_func(cb)
+                except Exception:
+                    pass
+            try:
+                w.remove_controller(ctrl)
+            except Exception:
+                pass
+        self._tracked_controllers = []
+        # 3) 断开「控件→绑定方法→self」的回边（破解跨 C/Python 引用环）
+        try:
+            self._disconnect_widget_tree(self)
+        except Exception:
+            pass
+        # 4) 清掉防抖定时器，避免其持有本页
+        try:
+            t = getattr(self, "_emit_timer", None)
+            if t is not None:
+                from gi.repository import GLib
+                GLib.source_remove(t)
+        except Exception:
+            pass
+        self._emit_timer = None
+
+    def _track_controller(self, widget, ctrl, callback=None) -> None:
+        """登记一个挂到 widget 上的 controller，供清理时断开。
+
+        controller 的 "pressed" 回调是绑定方法 → self，不清理会形成
+        「controller(C层) → 绑定方法 → self」环（实测残留持有者之一）。
+        callback 可显式给出（用于断开）；多个回调时用 _effect_cbs 列表。
+        """
+        try:
+            cbs = list(getattr(ctrl, "_effect_cbs", []) or [])
+            if callback is not None:
+                cbs.append(callback)
+            ctrl._effect_cbs = cbs
+            self._tracked_controllers.append((widget, ctrl))
+        except Exception:
+            pass
+
+    def _disconnect_widget_tree(self, root) -> None:
+        """断开 root 及其子控件上的信号连接（委托公共工具）。
+
+        破解「widget(C层) → 回调(绑定方法/lambda) → self → widget」跨语言环。
+        详见 ui/gobject_cleanup.py。幂等、失败静默。
+        """
+        from ui.gobject_cleanup import disconnect_widget_tree
+        disconnect_widget_tree(root, owner=self)
 
     def _emit_now(self) -> bool:
         self._emit_timer = None

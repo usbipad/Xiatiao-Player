@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Dict, Optional
+from typing import Dict
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
@@ -31,7 +31,6 @@ from services.shortcuts import (
     get_shortcuts,
     match_shortcut,
     mods_from_state,
-    parse_shortcut,
 )
 
 from .cast_controller import CastController
@@ -2300,7 +2299,7 @@ class MainWindow(Adw.ApplicationWindow):
                     with _ur.urlopen(_ur.Request(url, method="GET"), timeout=10) as r:
                         raw = r.read()
                     if raw:
-                        from gi.repository import GdkPixbuf, GLib
+                        from gi.repository import GdkPixbuf
                         loader = GdkPixbuf.PixbufLoader.new()
                         loader.write(raw)
                         loader.close()
@@ -2974,15 +2973,15 @@ class MainWindow(Adw.ApplicationWindow):
             want_color = (self._main_stack.get_visible_child_name() == "nowplaying")
         except Exception:
             want_color = False
-        # 用独立专用线程：不与其他批量任务争抢公共线程池，
-        # 避免点击后封面迟迟不出现的等待感。
-        import threading
-        threading.Thread(
-            target=self._load_track_assets_bg,
-            args=(token, filepath, is_local, track, restoring, want_color),
-            daemon=True,
-            name="xiatiao-track-assets",
-        ).start()
+        # 用「切歌资产专用池」：既与其他批量任务隔离（不争抢公共池，
+        # 避免点击后封面迟迟不出现），又把线程数封顶——此前每次切歌
+        # 新建裸线程会让 glibc arena 无限增长（RSS 只涨不落）。
+        # 任务内部自行 idle_add 回主线程，故不走 run_async 的包装。
+        from core.tasks import submit_asset_task
+        submit_asset_task(
+            self._load_track_assets_bg,
+            token, filepath, is_local, track, restoring, want_color,
+        )
 
     def _load_track_assets_bg(self, token: int, filepath: str, is_local: bool,
                               track, restoring: bool, want_color: bool = False) -> None:
@@ -4129,12 +4128,12 @@ class MainWindow(Adw.ApplicationWindow):
                 return
             filepath = getattr(track, "filepath", "") or ""
             is_local = getattr(track, "source", SOURCE_LOCAL) == SOURCE_LOCAL
-            import threading
-            threading.Thread(
-                target=self._load_track_assets_bg,
-                args=(token, filepath, is_local, track, True),
-                daemon=True,
-            ).start()
+            # 同样走切歌资产专用池，避免裸线程使 glibc arena 增长
+            from core.tasks import submit_asset_task
+            submit_asset_task(
+                self._load_track_assets_bg,
+                token, filepath, is_local, track, True,
+            )
         except Exception:
             pass
 
@@ -4288,7 +4287,21 @@ class MainWindow(Adw.ApplicationWindow):
             import time as _time2
             self._last_pos_time = _time2.monotonic()
             self._stuck_checked = False
-            GLib.timeout_add_seconds(1, self._check_playback_stuck)
+            # 去重：每次进入播放态都会重启「卡住检测」，旧的必须先移除。
+            # 否则每切一首歌（stopped→playing）就新增一个常驻每秒定时器，
+            # 且 _check_playback_stuck 在正常播放时返回 True 一直存活，
+            # 定时器数量随播放次数线性增长（缓慢内存/CPU 泄漏）。
+            _old_stuck = getattr(self, "_stuck_timer_id", 0)
+            if _old_stuck:
+                try:
+                    GLib.source_remove(_old_stuck)
+                except Exception:
+                    pass
+            try:
+                self._stuck_timer_id = GLib.timeout_add_seconds(
+                    1, self._check_playback_stuck)
+            except Exception:
+                self._stuck_timer_id = 0
         # 播放状态 → 指示器动画/显隐：
         #   playing → 跳动；paused → 可见静止；stopped → 隐藏。
         try:
@@ -4748,19 +4761,11 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_viz_changed(self) -> None:
         """可视化设置变更：更新 pipeline 参数与面板样式（渲染由帧时钟驱动，无需重建定时器）。"""
-        import os as _os
-        _dbg = bool(_os.environ.get("XIATIAO_VIZ_DEBUG"))
-        if _dbg:
-            print("[viz-changed] 进入 _on_viz_changed", flush=True)
         pipe = self._viz_pipeline
         if pipe is None:
-            if _dbg:
-                print("[viz-changed] pipe is None，直接返回", flush=True)
             return
         try:
             pipe.set_params()
-            if _dbg:
-                print("[viz-changed] pipe.set_params() 完成", flush=True)
             # 面板样式与下落速度同步
             from config.settings import get_config
             cfg = get_config()
@@ -4772,8 +4777,6 @@ class MainWindow(Adw.ApplicationWindow):
             self.now_playing.viz.set_fps(int(cfg.get_int("viz_fps", 60)))
             # 大窗口渲染器同步全部可视化参数
             _vw = getattr(self, "_viz_window", None)
-            if _dbg:
-                print(f"[viz-changed] 大窗口 _viz_window={_vw}", flush=True)
             if _vw is not None and getattr(_vw, "renderer", None) is not None:
                 # 注意：不同步 style——大窗口有自己的样式下拉框，
                 # 若这里用 config 的 style 覆盖，调滑块会把大窗口样式改掉。
@@ -4781,8 +4784,6 @@ class MainWindow(Adw.ApplicationWindow):
                 _vw.renderer.set_rise_speed(float(cfg.get("viz_rise_speed", 0.6)))
                 _vw.renderer.set_db_floor(float(cfg.get("viz_db_floor", -60.0)))
                 _vw.renderer.set_fps(int(cfg.get_int("viz_fps", 60)))
-                if _dbg:
-                    print("[viz-changed] 大窗口参数已同步", flush=True)
             # 总开关：显隐沉浸页频谱
             enabled = bool(cfg.get_bool("viz_enabled", True))
             self.now_playing.viz.set_visible(enabled)
@@ -4813,11 +4814,14 @@ class MainWindow(Adw.ApplicationWindow):
                 win.renderer.set_fps(int(_cfg.get_int("viz_fps", 60)))
 
                 def _on_viz_closed(*_a):
-                    # 关闭：停 tick + 不在沉浸页则停管线
+                    # 关闭：清窗口整体持有（renderer draw_func + 控件树回调）+ 停管线
                     try:
-                        win.renderer.stop()
+                        win.disconnect_global_refs()
                     except Exception:
-                        pass
+                        try:
+                            win.renderer.disconnect_global_refs()
+                        except Exception:
+                            pass
                     try:
                         if self._main_stack.get_visible_child_name() != "nowplaying":
                             if getattr(self, "_viz_pipeline", None) is not None:
@@ -4825,6 +4829,12 @@ class MainWindow(Adw.ApplicationWindow):
                     except Exception:
                         pass
                     self._viz_window = None
+                    # 断开本 handler：否则 win.close-request 一直持有该闭包
+                    # （闭包捕获 self=主窗口 与 win）→ 旧窗口无法回收。
+                    try:
+                        win.disconnect_by_func(_on_viz_closed)
+                    except Exception:
+                        pass
                     return False
                 win.connect("close-request", _on_viz_closed)
                 self._viz_window = win
@@ -4936,7 +4946,7 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         # 窗口自身定时器（新增定时器时记得同步补进这里）
-        for attr in ("_dsp_yaml_timer", "_state_push_timer"):
+        for attr in ("_dsp_yaml_timer", "_state_push_timer", "_stuck_timer_id"):
             tid = getattr(self, attr, 0)
             if tid:
                 try:
@@ -5207,7 +5217,14 @@ class MainWindow(Adw.ApplicationWindow):
         并把显示时长收短，使提示即时反馈。
         """
         try:
-            toast = Adw.Toast.new(message)
+            # Adw.Toast 的 title 按 Pango markup 解析：消息里若含 &（如 URL 的
+            # `&maxBitRate=320`）或 < >，会被当作非法实体 → 整个提示显示为
+            # 空白框（实测）。这里统一转义为纯文本，任何来源的消息都能正常显示。
+            try:
+                safe = GLib.markup_escape_text(str(message))
+            except Exception:
+                safe = str(message)
+            toast = Adw.Toast.new(safe)
             toast.set_timeout(3)
             target = self._visible_child_window()
             if target is not None and hasattr(target, "add_toast"):

@@ -50,6 +50,41 @@ class SettingsWindow(Adw.PreferencesWindow):
         self._build_about_page()
         self._reload_dir_rows()
 
+        # 关闭时断开内部音效页对全局 DspState 的订阅（内存泄漏修复）
+        self.connect("close-request", self._on_close_request)
+
+    def _on_close_request(self, *_a) -> bool:
+        """关闭设置窗口：断开内部订阅与信号连接，使窗口可被回收。"""
+        # 切断「子页 → 窗口」回边：各子页（EffectPage / VizSettingsPage）持有
+        # 构造时传入的 on_* 回调（= 本窗口的绑定方法），不置空则页会钉住窗口
+        # （窗口 ↔ 页 互持有，页又因 C 层回调无法 GC → 窗口永不回收）。
+        for page_attr in ("_effect_page", "_viz_page"):
+            page = getattr(self, page_attr, None)
+            if page is None:
+                continue
+            for cb_attr in ("_on_dsp_changed", "_on_coloring", "_on_convolution_ir",
+                            "_on_convolution_cleared", "_on_open_advanced",
+                            "_on_viz_changed", "_on_open_viz_window"):
+                if hasattr(page, cb_attr):
+                    try:
+                        setattr(page, cb_attr, None)
+                    except Exception:
+                        pass
+            try:
+                if hasattr(page, "disconnect_global_refs"):
+                    page.disconnect_global_refs()
+            except Exception:
+                pass
+        # 断开整棵控件树的信号连接（含匿名闭包），破解跨 C/Python 环
+        try:
+            from ui.gobject_cleanup import disconnect_widget_tree
+            disconnect_widget_tree(self, owner=self)
+        except Exception:
+            log.debug("断开设置窗口控件树失败", exc_info=True)
+        # 清空对高级窗口的持有（若其仍开着，也让其可回收）
+        self._advanced_win = None
+        return False   # 不阻止默认关闭
+
     def _get_window(self):
         """获取主窗口（用于访问 player）。
 
@@ -257,7 +292,6 @@ class SettingsWindow(Adw.PreferencesWindow):
 
     def _on_test_subsonic(self, _btn) -> None:
         """测试 Subsonic 连接（后台请求，结果显示在行副标题 + 对话框）。"""
-        import urllib.request
         cfg = get_config()
         url = cfg.get_str("subsonic_url", "").rstrip("/")
         user = cfg.get_str("subsonic_user", "")
@@ -787,6 +821,13 @@ class SettingsWindow(Adw.PreferencesWindow):
                     _self.set_modal(_m)
                 except Exception:
                     pass
+                # 清空对已关闭高级窗口的持有，避免设置窗口一直钉住它
+                try:
+                    if getattr(_self, "_advanced_win", None) is win:
+                        _self._advanced_win = None
+                except Exception:
+                    pass
+                return False
             try:
                 win.connect("close-request", _on_adv_closed)
             except Exception:

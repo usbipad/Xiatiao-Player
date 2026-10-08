@@ -11,13 +11,12 @@ liked / history / playlist 三个 store 共用同一套模式：
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Optional
 
-from config.settings import APP_DIR_NAME, xdg_data_dir
+from config.settings import xdg_data_dir
 
 log = logging.getLogger(__name__)
 

@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import weakref
 from typing import Callable, Optional
 
 from gi.repository import Adw, Gdk, GLib, Gtk
@@ -14,7 +13,7 @@ from gi.repository import Adw, Gdk, GLib, Gtk
 from core.i18n import _
 
 from core.playlist_store import get_playlist_store
-from models import TrackItem, SOURCE_LOCAL, extract_cover, make_square_cover_bytes
+from models import TrackItem, extract_cover, make_square_cover_bytes
 from ui.pages import LocalLibraryPage
 
 

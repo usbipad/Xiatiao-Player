@@ -12,12 +12,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from config.settings import APP_DIR_NAME, xdg_cache_dir
+from config.settings import xdg_cache_dir
 
 log = logging.getLogger(__name__)
 

@@ -67,7 +67,6 @@ def read_replaygain(path: str, mode: str = "track") -> Optional[float]:
                     return v
         # 2. ID3（MP3）：TXXX 帧
         try:
-            from mutagen.id3 import TXXX
             for frame in tags.getall("TXXX"):
                 desc = (frame.desc or "").lower()
                 if desc == f"replaygain_{mode}_gain":

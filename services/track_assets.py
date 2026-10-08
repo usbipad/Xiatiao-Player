@@ -14,6 +14,44 @@ import logging
 log = logging.getLogger(__name__)
 
 
+def _preshrink_cover(cover_raw: bytes, max_dim: int) -> bytes:
+    """把封面预缩到 max_dim 以内（一次全解码 + PNG 重编码），供多处复用。
+
+    背景：load_cover_assets 里同一张封面此前被「全分辨率解码」3 次
+    （make_cover_textures 1 次 + make_blurred_bg 2 次）。大内嵌封面
+    （如 4000×4000）每次解码约 64MB RGBA，切歌峰值内存因此居高不下。
+    这里先解码一次并缩到「够用的最大尺寸」，后续三处都吃这份小图，
+    把「3 次全解码」降为「1 次全解码 + 3 次小图解码」。
+
+    失败、或原图已足够小时**原样返回**，保证功能与画质不受影响。
+    """
+    if not cover_raw or max_dim <= 0:
+        return cover_raw
+    try:
+        import gi
+        gi.require_version("GdkPixbuf", "2.0")
+        from gi.repository import GdkPixbuf, Gio, GLib
+
+        stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(cover_raw))
+        pb = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
+        if pb is None:
+            return cover_raw
+        w, h = pb.get_width(), pb.get_height()
+        if w <= 0 or h <= 0 or max(w, h) <= max_dim:
+            # 已经够小：不做无谓的编解码，直接用原图
+            return cover_raw
+        scale = max_dim / float(max(w, h))
+        nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+        small = pb.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)
+        if small is None:
+            return cover_raw
+        ok, buf = small.save_to_bufferv("png", [], [])
+        return bytes(buf) if ok else cover_raw
+    except Exception as exc:  # noqa: BLE001
+        log.debug("封面预缩失败，回退原图: %s", exc)
+        return cover_raw
+
+
 def load_cover_assets(cover_raw: bytes | None,
                       panel_size: int,
                       np_size: int,
@@ -57,9 +95,16 @@ def load_cover_assets(cover_raw: bytes | None,
         return out
 
     try:
+        # 预缩一次：把同一张封面在「纹理生成 + 两次模糊背景」间复用，
+        # 避免对大内嵌封面做 3 次全分辨率解码（切歌内存峰值主因）。
+        # 上限取「各输出尺寸的最大值」，保证画质不降（模糊本就要缩到
+        # ≤24px，640 远高于其需求）。
+        _preshrink_dim = max(int(panel_size or 0), int(np_size or 0), 640)
+        work_cover = _preshrink_cover(cover_raw, _preshrink_dim)
+
         from models.coverart import make_cover_textures
         texs, dom_raw = make_cover_textures(
-            cover_raw, [panel_size, np_size], want_color=True,
+            work_cover, [panel_size, np_size], want_color=True,
         )
         out["panel_tex"] = texs.get(panel_size)
         out["np_tex"] = texs.get(np_size)
@@ -93,7 +138,7 @@ def load_cover_assets(cover_raw: bytes | None,
             png = None
             if blur_on:
                 from models.coverart import make_blurred_bg
-                png = make_blurred_bg(cover_raw, 640, 480,
+                png = make_blurred_bg(work_cover, 640, 480,
                                       darken=0.0, blur_px=blur_px,
                                       lighten=0.25,
                                       edge_vignette=0.55)   # 上下暗角→歌词边缘隐去
@@ -116,7 +161,7 @@ def load_cover_assets(cover_raw: bytes | None,
                         _fp.write(png)
                     out["bg_png_path"] = _p
                     # 气泡专用：最高模糊（seed_dim 很小 → 高度模糊的色块底）
-                    png_blur = make_blurred_bg(cover_raw, 640, 480,
+                    png_blur = make_blurred_bg(work_cover, 640, 480,
                                                darken=0.0, blur_px=4,
                                                lighten=0.25, min_seed=4)
                     if png_blur:
