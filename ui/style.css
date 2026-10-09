@@ -122,6 +122,21 @@ aspectframe,
     font-size: 16px;
 }
 
+/* 沉浸页顶部按钮（返回 / 最大化）：与歌词、控制栏一同跟随 --np-fg 变量，
+   随背景明暗/色相切换图标与底色，避免在彩色封面上颜色不搭。
+   保留 .circular 的圆形尺寸，仅覆盖颜色相关属性。 */
+.np-top-btn {
+    color: var(--np-fg);
+    background-color: alpha(currentColor, 0.08);
+    transition: color 220ms ease, background-color 220ms ease;
+}
+.np-top-btn:hover {
+    background-color: alpha(currentColor, 0.15);
+}
+.np-top-btn:active {
+    background-color: alpha(currentColor, 0.22);
+}
+
 /* 封面：圆角用容器遮罩（overflow:hidden + border-radius）实现，
    图片本身是方角，被裁成圆角——省掉在图片上画圆角。
    420px 大图配 28px 圆角更协调。*/

@@ -93,6 +93,7 @@ class NowPlayingPage(Gtk.Overlay):
         back_btn = Gtk.Button(icon_name="go-down-symbolic")
         back_btn.set_tooltip_text(_("返回（Esc）"))
         back_btn.add_css_class("circular")
+        back_btn.add_css_class("np-top-btn")
         back_btn.set_can_focus(False)   # 避免空格键误激活该按钮
         back_btn.connect("clicked", lambda *_: self._on_exit())
         top.append(back_btn)
@@ -103,6 +104,7 @@ class NowPlayingPage(Gtk.Overlay):
 
         self._max_btn = Gtk.Button(icon_name="window-maximize-symbolic")
         self._max_btn.add_css_class("circular")
+        self._max_btn.add_css_class("np-top-btn")
         self._max_btn.set_can_focus(False)   # 避免空格键误激活
         self._max_btn.set_tooltip_text(_("最大化"))
         self._max_btn.connect("clicked", self._on_toggle_maximize)
