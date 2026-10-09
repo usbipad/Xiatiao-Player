@@ -11,25 +11,28 @@ permissions:
 
 jobs:
   deb:
-    name: Build .deb (Debian/Ubuntu)
+    name: Build .deb (Debian 12 baseline)
     runs-on: ubuntu-22.04
+    container:
+      image: debian:12
     steps:
-      - uses: actions/checkout@v4
-
       - name: Install build dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y debhelper-compat pkg-config \
-            libasound2-dev libpipewire-0.3-dev libclang-dev \
-            devscripts dpkg-dev build-essential
+          apt-get update
+          apt-get install -y build-essential debhelper devscripts \
+            pkg-config libasound2-dev libpipewire-0.3-dev libclang-dev \
+            curl ca-certificates xz-utils
 
-      - name: Install Rust toolchain (rustup)
+      - name: Install Rust toolchain (rustup, into /usr/local/cargo)
         run: |
+          export RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
             sh -s -- -y --default-toolchain stable --profile minimal
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          echo "RUSTUP_HOME=$HOME/.rustup" >> $GITHUB_ENV
-          echo "CARGO_HOME=$HOME/.cargo" >> $GITHUB_ENV
+          echo "/usr/local/cargo/bin" >> $GITHUB_PATH
+          echo "RUSTUP_HOME=/usr/local/rustup" >> $GITHUB_ENV
+          echo "CARGO_HOME=/usr/local/cargo" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v4
 
       - name: Ensure vendored deps
         run: |
@@ -68,7 +71,6 @@ jobs:
       - name: Build .rpm
         run: |
           mkdir -p ~/rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
-          # 源码包：直接从当前目录打包（跳过 Source0 下载）
           tar czf ~/rpmbuild/SOURCES/Xiatiao-Player-1.0.5.tar.gz \
             --transform 's,^,Xiatiao-Player-1.0.5/,' \
             --exclude='.git' --exclude='audio_backend_rs/target' \
