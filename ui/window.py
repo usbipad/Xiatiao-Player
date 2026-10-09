@@ -172,6 +172,10 @@ class MainWindow(Adw.ApplicationWindow):
         # 仅由 headerbar 按钮手动隐藏/显示（不随窗口宽度自动折叠）。
         self._main_stack = Gtk.Stack()
         self._main_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        # 过渡时长：GTK4 默认 200ms，对「点封面进全屏」这种即时操作用户会
+        # 明显觉得慢半拍。缩短到 120ms——仍平滑，但跟手感大幅提升。
+        # 仅影响 main ↔ nowplaying 两页切换（本 stack 专用）。
+        self._main_stack.set_transition_duration(120)
         # 非均匀：尺寸变化时只测量「可见」那一页。
         # 默认 homogeneous=True 会把主界面和沉浸页两棵子树都量一遍，
         # 沉浸页含大封面/歌词/可视化，每次最大化或拖动窗口都要白量一整棵，
@@ -3907,12 +3911,17 @@ class MainWindow(Adw.ApplicationWindow):
             self.now_playing.set_track(track.title, track.artist)
             self.now_playing.set_position(self.player.position())
         # 先切页：让切页动画立刻开始。
-        # 背景色补算（解码 + 可能触发 CSS 重解析）与可视化启动都放到切页之后，
-        # 否则这些同步开销会让「点击 → 动画开始」之间出现可感知的停顿。
         self._main_stack.set_visible_child_name("nowplaying")
+        # 背景色兜底补算延后到主循环空闲：首次进入会用缓存的封面原图
+        # 重新解码算主色（实测 2~19ms），若放在切页同步链路，会让
+        # 「点击 → 动画开始」之间出现可感知的停顿。放到 idle 后，切页
+        # 动画先跑起来，补算在动画期间的空闲帧完成（背景被模糊图盖住，
+        # 纯色延迟几毫秒不可见；进度条色延迟同样无感）。
         if track is not None:
-            # 沉浸页背景/进度条色：切歌时已随封面设过；此处仅兜底补算。
-            self._apply_cover_color_for_now_playing()
+            try:
+                GLib.idle_add(lambda: (self._apply_cover_color_for_now_playing(), False)[1])
+            except Exception:
+                self._apply_cover_color_for_now_playing()
         # 关键：进入沉浸页后强制重应用一次前景明暗（黑/白）。
         # 首次进入时，切歌阶段的明暗应用可能发生在栈切过来之前，导致
         # 前景/控件仍是默认色；这里补一次，确保首进即正确。
