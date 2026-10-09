@@ -4,7 +4,7 @@
 
 # 虾条播放器 · Xiatiao Player
 
-**注重音质的 GTK4 本地音乐播放器** · Rust 音频后端
+**注重音质的 GTK4 音乐播放器** · 本地曲库 + Subsonic 在线音源 · Rust 音频后端
 
 名字谐音「瞎调」与「虾条」
 
@@ -64,6 +64,7 @@
 - 解码：symphonia（原生）+ ffmpeg（高压缩格式与 DSD）
 - 播放列表、歌单、收藏（我喜欢）、播放历史
 - 沉浸式全屏页、滚动歌词、频谱可视化
+- **Subsonic 在线音源** —— 连接任意标准 Subsonic 服务端（如 Navidrome），浏览在线曲库 / 搜索 / 播放 / 歌单 / 收藏；支持音质档位选择与「实测音质」徽章
 - **主界面背景跟随封面** —— 可选让整个界面用当前封面主色调着色
 - **DLNA 投送** —— 发现局域网 DLNA 渲染器，把本地曲目推送到设备播放（投送时本机不播放）
 - **MPRIS2** 媒体控制、系统托盘
@@ -190,7 +191,7 @@
 
 ## 📖 English
 
-**Xiatiao Player** — a GTK4 local music player focused on sound quality, with a Rust audio backend. The name is a pun on "瞎调" (messing around) and "虾条" (shrimp sticks).
+**Xiatiao Player** — a GTK4 music player focused on sound quality (local library + Subsonic online sources), with a Rust audio backend. The name is a pun on "瞎调" (messing around) and "虾条" (shrimp sticks).
 
 ### 📸 Screenshots
 
@@ -233,6 +234,7 @@
 - Decoding: symphonia (native) + ffmpeg (high-compression formats and DSD)
 - Play queue, playlists, favorites, play history
 - Immersive full-screen page, scrolling lyrics, spectrum visualization
+- **Subsonic online sources** — connect to any standard Subsonic server (e.g. Navidrome) for online library browsing, search, streaming, playlists and favorites, with quality selection and measured-quality badges
 - **Background follows cover** — optionally tint the entire UI with the current cover's dominant color
 - **DLNA casting** — discover LAN DLNA renderers and push local tracks to them (local playback is paused while casting)
 - **MPRIS2** media control, system tray

@@ -236,13 +236,19 @@ class VizPipeline:
 
     # ---- 生命周期 ----
     def start(self) -> None:
-        if self._thread is not None:
-            return
+        # 置 _alive=True 让线程能继续读（stop 会置 False）。
         self._alive = True
         # 复用存活的读线程（内存泄漏修复，实测反复 start/stop 累积线程）：
         # 读线程可能阻塞在 FIFO open()（无 writer 时），stop() 无法让它立即
         # 退出。若每次都新建，线程只增不减。改为：线程已存活则只置
         # _alive=True 复用它；否则才新建。这样 viz-fifo 线程恒为 1 个。
+        #
+        # 注意：这里**不能**写成 `if self._thread is not None: return`——
+        # stop() 特意保留 _thread（不置 None，防反复新建累积线程），若只要
+        # 对象存在就 return，则「退出沉浸页再进入」时线程永不重启 →
+        # 第二次进入频谱不动（此前 bug）。故必须判 is_alive()：
+        #   线程还活着 → 复用（只置 _alive）；
+        #   线程已死（如 stop 后退出）→ 重新创建。
         if self._thread is not None and self._thread.is_alive():
             return
         self._thread = threading.Thread(target=self._read_loop, name="viz-fifo", daemon=True)

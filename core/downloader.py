@@ -14,12 +14,9 @@ import socket
 import urllib.error
 import urllib.request
 
-from core.quality import ONLINE_QUALITY_BITRATE, ONLINE_QUALITY_LABELS
+from core.quality import ONLINE_QUALITY_LABELS
 
 log = logging.getLogger(__name__)
-
-#: 音质档位 → maxBitRate（标准 Subsonic 参数）。单一真相见 core.quality。
-QUALITY_MAX_BITRATE = dict(ONLINE_QUALITY_BITRATE)
 
 #: 下拉框展示名（key, 显示名）。单一真相见 core.quality。
 QUALITY_LABELS = list(ONLINE_QUALITY_LABELS)

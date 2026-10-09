@@ -80,6 +80,9 @@ class VizRenderer(Gtk.DrawingArea):
         self._ambient_color = None
         # 柔和淡色模式（浅背景上更搭）
         self._soft = False
+        # 背景明暗：True=背景暗→亮色频谱；False=背景亮→深色频谱。
+        # 由 now_playing 按「歌名区」判定注入（频谱在左列底部，与歌名同区）。
+        self._dark_bg = False
         # 数据源：无参函数，返回最新幅度数组；由 tick callback 每帧拉取
         self._data_source = None
         # tick 是否运行（默认停：主界面不跑，进沉浸页才 start）
@@ -181,6 +184,15 @@ class VizRenderer(Gtk.DrawingArea):
         self._soft = bool(soft)
         self.queue_draw()
 
+    def set_dark_bg(self, dark: bool = True) -> None:
+        """设置背景明暗（回退配色用）。
+
+        dark=True：背景暗（前景白）→ 亮色频谱，深底上清晰；
+        dark=False：背景亮（前景深）→ 深色频谱，浅底上清晰。
+        """
+        self._dark_bg = bool(dark)
+        self.queue_draw()
+
     def set_fall_alpha(self, alpha: float) -> None:
         """设置下落衰减系数（0..1，越小下落越慢）。"""
         self._fall_alpha = max(0.02, min(1.0, float(alpha)))
@@ -243,10 +255,6 @@ class VizRenderer(Gtk.DrawingArea):
             self._peak = 1e-3
         if redraw:
             self.queue_draw()
-
-    def has_signal(self) -> bool:
-        """是否有非零数据（静音时可用于跳过重绘）。"""
-        return any(v > 1e-6 for v in self._data)
 
     def _draw(self, _area, cr, w: int, h: int, _data) -> None:
         # 透明背景（让父容器样式透出）
@@ -328,23 +336,23 @@ class VizRenderer(Gtk.DrawingArea):
         n = len(norm)
         gap = 1.0
         bar_w = max(1.0, (w - gap * (n - 1)) / n)
-        soft = self._soft
+        dark_bg = self._dark_bg
         for i, v in enumerate(norm):
             x = i * (bar_w + gap)
             bh = max(1.0, v * h)
             y = h - bh
             t = i / max(1, n - 1)
-            if soft:
-                # 柔和淡色：低饱和灰蓝，透明度低，跟浅背景搭
+            # 浅灰蓝配色：暗背景用原色，亮背景同色相压深。
+            if dark_bg:
                 r = 0.62 + 0.18 * (1.0 - t)
                 g = 0.68 + 0.15 * (1.0 - t)
                 b = 0.80
                 a = 0.55
             else:
-                r = 0.30 + 0.50 * (1.0 - t)
-                g = 0.55 + 0.30 * t
-                b = 1.00
-                a = 0.9
+                r = (0.62 + 0.18 * (1.0 - t)) * 0.68
+                g = (0.68 + 0.15 * (1.0 - t)) * 0.68
+                b = 0.80 * 0.68
+                a = 0.62
             cr.set_source_rgba(r, g, b, a)
             cr.rectangle(x, y, bar_w, bh)
             cr.fill()
@@ -352,7 +360,10 @@ class VizRenderer(Gtk.DrawingArea):
     def _draw_wave(self, cr, w, h, norm) -> None:
         """波形：以中线为基准的镜像波形。"""
         n = len(norm)
-        cr.set_source_rgba(0.4, 0.75, 1.0, 0.9)
+        if self._dark_bg:
+            cr.set_source_rgba(0.68, 0.76, 0.92, 0.85)
+        else:
+            cr.set_source_rgba(0.46, 0.52, 0.63, 0.88)
         cr.set_line_width(2.0)
         mid = h / 2.0
         for i, v in enumerate(norm):
@@ -368,14 +379,20 @@ class VizRenderer(Gtk.DrawingArea):
         if n < 2:
             return
         pts = [(i * (w / (n - 1)), h - norm[i] * h) for i in range(n)]
-        cr.set_source_rgba(0.4, 0.75, 1.0, 0.25)
+        if self._dark_bg:
+            fill_rgba = (0.68, 0.76, 0.92, 0.22)
+            line_rgba = (0.74, 0.80, 0.94, 0.90)
+        else:
+            fill_rgba = (0.46, 0.52, 0.63, 0.22)
+            line_rgba = (0.42, 0.47, 0.58, 0.90)
+        cr.set_source_rgba(*fill_rgba)
         cr.move_to(pts[0][0], h)
         for (x, y) in pts:
             cr.line_to(x, y)
         cr.line_to(pts[-1][0], h)
         cr.close_path()
         cr.fill()
-        cr.set_source_rgba(0.5, 0.85, 1.0, 0.95)
+        cr.set_source_rgba(*line_rgba)
         cr.set_line_width(2.0)
         cr.move_to(pts[0][0], pts[0][1])
         for (x, y) in pts[1:]:

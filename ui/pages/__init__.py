@@ -448,20 +448,6 @@ class LocalLibraryPage(Gtk.Box):
             pass
         return out
 
-    def set_list_height(self, px: int) -> None:
-        try:
-            ls = getattr(self, "_column_view", None)
-            if ls is None:
-                return
-            if px and px > 0:
-                ls.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-                ls.set_size_request(-1, int(px))
-            else:
-                ls.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.NEVER)
-                ls.set_size_request(-1, -1)
-        except Exception:
-            pass
-
     def set_collapsed(self, collapsed: bool, rows: int = 1, row_h: int = 210,
                       cols: int = 4) -> None:
         """折叠/展开内容区（网格模式）。"""

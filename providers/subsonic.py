@@ -106,11 +106,6 @@ def set_backend_type(t: str) -> None:
     _BACKEND_TYPE = str(t or "").strip()
 
 
-def get_backend_type() -> str:
-    """当前后端类型标识（空 = 未探测）。"""
-    return _BACKEND_TYPE
-
-
 def is_private_backend() -> bool:
     """当前后端是否为「私有协议后端」（相对标准 Subsonic）。
 

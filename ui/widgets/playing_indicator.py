@@ -33,10 +33,6 @@ def set_current_key(key: str) -> None:
             pass
 
 
-def get_current_key() -> str:
-    return _CURRENT_KEY
-
-
 def set_paused(paused: bool) -> None:
     """设置全局暂停态并通知所有存活指示器。
 
@@ -118,10 +114,6 @@ class PlayingIndicator(Gtk.DrawingArea):
             _INSTANCES.add(self)
         except Exception:
             pass
-
-    def set_color(self, r: float, g: float, b: float) -> None:
-        self._rgb = (r, g, b)
-        self.queue_draw()
 
     def set_row_key(self, key: str) -> None:
         self._row_key = key or ""

@@ -23,10 +23,6 @@ log = logging.getLogger(__name__)
 
 #: 面板内容最小宽度（避免拖太窄导致内容溢出）
 PANEL_CONTENT_MIN_W = 320
-#: 面板左右 margin（各一份）。
-#: 注：面板自身 margin 已归零，留白由 sidebar-pane 的 padding 提供；
-#: 此常量保留仅为兼容，不再计入窗口最小宽度。
-PANEL_MARGIN = 22
 #: 侧栏容器（.sidebar-pane）左右 padding（各一份）。
 #: 必须与 style.css 里 .sidebar-pane 的 padding 值保持一致——
 #: 窗口最小宽度据此预留左右留白，太小会导致右侧留白被压没。
@@ -428,7 +424,6 @@ class PlayerPanel(Gtk.Box):
         self._effect_btn.set_tooltip_text(_("音效"))
         self._effect_btn.connect("clicked", self._on_effect_button_clicked)
         func_box.append(self._effect_btn)
-        self._effect_buttons: dict = {}
         self._effect_current = ""
         self._effect_dialog = None
         self._effect_dialog_rows: dict = {}
@@ -838,10 +833,6 @@ class PlayerPanel(Gtk.Box):
         """更新面板内的歌词（供窗口同步）。"""
         self._panel_lyrics.set_lyrics(lyrics)
 
-    def set_viz_data(self, data) -> None:
-        """喂入一帧可视化幅度数组（由窗口定时器调用）。"""
-        self.viz.set_data(data)
-
     def set_user_info(self, info) -> None:
         """已登录时顶部显示账号昵称，未登录显示应用名。
 
@@ -940,28 +931,6 @@ class PlayerPanel(Gtk.Box):
         except Exception:
             pass
         log.info("[音质徽章] clear_quality_info（已隐藏）")
-
-    def _available_quality_labels(self) -> list:
-        """当前歌支持的档位 [(key, name)]。
-
-        后端给了 quality_levels → 只显示实际有的；
-        没给（标准后端/未实现）→ 回退默认五档。
-        """
-        ql = getattr(self, "_quality_levels", None)
-        if isinstance(ql, list) and ql:
-            out = []
-            for item in ql:
-                if not isinstance(item, dict):
-                    continue
-                key = str(item.get("key", "") or "").lower()
-                if not key:
-                    continue
-                name = str(item.get("name", "") or "") or \
-                    self._QUALITY_SHORT.get(key, key)
-                out.append((key, name))
-            if out:
-                return out
-        return list(self._QUALITY_LABELS)
 
     def set_available_qualities(self, levels) -> None:
         """由 window 传入当前歌支持的档位列表（TrackItem.quality_levels）。"""
@@ -1286,11 +1255,6 @@ class PlayerPanel(Gtk.Box):
         self._refresh_effect_dialog_highlight()
         popover.popup()
 
-    def _on_effect_dialog_closed(self, _dialog) -> None:
-        """对话框关闭：清引用。"""
-        self._effect_dialog = None
-        self._effect_popover = None
-
     def _on_effect_state_changed(self, _state, name: str) -> None:
         """「当前音效」变更：同步缓存 + 刷新已打开的弹窗高亮。"""
         self._effect_current = name or ""
@@ -1375,42 +1339,6 @@ class PlayerPanel(Gtk.Box):
             self._effect_popover = None
         if self._on_effect_settings is not None:
             self._on_effect_settings()
-
-    def rebuild_effect_menu(self) -> None:
-        """兼容旧调用：无 Popover，空实现。"""
-        pass
-
-    def _on_preset_clicked(self, _btn, name: str) -> None:
-        self._select_effect(name)
-
-    def _on_effect_settings_clicked(self, _btn) -> None:
-        if self._on_effect_settings is not None:
-            self._on_effect_settings()
-
-    def _on_effect_selected(self, _btn, key: str, popover=None) -> None:
-        """（保留旧接口）音效预设被点击：更新高亮、回调外部。"""
-        self.set_effect_state(key)
-        if popover is not None:
-            try:
-                popover.popdown()
-            except Exception:
-                pass
-        if self._on_effect is not None:
-            self._on_effect(key)
-
-    def set_effect_state(self, key: str) -> None:
-        """纯 UI 同步（不触发回调）：高亮当前音效预设。"""
-        for k, btn in getattr(self, "_effect_buttons", {}).items():
-            if k == key:
-                btn.add_css_class("suggested-action")
-            else:
-                btn.remove_css_class("suggested-action")
-        # 非关闭状态时按钮高亮，便于一眼看出音效已开启
-        if hasattr(self, "_effect_btn"):
-            if key and key != "off":
-                self._effect_btn.add_css_class("suggested-action")
-            else:
-                self._effect_btn.remove_css_class("suggested-action")
 
     def set_liked(self, liked: bool) -> None:
         """设置喜欢按钮状态。
@@ -1565,10 +1493,6 @@ class PlayerPanel(Gtk.Box):
     def set_track_info(self, title: str, artist: str) -> None:
         self.label_track.set_text(title)
         self.label_artist.set_text(artist)
-
-    def set_playing_from(self, name: str, cover_bytes: bytes | None = None) -> None:
-        """Playing From 行已移除，保留空实现以兼容调用方。"""
-        return None
 
     def set_format_info(self, text: str) -> None:
         """显示音频技术信息（格式 · 采样率 · 位深 · 声道 · 码率）。

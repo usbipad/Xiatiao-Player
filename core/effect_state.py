@@ -71,18 +71,6 @@ class EffectState(GObject.Object):
         except Exception:
             log.debug("广播 changed 失败", exc_info=True)
 
-    def notify_reset(self) -> None:
-        """广播「DSP 参数已被重置」。
-
-        重置不改变「当前音效」预设名语义（由调用方另行 set_current("")），
-        但所有持有 DSP 参数副本的视图都需要重读 config 刷新 UI，
-        故单独发一个无参信号，避免与 changed 的语义（预设名）混淆。
-        """
-        try:
-            self.emit("reset")
-        except Exception:
-            log.debug("广播 reset 失败", exc_info=True)
-
 
 _instance: EffectState | None = None
 

@@ -947,6 +947,12 @@ class NowPlayingPage(Gtk.Overlay):
             self._progress.set_dark(bool(dark))
         except Exception:
             pass
+        # 频谱配色跟随「歌名区」明暗（频谱在左列底部，与歌名同区）：
+        # 暗背景→亮色频谱，亮背景→深色频谱。
+        try:
+            self.viz.set_dark_bg(bool(t_dark))
+        except Exception:
+            pass
 
     def _tinted_dark_fg(self) -> tuple[int, int, int]:
         """亮背景下的深色前景：带背景色相、非死黑。
@@ -967,12 +973,6 @@ class NowPlayingPage(Gtk.Overlay):
             return (int(rr * 255), int(gg * 255), int(bb * 255))
         except Exception:
             return (26, 26, 26)
-
-    @staticmethod
-    def _is_dark(r: int, g: int, b: int) -> bool:
-        """按 WCAG 相对亮度判断颜色是否偏暗（保留兼容旧调用）。"""
-        from core.color_contrast import relative_luminance
-        return relative_luminance((r, g, b)) < 0.35
 
     def _apply_fg_colors(self, bg_rgb: tuple[int, int, int] | None) -> None:
         """按背景色计算并注入沉浸页前景色（歌词/控件/次要文字）。

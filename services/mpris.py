@@ -528,13 +528,6 @@ class MprisService:
         except Exception:
             return False
 
-    def _has_track(self) -> bool:
-        """是否存在当前曲目。"""
-        try:
-            return self._playlist.current_track() is not None
-        except Exception:
-            return False
-
     # ------------------------------------------------------------
     # D-Bus 回调（根接口方法）
     # ------------------------------------------------------------

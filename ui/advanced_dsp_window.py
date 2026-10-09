@@ -149,11 +149,6 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
             self._emit()
         return _handler
 
-    def _on_chain_changed(self, params: dict) -> None:
-        """兼容旧回调：整份合并（仅染色等非分页场景用）。"""
-        self._params.update(params)
-        self._emit()
-
     def _emit(self, *, immediate: bool = False, clear_mark: bool = True) -> None:
         """下发参数。
 

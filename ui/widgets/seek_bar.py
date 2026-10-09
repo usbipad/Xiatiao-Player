@@ -22,8 +22,6 @@ from gi.repository import GLib, Gtk
 TRACK_RGBA = (0.0, 0.0, 0.0, 0.12)      # 未播轨道：极淡灰
 PLAYED_RGBA = (0.0, 0.0, 0.0, 0.55)     # 已播段：半透明深灰
 THUMB_RGBA = (0.0, 0.0, 0.0, 0.55)      # 滑块：同色小圆（与已播段融合）
-THUMB_SHADOW_RGBA = (0.0, 0.0, 0.0, 0.0)  # 无阴影（Apple 进度条干净）
-
 #: 暗背景版：用白色系，保证在深色背景上可见
 TRACK_RGBA_DARK = (1.0, 1.0, 1.0, 0.25)   # 未播轨道：半透明白
 PLAYED_RGBA_DARK = (1.0, 1.0, 1.0, 0.85)  # 已播段：白色
