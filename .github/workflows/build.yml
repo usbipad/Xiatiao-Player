@@ -96,13 +96,24 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Determine release notes
+        id: notes
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          if [ -f "release/RELEASE_NOTES_${VER}.md" ]; then
+            echo "file=release/RELEASE_NOTES_${VER}.md" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
+          body_path: ${{ steps.notes.outputs.file }}
           files: |
             artifacts/deb-package/*.deb
             artifacts/rpm-package/*.rpm

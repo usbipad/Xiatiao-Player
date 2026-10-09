@@ -91,8 +91,10 @@ packaging/aur/
 .agents/
 .codex/
 
-# 发行说明（放 GitHub Release，不入库）
+# 发行说明（放 GitHub Release）
+# 保留 RELEASE_NOTES_*.md（供 CI 自动填入 Release 正文），其余 md 不入库
 release/*.md
+!release/RELEASE_NOTES_*.md
 
 # 发布产物目录：产物不入库（可由构建脚本重建），仅保留目录本身
 release/*.deb
