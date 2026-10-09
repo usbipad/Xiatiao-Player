@@ -113,7 +113,8 @@ jobs:
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
+          name: Xiatiao Player ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.file }}
           files: |
-            artifacts/deb-package/*.deb
-            artifacts/rpm-package/*.rpm
+            artifacts/deb-package/xiatiao-player_[0-9]*.deb
+            artifacts/rpm-package/xiatiao-player-[0-9]*.rpm
