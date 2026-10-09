@@ -62,6 +62,10 @@ class NowPlayingPage(Gtk.Overlay):
         self._fg_provider = Gtk.CssProvider()
         self._fg_provider_installed = False
         self._fg_css_last = None
+        # 歌词字号 CSS provider：随窗口缩放注入 --np-lyric-fs 变量
+        self._lyric_fs_provider = Gtk.CssProvider()
+        self._lyric_fs_provider_installed = False
+        self._lyric_fs_css_last = None
         # 最近一次前景决策（供调试/复用）
         self._fg_decision = None
 
@@ -199,6 +203,7 @@ class NowPlayingPage(Gtk.Overlay):
         left_col.append(shadow_box)
         self._cover_frame = cover_frame
         self._cover_shadow_box = shadow_box
+        self._cover_shadow_layer = shadow_layer
 
         # 封面下方：歌名 / 歌手
         # 固定高度 + 顶部对齐：避免不同歌名换行数不同导致封面位置上下跳动。
@@ -258,11 +263,13 @@ class NowPlayingPage(Gtk.Overlay):
         bottom.set_margin_end(56)
         bottom.set_margin_top(12)
         bottom.set_margin_bottom(36)
+        self._bottom = bottom
 
         # 播放控制（Apple Music 风格分组：辅助组变大距离、核心组紧凑）
         ctrl = Gtk.Box(spacing=40)
         ctrl.set_halign(Gtk.Align.CENTER)
         ctrl.set_valign(Gtk.Align.CENTER)
+        self._ctrl = ctrl
 
         # 音量：与控制按钮同一排，点击向上弹出竖向滑块。
         # 用普通 Gtk.Button（而非 Gtk.MenuButton）：MenuButton 内部多一层
@@ -328,6 +335,7 @@ class NowPlayingPage(Gtk.Overlay):
         # 核心组：上一曲 / 播放 / 下一曲（紧凑）
         core = Gtk.Box(spacing=20)
         core.set_valign(Gtk.Align.CENTER)
+        self._core = core
         btn_prev = Gtk.Button(icon_name="media-skip-backward-symbolic")
         btn_prev.add_css_class("np-skip-btn")
         btn_prev.connect("clicked", lambda *_: self._on_prev and self._on_prev())
@@ -446,33 +454,130 @@ class NowPlayingPage(Gtk.Overlay):
 
         # 可用宽度：减去 body 左右 margin（48*2）
         avail_w = max(160.0, w - 96.0)
-        # 可用高度：减去顶部栏(~64) + 底部控制区(~180) 估算
-        avail_h = max(160.0, h - 244.0)
+        # 可用高度：减去顶部栏(~64) + 底部控制区(~170，含控制/进度/时间/边距)。
+        # 底部控制栏（含进度条）必须始终完整可见，故高度预算留足。
+        avail_h = max(100.0, h - 234.0)
 
-        # 宽度方向比例（基准：封面 420 + gap 300 + 歌词 480 = 1200）
-        sw = min(1.0, avail_w / 1200.0)
+        # 宽度方向比例（基准：封面 420 + gap 300 + 歌词 480 = 1200）。
+        # 注意：封面列实际宽 = 封面 + 2*shadow_pad（阴影留白），故可缩放
+        # 宽度要把这部分扣掉，否则总宽恒多出该值、内容持续溢出被硬裁
+        # （此前封面列永不缩小的根因）。
+        # 阴影留白本身也随尺寸缩放（上限 _SHADOW_PAD，小窗时收窄），
+        # 避免小窗口下固定 104px 留白浪费空间、过早触底溢出。
+        ratio_w = min(1.0, max(0.0, (avail_w - 32.0)) / 1200.0)
+        pad = max(12, int(round(self._SHADOW_PAD * ratio_w)))
+        sw = min(1.0, max(0.0, avail_w - pad * 2) / 1200.0)
         cover = 420.0 * sw
-        # 高度方向：左列 = 封面 + spacing28 + info120 + spacing28 + viz48
-        #          = 封面 + 224；封面为正方形，限制其边长
-        cover = min(cover, avail_h - 224.0)
-        cover = int(max(140.0, min(cover, 420.0)))
+        # 高度约束：左列 = 阴影盒(cover + 2*pad) + 28 + info + 28 + viz。
+        # 关键：阴影盒比封面高 2*pad（此前漏算，导致矮窗下封面没缩够、
+        # 把底部控制栏/进度条挤出屏幕）。高度不足时依次让路：
+        # 先隐藏频谱 → 再压 info → 最后才压低封面，保证底部控制栏始终可见。
+        viz_h = 48
+        info_est = 120
+        col_fixed = pad * 2 + 28 + info_est + 28 + viz_h
+        if avail_h - col_fixed < 110:
+            viz_h = 0   # 太矮：隐藏频谱
+            col_fixed = pad * 2 + 28 + info_est + 28
+        if avail_h - col_fixed < 90:
+            info_est = 60   # 更矮：压缩歌曲信息区
+            col_fixed = pad * 2 + 28 + info_est + 28
+        cover = min(cover, avail_h - col_fixed)
+        # 下限 70（高度方向允许更小，确保矮窗也不挤掉进度条）。
+        cover = int(max(70.0, min(cover, 420.0)))
 
         ratio = cover / 420.0
-        gap_w = int(max(16.0, 300.0 * ratio))
-        lyrics_w = int(max(140.0, 480.0 * ratio))
-        info_h = int(max(80.0, 120.0 * ratio))
+        # 间距是纯留白，最该让路：小窗时额外压缩（下限 12）。
+        gap_w = int(max(12.0, 300.0 * ratio))
+        lyrics_w = int(max(110.0, 480.0 * ratio))
+        info_h = int(max(56.0, min(120.0, 120.0 * ratio)))
         # 记录当前封面尺寸，供切歌（set_cover_*）沿用，避免被重置回固定值。
         self._current_cover_px = cover
+
+        # 注意：封面外面还套了 shadow_box（外扩阴影留白）和 shadow_layer
+        # （画阴影，与封面同尺寸）。它们必须一并缩放——否则子控件固定宽度
+        # 会把父容器 left_col 撑住，导致封面列永不缩小、内容溢出被硬裁。
+        # 歌词字号随窗口缩放：以「可用宽度 1200px」为基准（该尺寸下用
+        # 原字号 20/28px），更宽封顶、更窄按比例缩，设下限保证可读。
+        # 注意不能用封面比例算——封面受高度限制，正常窗口下比例 <1，
+        # 会把字号缩得比原来还小。
+        fs_ratio = min(1.0, avail_w / 1200.0)
+        fs = int(max(13, round(20 * fs_ratio)))
+        fs_active = int(max(18, round(28 * fs_ratio)))
+        # 封面下方歌名 / 歌手 / 格式也随窗口缩放（基准 28 / 16 / 16px）。
+        fs_track = int(max(17, round(28 * fs_ratio)))
+        fs_secondary = int(max(11, round(16 * fs_ratio)))
+        # 控制按钮 / 图标也随宽度缩放（基准 42/48/32px、图标 20/17px）。
+        btn = int(max(30, round(42 * fs_ratio)))
+        play_btn = int(max(36, round(48 * fs_ratio)))
+        aux_btn = int(max(24, round(32 * fs_ratio)))
+        icon = int(max(14, round(20 * fs_ratio)))
+        aux_icon = int(max(12, round(17 * fs_ratio)))
+        fs_css = (
+            ".now-playing-root {\n"
+            f"    --np-lyric-fs: {fs}px;\n"
+            f"    --np-lyric-fs-active: {fs_active}px;\n"
+            f"    --np-track-name-fs: {fs_track}px;\n"
+            f"    --np-secondary-fs: {fs_secondary}px;\n"
+            f"    --np-btn: {btn}px;\n"
+            f"    --np-play-btn: {play_btn}px;\n"
+            f"    --np-aux-btn: {aux_btn}px;\n"
+            f"    --np-icon: {icon}px;\n"
+            f"    --np-aux-icon: {aux_icon}px;\n"
+            "}\n"
+        )
+        if fs_css != self._lyric_fs_css_last:
+            self._lyric_fs_css_last = fs_css
+            try:
+                self._lyric_fs_provider.load_from_data(fs_css.encode("utf-8"))
+                if not self._lyric_fs_provider_installed:
+                    display = Gdk.Display.get_default()
+                    if display is not None:
+                        Gtk.StyleContext.add_provider_for_display(
+                            display, self._lyric_fs_provider,
+                            Gtk.STYLE_PROVIDER_PRIORITY_USER + 1000)
+                        self._lyric_fs_provider_installed = True
+            except Exception:
+                pass
+
+        # 极窄窗口：放不下「封面 + 间距 + 歌词」三列时，隐藏歌词与间距，
+        # 只居中显示封面（窄栏布局）。避免歌词被生硬裁切/挤压变形。
+        hide_lyrics = avail_w < 560
+        try:
+            self.lyrics.set_visible(not hide_lyrics)
+            self._gap.set_visible(not hide_lyrics)
+        except Exception:
+            pass
+
+        # 底部控制栏：随宽度/高度缩放内边距与间距，避免窄/矮时被裁。
+        vh_ratio = min(1.0, max(0.4, (h - 200.0) / 600.0))
+        bm = int(max(16, round(56 * fs_ratio)))
+        bmv = int(max(8, round(36 * vh_ratio)))
+        bmt = int(max(6, round(12 * vh_ratio)))
+        ctrl_gap = int(max(16, round(40 * fs_ratio)))
+        core_gap = int(max(10, round(20 * fs_ratio)))
+        prog_h = int(max(18, round(24 * vh_ratio)))
 
         for fn in (
             lambda: self._cover_frame.set_size_request(cover, cover),
             lambda: self._cover.set_size_request(cover, cover),
             lambda: self._np_placeholder.set_size_request(cover, cover),
+            lambda: self._cover_shadow_layer.set_size_request(cover, cover),
+            lambda: self._cover_shadow_box.set_size_request(
+                cover + pad * 2, cover + pad * 2),
             lambda: self._info.set_size_request(cover, info_h),
-            lambda: self.viz.set_size_request(cover, 48),
-            lambda: self._left_col.set_size_request(cover + self._SHADOW_PAD * 2, -1),
+            lambda: self.viz.set_size_request(cover, viz_h),
+            lambda: self.viz.set_visible(viz_h > 0),
+            lambda: self._left_col.set_size_request(cover + pad * 2, -1),
             lambda: self._gap.set_size_request(gap_w, -1),
             lambda: self.lyrics.set_size_request(lyrics_w, -1),
+            # 底部栏边距 / 间距 / 进度条高度
+            lambda: self._bottom.set_margin_start(bm),
+            lambda: self._bottom.set_margin_end(bm),
+            lambda: self._bottom.set_margin_top(bmt),
+            lambda: self._bottom.set_margin_bottom(bmv),
+            lambda: self._ctrl.set_spacing(ctrl_gap),
+            lambda: self._core.set_spacing(core_gap),
+            lambda: self._progress.set_content_height(prog_h),
         ):
             try:
                 fn()
