@@ -1,0 +1,105 @@
+name: Build Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    name: Build .deb (Debian/Ubuntu)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debhelper-compat pkg-config \
+            libasound2-dev libpipewire-0.3-dev libclang-dev \
+            devscripts dpkg-dev build-essential
+
+      - name: Install Rust toolchain (rustup)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "RUSTUP_HOME=$HOME/.rustup" >> $GITHUB_ENV
+          echo "CARGO_HOME=$HOME/.cargo" >> $GITHUB_ENV
+
+      - name: Ensure vendored deps
+        run: |
+          if [ ! -d audio_backend_rs/vendor ]; then
+            (cd audio_backend_rs && cargo vendor vendor >/dev/null)
+          fi
+
+      - name: Build .deb
+        run: dpkg-buildpackage -b -us -uc -B
+
+      - name: Collect artifact
+        run: |
+          mkdir -p dist
+          cp ../xiatiao-player_*_amd64.deb dist/ 2>/dev/null || true
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-package
+          path: dist/*.deb
+
+  rpm:
+    name: Build .rpm (Fedora)
+    runs-on: ubuntu-22.04
+    container:
+      image: fedora:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf install -y rpm-build cargo rust pkgconf-pkg-config \
+            alsa-lib-devel pipewire-devel clang-devel \
+            desktop-file-utils libappstream-glib git tar xz
+
+      - uses: actions/checkout@v4
+
+      - name: Build .rpm
+        run: |
+          mkdir -p ~/rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+          # 源码包：直接从当前目录打包（跳过 Source0 下载）
+          tar czf ~/rpmbuild/SOURCES/Xiatiao-Player-1.0.5.tar.gz \
+            --transform 's,^,Xiatiao-Player-1.0.5/,' \
+            --exclude='.git' --exclude='audio_backend_rs/target' \
+            --exclude='audio_backend_rs/vendor' .
+          cp rpm/xiatiao-player.spec ~/rpmbuild/SPECS/
+          rpmbuild -ba ~/rpmbuild/SPECS/xiatiao-player.spec
+
+      - name: Collect artifact
+        run: |
+          mkdir -p dist
+          cp ~/rpmbuild/RPMS/x86_64/*.rpm dist/ 2>/dev/null || true
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package
+          path: dist/*.rpm
+
+  release:
+    name: Upload to Release
+    needs: [deb, rpm]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/deb-package/*.deb
+            artifacts/rpm-package/*.rpm

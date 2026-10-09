@@ -3,11 +3,14 @@
 
 export DH_VERBOSE = 1
 
-# 使用 rustup 安装的 Rust 工具链（chroot 内 /usr/local/cargo/bin），
-# 覆盖 Debian 12 系统自带的旧版 cargo/rustc（1.63 无法解析 Cargo.lock v4）。
+# Rust 工具链：优先用系统 PATH 里已有的 cargo/rustc（如 CI 用 rustup 装的新版），
+# 否则回退到 chroot 内 /usr/local/cargo（构建基线环境用的位置）。
+# Debian 12 自带的 rustc 1.63 无法解析 Cargo.lock v4，故需要较新的工具链。
+ifneq ($(wildcard /usr/local/cargo/bin/cargo),)
 export PATH := /usr/local/cargo/bin:$(PATH)
 export RUSTUP_HOME := /usr/local/rustup
 export CARGO_HOME := /usr/local/cargo
+endif
 
 %:
 	dh $@
