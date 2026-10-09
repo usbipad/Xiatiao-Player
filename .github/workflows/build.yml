@@ -41,7 +41,7 @@ jobs:
           fi
 
       - name: Build .deb
-        run: dpkg-buildpackage -B -us -uc
+        run: dpkg-buildpackage -B -us -uc -d
 
       - name: Collect artifact
         run: |
