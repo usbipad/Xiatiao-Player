@@ -3868,16 +3868,35 @@ class MainWindow(Adw.ApplicationWindow):
             log.debug("删除对话框失败: %s", exc)
 
     def _delete_to_trash(self, path: str) -> None:
-        """把文件移入回收站（可恢复）；失败则提示。"""
-        try:
+        """把文件移入回收站（可恢复）；失败则提示。
+
+        在后台线程执行 gio trash 并带超时：gio trash 在网络挂载/慢盘上
+        可能长时间阻塞，若在主线程同步执行会冻结整个 UI。对外行为不变
+        （仍是操作完成后弹同一个提示）。
+        """
+
+        def _work():
             import subprocess
-            r = subprocess.run(["gio", "trash", "--", path], capture_output=True, text=True)
+            return subprocess.run(
+                ["gio", "trash", "--", path],
+                capture_output=True, text=True, timeout=15,
+            )
+
+        def _done(r):
             if r.returncode == 0:
                 self._toast("已移入回收站")
             else:
                 self._toast(f"删除失败: {r.stderr.strip() or '未知错误'}")
-        except Exception as exc:
-            self._toast(f"删除失败: {exc}")
+
+        def _err(exc):
+            import subprocess
+            if isinstance(exc, subprocess.TimeoutExpired):
+                self._toast("删除超时（文件可能在慢速或网络位置）")
+            else:
+                self._toast(f"删除失败: {exc}")
+
+        from core.tasks import run_async
+        run_async(work=_work, on_done=_done, on_error=_err)
 
     # ============================================================
     # 全屏播放页

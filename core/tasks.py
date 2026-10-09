@@ -99,7 +99,13 @@ def run_async(
         try:
             result = work()
         except Exception as exc:  # noqa: BLE001
-            log.debug("异步任务异常: %s", exc)
+            # 无 on_error = 调用方未显式处理 → 属「逃逸错误」，升到 warning
+            # 并带栈，保证在正常日志级别可见；有回调时保持 debug，
+            # 避免与调用方自己的提示重复刷屏。
+            if on_error is None:
+                log.warning("后台任务异常（无 on_error 处理）", exc_info=True)
+            else:
+                log.debug("异步任务异常: %s", exc)
             if not token.cancelled and on_error is not None:
                 GLib.idle_add(_safe_call, on_error, exc)
             return
@@ -131,7 +137,10 @@ def run_cover_async(
         try:
             result = work()
         except Exception as exc:  # noqa: BLE001
-            log.debug("封面任务异常: %s", exc)
+            if on_error is None:
+                log.warning("封面任务异常（无 on_error 处理）", exc_info=True)
+            else:
+                log.debug("封面任务异常: %s", exc)
             if not token.cancelled and on_error is not None:
                 GLib.idle_add(_safe_call, on_error, exc)
             return
@@ -160,7 +169,10 @@ def run_net_async(
         try:
             result = work()
         except Exception as exc:  # noqa: BLE001
-            log.debug("网络任务异常: %s", exc)
+            if on_error is None:
+                log.warning("网络任务异常（无 on_error 处理）", exc_info=True)
+            else:
+                log.debug("网络任务异常: %s", exc)
             if not token.cancelled and on_error is not None:
                 GLib.idle_add(_safe_call, on_error, exc)
             return

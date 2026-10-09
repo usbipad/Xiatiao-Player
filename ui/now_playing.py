@@ -395,8 +395,10 @@ class NowPlayingPage(Gtk.Overlay):
 
         # 响应式：按可用空间缩放封面/间距/歌词，避免小屏或高显示缩放下撑出。
         # 实现说明：Gtk.Overlay 的 notify::width/height 与 do_size_allocate
-        # 在实测中均不可靠（不触发），故用 tick 回调轮询尺寸变化——
-        # 仅当 widget 可见并重绘时才跑，开销极小（每帧两次取值+比较）。
+        # 在实测中均不可靠（不触发），故用 tick 回调轮询尺寸变化。
+        # 注意：GTK4 的 tick 回调**即使 widget 不可见/unmapped 也会持续触发**
+        # （实测约 90 次/秒，与可见性无关），故在回调内用 get_mapped() 门控，
+        # 不可见时直接跳过尺寸比较；可见后尺寸若变化仍会正常重算。
         self._resp_last = None
         self._resize_tick_id = None
         try:
@@ -408,6 +410,10 @@ class NowPlayingPage(Gtk.Overlay):
         # 注意：Gtk.Widget.add_tick_callback 的回调签名是 (widget, clock)，
         # 只 2 个参数（曾误加第三个 data 参数 → TypeError → 回调从未执行）。
         try:
+            # 不可见（unmapped）时无需响应式：GTK4 tick 在不可见时仍会触发，
+            # 此处门控以避免后台空转；重新可见后若尺寸变化会照常重算。
+            if not self.get_mapped():
+                return True
             w = self.get_width()
             h = self.get_height()
             if (w, h) != getattr(self, "_resp_last", None):

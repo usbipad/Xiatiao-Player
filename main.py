@@ -2,6 +2,7 @@
 import logging
 import os
 import sys
+import threading
 
 import gi
 
@@ -131,7 +132,43 @@ def _set_process_name(name: str) -> None:
         logging.getLogger(__name__).debug("setproctitle 不可用，cmdline 保持原样", exc_info=True)
 
 
+def _install_global_excepthooks() -> None:
+    """安装全局未捕获异常钩子，把「静默崩溃」写入日志文件。
+
+    背景：本应用大量使用后台线程（线程池、FIFO 读线程、DLNA 服务等）。
+    未捕获异常默认只打印到 stderr；而从桌面（.desktop / 应用菜单）启动时
+    stderr 无人接收，错误就彻底消失、无从排查。这里统一记录到日志文件。
+
+    - sys.excepthook：主线程未捕获异常；
+    - threading.excepthook：子线程未捕获异常（Python 3.8+）。
+    均为「兜底记录」，不改变任何控制流。
+    """
+    _log = logging.getLogger("xiatiao.uncaught")
+
+    def _main_hook(exc_type, exc_value, exc_tb):
+        # Ctrl-C 是正常退出信号，交回默认处理，不当作错误。
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        _log.error("未捕获异常（主线程）", exc_info=(exc_type, exc_value, exc_tb))
+
+    sys.excepthook = _main_hook
+
+    def _thread_hook(args):
+        # SystemExit 在线程里用于正常结束，不算错误。
+        if issubclass(args.exc_type, SystemExit):
+            return
+        _log.error(
+            "未捕获异常（线程 %s）",
+            getattr(getattr(args, "thread", None), "name", "?"),
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    threading.excepthook = _thread_hook
+
+
 def main() -> None:
+    _install_global_excepthooks()
     # 显式设置程序名与应用名。
     # Wayland 下 GTK4 用 GLib prgname 作为窗口 app_id 的 fallback；
     # 桌面环境据此匹配 .desktop（图标 / 名称）。设成 APP_ID 与

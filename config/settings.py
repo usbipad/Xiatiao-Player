@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -132,11 +133,21 @@ SUPPORTED_EXTENSIONS = {
 
 
 class AppConfig:
-    """配置对象：所有读取带默认值兜底，写入失败不影响主流程。"""
+    """配置对象：所有读取带默认值兜底，写入失败不影响主流程。
+
+    线程安全：本对象被主线程与后台线程（如本地曲库扫描、可视化）并发访问。
+    用一个可重入锁保护 _data 的读写与文件保存——
+      * 避免 `save()` 迭代 _data 时另一线程 `set()` 触发
+        `RuntimeError: dictionary changed size during iteration`；
+      * 避免两个线程并发写同一临时文件导致配置文件损坏。
+    锁只覆盖内存字典操作与磁盘写入，不跨用户回调，故无死锁风险。
+    """
 
     def __init__(self, path: Path | None = None) -> None:
         self._path = path or self._default_path()
         self._data: Dict[str, Any] = dict(DEFAULT_CONFIG)
+        # 可重入：set_xxx() 内部会调用 save()，两者都持锁。
+        self._lock = threading.RLock()
         self.load()
 
     @staticmethod
@@ -157,17 +168,23 @@ class AppConfig:
             with self._path.open("r", encoding="utf-8") as fp:
                 loaded = json.load(fp)
             if isinstance(loaded, dict):
-                self._data.update(loaded)
+                with self._lock:
+                    self._data.update(loaded)
         except (OSError, json.JSONDecodeError) as exc:
             log.warning("读取配置失败，使用默认值: %s", exc)
 
     def save(self) -> None:
+        # 全程持锁：不仅迭代 _data 要防并发修改，写临时文件 + replace 也必须
+        # 串行——否则两个线程会用同一个 .json.tmp 文件名互相踩，一个 replace
+        # 后另一个 replace 找不到 tmp 而抛 FileNotFoundError。配置写入不频繁，
+        # 锁内做磁盘 IO 的代价可接受。
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._path.with_suffix(".json.tmp")
-            with tmp.open("w", encoding="utf-8") as fp:
-                json.dump(self._data, fp, ensure_ascii=False, indent=2)
-            tmp.replace(self._path)
+            with self._lock:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self._path.with_suffix(".json.tmp")
+                with tmp.open("w", encoding="utf-8") as fp:
+                    json.dump(self._data, fp, ensure_ascii=False, indent=2)
+                tmp.replace(self._path)
         except OSError as exc:
             log.warning("保存配置失败: %s", exc)
 
@@ -179,7 +196,8 @@ class AppConfig:
         return [d for d in dirs if isinstance(d, str)]
 
     def set_music_dirs(self, dirs: List[str]) -> None:
-        self._data["music_dirs"] = list(dict.fromkeys(dirs))
+        with self._lock:
+            self._data["music_dirs"] = list(dict.fromkeys(dirs))
         self.save()
 
     def add_music_dir(self, directory: str) -> bool:
@@ -200,43 +218,59 @@ class AppConfig:
 
     # ---- 通用读写 ----
     def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
+        with self._lock:
+            return self._data.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
-        self._data[key] = value
+        with self._lock:
+            self._data[key] = value
         self.save()
 
     def get_bool(self, key: str, default: bool = False) -> bool:
-        return bool(self._data.get(key, default))
+        with self._lock:
+            return bool(self._data.get(key, default))
 
     def set_bool(self, key: str, value: bool) -> None:
-        self._data[key] = bool(value)
+        with self._lock:
+            self._data[key] = bool(value)
         self.save()
 
     def get_int(self, key: str, default: int = 0) -> int:
         try:
-            return int(self._data.get(key, default))
+            with self._lock:
+                return int(self._data.get(key, default))
         except (TypeError, ValueError):
             return default
 
     def set_int(self, key: str, value: int) -> None:
-        self._data[key] = int(value)
+        with self._lock:
+            self._data[key] = int(value)
         self.save()
 
     def get_str(self, key: str, default: str = "") -> str:
-        val = self._data.get(key, default)
+        with self._lock:
+            val = self._data.get(key, default)
         return val if isinstance(val, str) else default
 
     def set_str(self, key: str, value: str) -> None:
-        self._data[key] = value
+        with self._lock:
+            self._data[key] = value
         self.save()
 
 
 _instance: AppConfig | None = None
+_instance_lock = threading.Lock()
 
 
 def get_config() -> AppConfig:
+    """返回全局配置单例（线程安全）。
+
+    双重检查锁：多线程首次并发调用时，避免构造出多个 AppConfig 实例
+    （各自持有独立 _data，会导致配置读写不一致）。
+    """
     global _instance
     if _instance is None:
-        _instance = AppConfig()
+        with _instance_lock:
+            if _instance is None:
+                _instance = AppConfig()
     return _instance
