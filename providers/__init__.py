@@ -4,12 +4,8 @@
 - UI 只通过本模块获取 Provider 实例，不直接 import 具体实现。
 - 使用动态导入，删除在线音源 provider 后本地功能不受任何影响。
 
-合规边界（重要）：
-- 内置 Provider 只有两个：本地曲库（local）与标准 Subsonic 客户端（subsonic）。
-- 本软件【不内置】任何国内音乐平台的接口解析、登录态或音源获取逻辑。
-- 若用户希望接入其它音源，应由用户【自行提供】符合 Subsonic 协议的
-  服务端，或自行提供第三方 Provider 模块（通过下方外挂机制加载）。
-  这些外挂模块不随本软件分发，其合规性由提供方与使用者自负。
+内置 Provider：本地曲库（local）与标准 Subsonic 客户端（subsonic）。
+如需接入其它来源，可通过下方外挂机制加载第三方 Provider 模块。
 
 外挂 Provider 加载机制（供高级用户/第三方）：
 - 环境变量 XIATIAO_PROVIDER_MODULES：形如 "my_pkg.my_provider:MyProvider;other.mod:Cls"，
@@ -31,7 +27,6 @@ from .base import BaseMusicProvider
 log = logging.getLogger(__name__)
 
 #: 内置候选 Provider 模块；import 失败会被静默跳过（解耦要求）。
-#: 只含合规的本地曲库与标准 Subsonic 客户端，不含任何平台私有实现。
 _BUILTIN_PROVIDER_MODULES: List[Tuple[str, str]] = [
     ("providers.local", "LocalProvider"),
     ("providers.subsonic", "SubsonicProvider"),
@@ -117,10 +112,10 @@ def _discover() -> None:
     _discovered = True
     # 1) 先把外挂路径加入 sys.path，供后续导入。
     _apply_extra_path()
-    # 2) 内置 Provider（合规：local + 标准 subsonic）。
+    # 2) 内置 Provider（local + subsonic）。
     for module_name, class_name in _BUILTIN_PROVIDER_MODULES:
         _try_register(module_name, class_name)
-    # 3) 用户外挂 Provider（不随包分发，合规性由提供方/使用者自负）。
+    # 3) 用户外挂 Provider（不随包分发）。
     for module_name, class_name in _external_module_specs():
         _try_register(module_name, class_name)
 

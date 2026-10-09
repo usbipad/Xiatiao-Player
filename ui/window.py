@@ -2144,8 +2144,8 @@ class MainWindow(Adw.ApplicationWindow):
             tasks = {
                 "playlists": lambda: p.get_playlists_info(),
                 # 排行榜 / 每日推荐：私有扩展 getRecommendations，返回 sections 分组
-                "rank": lambda: p.recommendation_section_cards("qq", "rank"),
-                "daily": lambda: p.recommendation_section_cards("qq", "daily"),
+                "rank": lambda: p.recommendation_section_cards("", "rank"),
+                "daily": lambda: p.recommendation_section_cards("", "daily"),
                 "newest": lambda: p.get_album_list2("newest", size=30).get("albumList2", {}).get("album", []),
                 "rand": lambda: p.get_album_list2("alphabeticalByArtist", size=30).get("albumList2", {}).get("album", []),
                 "artists": lambda: p.all_artists(),

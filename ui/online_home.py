@@ -1,7 +1,7 @@
 """主页「我的歌单」区块（在线音源）。
 
 数据来源：SubsonicProvider.get_playlists_info() → PlaylistInfo 列表。
-平台无关：后端接 QQ/汽水等，只要返回 PlaylistInfo 结构，本区块都能渲染。
+后端只要返回 PlaylistInfo 结构，本区块即可渲染。
 
 无数据（未配置 / 连不上 / 空）时，整个区块隐藏。
 """

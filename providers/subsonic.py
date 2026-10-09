@@ -1,24 +1,15 @@
 """Subsonic 通用客户端 Provider。
 
-设计原则（合规）：
-- 本模块只实现 Subsonic 协议【客户端】，不含任何音乐平台解析逻辑；
-- 所有音乐内容均由用户自备的 Subsonic 服务端提供；
-- 用户自行填写服务端地址与账号。
+本模块实现 Subsonic 协议客户端：连接用户自备的 Subsonic 服务端，
+地址与账号由用户在设置中填写。
 
 支持的接口：
   【Subsonic 标准】ping / search3 / getSong / stream / getCoverArt /
                     getLyrics / getPlaylists / getPlaylist / getStarred /
                     star / unstar / getAlbumList2 / getArtists / scrobble
   【可选扩展端点】（非 Subsonic 标准；本模块只提供通用调用入口，
-                    不含任何具体平台的解析逻辑。服务端未实现时调用失败，
-                    调用方据此隐藏对应入口即可）
+                    服务端未实现时调用失败，调用方据此隐藏对应入口即可）
                     getAvatar / getUserProfile / qrLogin / qrLoginStatus
-
-合规边界：
-- 本 Provider 是通用 Subsonic 客户端，不对接、不内置任何国内音乐平台；
-- 若用户希望接入某平台，应由用户自行提供符合 Subsonic 协议的第三方
-  服务端（如自建网关），本软件仅作为标准协议客户端与之通信；
-- 本模块不实现：登录态伪造、Cookie 注入、绕过版权/DRM、平台私有接口解析。
 
 认证：Subsonic 标准 u/t/s/v/c/f 参数（token=md5(password+salt)），
       同时支持明文 p=（兼容部分服务端）。
@@ -45,7 +36,7 @@ log = logging.getLogger(__name__)
 
 #: Subsonic API 版本
 API_VERSION = "1.16.1"
-#: 客户端标识（中性名，避免与任何第三方聚合客户端关联）。
+#: 客户端标识。
 CLIENT_NAME = "xiatiao"
 
 
@@ -53,15 +44,14 @@ CLIENT_NAME = "xiatiao"
 class PlaylistInfo:
     """平台无关的歌单信息。
 
-    后端无论对接哪个平台（Subsonic 标准 / QQ音乐 / 汽水音乐 / ...），
-    只要把歌单统一映射成这个结构，前端即可渲染。
+    后端把歌单映射成这个结构，前端即可渲染。
 
     字段：
       id:          歌单唯一标识（前端用于请求详情）
       name:        歌单名
       cover_url:   封面图片 URL（可为空）
       song_count:  歌曲数（0=未知）
-      source:      来源平台标识（如 "subsonic"/"qq"/"soda"/...），用于显示标签
+      source:      来源平台标识（由后端定义），用于显示标签
       description: 歌单描述（可选）
     """
     id: str
@@ -661,7 +651,7 @@ class SubsonicProvider(BaseMusicProvider):
     def qr_login_create(self, source: str) -> dict:
         """创建扫码登录会话（扩展）。
 
-        source: 平台标识（由后端定义，如 "netease"/"qq"/"qq_wx"/"bilibili"）。
+        source: 平台标识（由后端定义，留空则由后端选择默认音源）。
         约定返回：
           { "qrLogin": { "source":..., "key":...,
                          "url":...,        # 二维码内容（文本），可选
@@ -682,10 +672,11 @@ class SubsonicProvider(BaseMusicProvider):
         ])
 
     # ---- 推荐内容扩展（非标准；未实现的后端返回失败 → 前端隐藏入口）----
-    def get_recommendations(self, source: str = "qq", rec_type: str = "daily") -> dict:
+    def get_recommendations(self, source: str = "", rec_type: str = "daily") -> dict:
         """推荐内容（私有扩展 getRecommendations，见 PLAYER_EXTENSION.md）。
 
-        参数：source（音源 qq/netease/...）、type（daily/guess/rank/radio/categories）。
+        参数：source（平台标识，留空则由后端决定）、
+             type（daily/guess/rank/radio/categories）。
         返回整个 recommendations 对象（含 sections 分组）；未实现 / 出错 → {}。
         """
         try:
@@ -697,7 +688,7 @@ class SubsonicProvider(BaseMusicProvider):
         node = body.get("recommendations")
         return node if isinstance(node, dict) else {}
 
-    def recommendation_sections(self, source: str = "qq", rec_type: str = "daily") -> list:
+    def recommendation_sections(self, source: str = "", rec_type: str = "daily") -> list:
         """取推荐分组列表（sections 数组）。未实现 → []。
 
         每项：{id, title, kind(playlist|songs), playlistId, coverArt, children}。
@@ -849,9 +840,7 @@ class SubsonicProvider(BaseMusicProvider):
     # 统一内容拉取接口（BaseMusicProvider 可选实现）
     # ============================================================
     #
-    # 这些方法把「标准 Subsonic 端点」适配成平台无关的中间结构，
-    # 使 UI 无需区分后端是标准 Subsonic 还是用户自备的兼容服务端。
-    # 纯转发：内部仍走既有标准端点，行为与之前完全一致。
+    # 把 Subsonic 端点适配成中间结构，供 UI 消费。
 
     def fetch_playlists(self):
         """歌单列表（PlaylistInfo）；未配置/出错返回空列表。"""
@@ -889,21 +878,16 @@ class SubsonicProvider(BaseMusicProvider):
     def fetch_recommendations(self, source: str = "", rec_type: str = "daily"):
         """推荐内容（可选能力，统一入口）。
 
-        转发到既有扩展端点 getRecommendations。
-        - 标准 Subsonic 未实现该端点 → _request 抛错 → 内部捕获返回 []，
-          UI 据此隐藏推荐区块（优雅降级）。
-        - 用户自备的兼容服务端 / 外挂插件实现该端点后，自动可用。
+        转发到扩展端点 getRecommendations。
+        服务端未实现该端点则返回 []，UI 据此隐藏推荐区块。
 
         返回 recommendation_section_cards 风格的卡片列表
         （name/subtitle/cover_url/playlist_id），供 UI 直接渲染区块。
-
-        合规：此处只调用「通用扩展端点」，不含任何具体平台的接口解析逻辑；
-        是否返回内容完全取决于服务端/插件自身。
         """
         try:
             if not self.is_configured():
                 return []
-            # source 为空时用中性默认（仅为端点参数，不代表任何平台）。
+            # source 为空则由后端决定默认来源。
             src = str(source or "").strip()
             return self.recommendation_section_cards(src, rec_type)
         except Exception as exc:
@@ -913,7 +897,7 @@ class SubsonicProvider(BaseMusicProvider):
     def fetch_user_profile(self, username: str = ""):
         """用户资料（可选能力，统一入口）。未实现/失败返回 {}。
 
-        转发到扩展端点 getUserProfile；标准 Subsonic 未实现则返回 {}。
+        转发到扩展端点 getUserProfile。
         """
         try:
             if not self.is_configured():

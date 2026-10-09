@@ -41,49 +41,16 @@
 
 </div>
 
-### ✨ 功能特性
+### ✨ 功能
 
-#### 🎧 音质优先
+一款本地优先、也支持在线音源的现代播放器：
 
-| 特性 | 说明 |
-| --- | --- |
-| **不重采样** | 保持源采样率，DSP 关闭时为 bit-perfect 直通 |
-| **采样率跟随** | 原生 PipeWire 输出，DAC 跟随源文件采样率 |
-| **DSD 支持** | 原生直通（Native DSD_U32）/ DoP 封装 / PCM 软解三种模式 |
-| **ALSA 独占** | 可选绕过音频服务，直连 `hw:` 设备 |
-
-#### 🎛️ 音效与 DSP
-
-- 内嵌 **CamillaDSP** 引擎，支持参数实时调整
-- 效果链：10 段图形 EQ、PEQ、低音 / 高音、动态等响度（ISO 226）、压缩器、限幅器、立体声宽度、声道平衡、Crossfeed、卷积混响、电子管染色、BBE
-- 卷积 IR 按播放采样率重采样
-
-#### 📚 播放与管理
-
-- 本地曲库扫描：`mp3` `flac` `ape` `wv` `m4a` `ogg` `wav` `dsf` `dff`
-- 解码：symphonia（原生）+ ffmpeg（高压缩格式与 DSD）
-- 播放列表、歌单、收藏（我喜欢）、播放历史
-- 沉浸式全屏页、滚动歌词、频谱可视化
-- **Subsonic 在线音源** —— 连接任意标准 Subsonic 服务端（如 Navidrome），浏览在线曲库 / 搜索 / 播放 / 歌单 / 收藏；支持音质档位选择与「实测音质」徽章
-- **主界面背景跟随封面** —— 可选让整个界面用当前封面主色调着色
-- **DLNA 投送** —— 发现局域网 DLNA 渲染器，把本地曲目推送到设备播放（投送时本机不播放）
-- **MPRIS2** 媒体控制、系统托盘
-
-### 🏗️ 架构
-
-前端 Python + PyGObject（GTK4 / libadwaita），后端 Rust 独立进程，通过 Unix domain socket + JSON Lines 通信。
-
-    ┌─────────────────────────┐        ┌──────────────────────────┐
-    │   Python (GTK4 UI)      │        │   Rust 音频后端           │
-    │   main.py / ui/         │◀──IPC─▶│   audio_backend_rs/      │
-    │   core/ models/ ...     │  Unix  │   decode / dsp / output  │
-    │  · 界面与交互            │ socket │  · 解码（symphonia+ffmpeg）│
-    │  · 曲库/歌单/收藏管理    │ + JSON │  · DSP 链（含 CamillaDSP） │
-    │  · MPRIS2 / 托盘        │  Lines │  · 输出（PipeWire / ALSA） │
-    └─────────────────────────┘        └──────────────────────────┘
-
-- **音频输出**：默认 PipeWire（原生接口，采样率跟随）；可选 ALSA 独占
-- **DSP**：Rust 侧实现 + 内嵌 CamillaDSP（camillalib）
+- **本地 + 在线**：播放本地曲库，或连接任意标准 Subsonic 服务端（如 Navidrome）在线收听
+- **DLNA 投送**：发现局域网 DLNA 渲染器，把音乐推送到音响 / 电视播放
+- **内嵌 DSP**：内置 CamillaDSP，支持 EQ、PEQ、响度、限幅等音效调整
+- **沉浸式界面**：背景跟随封面着色、全屏播放页、频谱可视化
+- **音质**：支持 mp3 / flac / ape / wv / m4a / dsd 等格式；DSP 处理不改变音频数据采样率
+- MPRIS2 媒体控制，适配 Linux 桌面
 
 ### 📦 安装
 
@@ -91,7 +58,7 @@
 
 从 Releases 下载 .deb 后：
 
-    apt install ./xiatiao-player_1.0.4_amd64.deb
+    apt install ./xiatiao-player_1.0.5_amd64.deb
 
 （需要管理员权限；安装后程序在 /usr/lib/xiatiao-player/，启动器 /usr/bin/xiatiao-player，也可在应用菜单中找到「虾条播放器」。）
 
@@ -100,7 +67,7 @@
 需先启用 **RPM Fusion**（依赖完整 ffmpeg 以支持 DSD 解码）：
 
     sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
-    sudo dnf install ./xiatiao-player-1.0.4-1.fc44.x86_64.rpm
+    sudo dnf install ./xiatiao-player-1.0.5-1.fc44.x86_64.rpm
 
 #### 方式三：从源码运行
 
@@ -118,61 +85,6 @@
     git clone https://github.com/usbipad/Xiatiao-Player.git
     cd Xiatiao-Player/audio_backend_rs && cargo build --release && cd ..
     python3 main.py
-
-### 🔨 从源码打包 .deb
-
-推荐用 **Debian 12 基线**构建。产物最高只需 GLIBC_2.34，一个包即可覆盖 Debian 12 / 13 / 14 与 Ubuntu 22.04 / 24.04 及以上：
-
-    # 一次性：生成构建 chroot（含新版 Rust + libclang）
-    bash tools/prepare_debian12_chroot.sh
-
-    # 构建 .deb（产物输出到 release/）
-    # TMPDIR 须为大磁盘目录（用 /var/tmp）
-    TMPDIR=/var/tmp bash tools/build_deb_debian12.sh
-
-为何不在本机直接 dpkg-buildpackage：较新系统（如 Debian sid，glibc 2.43）编译出的二进制要求 GLIBC_2.43，无法在 Debian 12 / Ubuntu 22.04 运行。必须在目标最低版本环境里构建，glibc 需求才会降下来。
-
-打包配置位于 debian/：control（元信息与依赖）、rules（编译 + 组装）、changelog（版本历史）、postinst / postrm（刷新图标 / desktop 缓存）。
-
-### 🧪 测试
-
-    # Rust 单元测试（DSP / DSD / 输出 / Camilla / deps 等，约 50 项）
-    cd audio_backend_rs && cargo test --release
-
-    # Python 冒烟自检（导入 + provider 注册 + 核心逻辑，无需界面）
-    python3 tests/smoke_test.py
-
-    # Python 边界/单元测试（音质规格 / 配置 / 存储 / 播放队列）
-    python3 tests/test_boundary.py
-
-    # 播放器 ↔ Subsonic API 服务端 联动测试（需服务端可达，否则自动跳过）
-    python3 tests/integration_api.py
-
-### 🐛 调试
-
-出问题时可通过调试入口开启诊断日志：
-
-    bash tools/debug_run.sh            # DEBUG 级别
-    bash tools/debug_run.sh verbose    # 更啰嗦（含 GTK 噪音）
-
-详见 [docs/DEBUG.md](docs/DEBUG.md)。
-
-### 📁 目录结构
-
-    main.py              应用入口
-    config/              配置与设置
-    core/                核心逻辑（audio_backend / rust_backend / player_core / playlist / *_store / camilla）
-    models/              数据模型（曲目/歌词/封面/ReplayGain）
-    providers/           音源提供者
-    services/            MPRIS2 / 系统托盘 / 快捷键 / 资源加载
-    ui/                  GTK4 界面（window.py 主窗口）
-    data/                运行时资源（图标 / desktop）
-    audio_backend_rs/    Rust 音频后端
-    debian/              Debian 打包配置
-    rpm/                 RPM 打包配置（spec）
-    docs/                文档与界面截图
-    release/             发布产物（.deb / .rpm，不入库）
-    tools/               构建脚本（打包 / 图标生成 / 调试入口）
 
 ### 📄 许可证
 
@@ -213,47 +125,14 @@
 
 ### ✨ Features
 
-#### 🎧 Sound Quality First
+A modern player that is local-first yet also supports online sources:
 
-| Feature | Description |
-| --- | --- |
-| **No Resampling** | Keeps the source sample rate; bit-perfect passthrough when DSP is off |
-| **Sample Rate Following** | Native PipeWire output; DAC follows the source file's sample rate |
-| **DSD Support** | Native passthrough (Native DSD_U32) / DoP / PCM software decode |
-| **ALSA Exclusive** | Optionally bypass the audio service and connect directly to `hw:` devices |
-
-#### 🎛️ Effects & DSP
-
-- Embedded **CamillaDSP** engine with real-time parameter adjustment
-- Effect chain: 10-band graphic EQ, PEQ, bass/treble, dynamic loudness (ISO 226), compressor, limiter, stereo width, channel balance, crossfeed, convolution reverb, tube coloration, BBE
-- Convolution IR resampled to the playback sample rate
-
-#### 📚 Playback & Management
-
-- Local library scanning: `mp3` `flac` `ape` `wv` `m4a` `ogg` `wav` `dsf` `dff`
-- Decoding: symphonia (native) + ffmpeg (high-compression formats and DSD)
-- Play queue, playlists, favorites, play history
-- Immersive full-screen page, scrolling lyrics, spectrum visualization
-- **Subsonic online sources** — connect to any standard Subsonic server (e.g. Navidrome) for online library browsing, search, streaming, playlists and favorites, with quality selection and measured-quality badges
-- **Background follows cover** — optionally tint the entire UI with the current cover's dominant color
-- **DLNA casting** — discover LAN DLNA renderers and push local tracks to them (local playback is paused while casting)
-- **MPRIS2** media control, system tray
-
-### 🏗️ Architecture
-
-Frontend in Python + PyGObject (GTK4 / libadwaita); backend is a separate Rust process, communicating over a Unix domain socket with JSON Lines.
-
-    ┌─────────────────────────┐        ┌──────────────────────────┐
-    │   Python (GTK4 UI)      │        │   Rust audio backend     │
-    │   main.py / ui/         │◀──IPC─▶│   audio_backend_rs/      │
-    │   core/ models/ ...     │  Unix  │   decode / dsp / output  │
-    │  · UI & interaction     │ socket │  · decode (symphonia+ffmpeg)│
-    │  · library/playlists    │ + JSON │  · DSP chain (+ CamillaDSP)│
-    │  · MPRIS2 / tray        │  Lines │  · output (PipeWire/ALSA) │
-    └─────────────────────────┘        └──────────────────────────┘
-
-- **Audio output**: PipeWire by default (native interface, sample-rate following); ALSA exclusive optional
-- **DSP**: implemented in Rust + embedded CamillaDSP (camillalib)
+- **Local + Online**: play your local library, or stream from any standard Subsonic server (e.g. Navidrome)
+- **DLNA casting**: discover LAN DLNA renderers and push music to speakers / TVs
+- **Embedded DSP**: built-in CamillaDSP with EQ, PEQ, loudness, limiter and more
+- **Immersive UI**: background tinted by the cover, full-screen now-playing, spectrum visualization
+- **Formats & quality**: supports mp3 / flac / ape / wv / m4a / dsd; DSP processing does not change the audio data's sample rate
+- MPRIS2 media control, integrated with the Linux desktop
 
 ### 📦 Installation
 
@@ -261,7 +140,7 @@ Frontend in Python + PyGObject (GTK4 / libadwaita); backend is a separate Rust p
 
 Download the `.deb` from Releases, then:
 
-    sudo apt install ./xiatiao-player_1.0.4_amd64.deb
+    sudo apt install ./xiatiao-player_1.0.5_amd64.deb
 
 (Requires admin rights. Installed to /usr/lib/xiatiao-player/, launcher at /usr/bin/xiatiao-player, also available in the app menu as "Xiatiao Player".)
 
@@ -270,7 +149,7 @@ Download the `.deb` from Releases, then:
 Requires **RPM Fusion** (for the full ffmpeg with DSD decoding):
 
     sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
-    sudo dnf install ./xiatiao-player-1.0.4-1.fc44.x86_64.rpm
+    sudo dnf install ./xiatiao-player-1.0.5-1.fc44.x86_64.rpm
 
 #### Option 3: Run from source
 
@@ -288,61 +167,6 @@ Build and run:
     git clone https://github.com/usbipad/Xiatiao-Player.git
     cd Xiatiao-Player/audio_backend_rs && cargo build --release && cd ..
     python3 main.py
-
-### 🔨 Building the .deb from source
-
-Recommended: build on a **Debian 12 baseline**. The resulting binary requires only GLIBC_2.34, so a single package covers Debian 12 / 13 / 14 and Ubuntu 22.04 / 24.04+:
-
-    # One-time: create the build chroot (with newer Rust + libclang)
-    bash tools/prepare_debian12_chroot.sh
-
-    # Build the .deb (output to release/)
-    # TMPDIR must be a large, world-executable directory (use /var/tmp)
-    TMPDIR=/var/tmp bash tools/build_deb_debian12.sh
-
-Why not build directly with dpkg-buildpackage on the host: on newer systems (e.g. Debian sid, glibc 2.43) the binary requires GLIBC_2.43 and cannot run on Debian 12 / Ubuntu 22.04. Building in the lowest target environment lowers the glibc requirement.
-
-Packaging config lives in debian/: control (metadata & dependencies), rules (build + install tree), changelog (version history), postinst / postrm (refresh icon/desktop cache).
-
-### 🧪 Testing
-
-    # Rust unit tests (DSP / DSD / output / Camilla / deps, ~50 cases)
-    cd audio_backend_rs && cargo test --release
-
-    # Python smoke self-check (imports + provider registry + core logic, no GUI)
-    python3 tests/smoke_test.py
-
-    # Python boundary/unit tests (quality spec / config / stores / play queue)
-    python3 tests/test_boundary.py
-
-    # Player <-> Subsonic API server integration (auto-skips if server unreachable)
-    python3 tests/integration_api.py
-
-### 🐛 Debugging
-
-When issues occur, enable diagnostic logging via the debug entry point:
-
-    bash tools/debug_run.sh            # DEBUG level
-    bash tools/debug_run.sh verbose    # more verbose (includes GTK noise)
-
-See [docs/DEBUG.md](docs/DEBUG.md).
-
-### 📁 Directory Layout
-
-    main.py              app entry point
-    config/              configuration & settings
-    core/                core logic (audio_backend / rust_backend / player_core / playlist / *_store / camilla)
-    models/              data models (track/lyrics/cover/ReplayGain)
-    providers/           music providers
-    services/            MPRIS2 / system tray / shortcuts / asset loading
-    ui/                  GTK4 interface (window.py main window)
-    data/                runtime resources (icons / desktop)
-    audio_backend_rs/    Rust audio backend
-    debian/              Debian packaging config
-    rpm/                 RPM packaging config (spec)
-    docs/                docs & screenshots
-    release/             release artifacts (.deb / .rpm, not tracked)
-    tools/               build scripts (packaging / icon gen / debug entry)
 
 ### 📄 License
 
