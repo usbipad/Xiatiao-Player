@@ -238,6 +238,7 @@ class OnlineCardGrid(Gtk.ScrolledWindow):
         gesture.connect("released", self._on_card_clicked)
         box.add_controller(gesture)
         box.set_cursor(Gdk.Cursor.new_from_name("pointer", None))
+        box._click_ctrl = gesture
 
         box._holder = holder
         box._name_lbl = name_lbl
@@ -315,6 +316,14 @@ class OnlineCardGrid(Gtk.ScrolledWindow):
         box = list_item.get_child()
         if box is not None:
             box._click = None
+            # 断开点击 controller（内存泄漏修复，与 media_grid 同模式）。
+            _c = getattr(box, "_click_ctrl", None)
+            if _c is not None:
+                try:
+                    box.remove_controller(_c)
+                except Exception:
+                    pass
+                box._click_ctrl = None
         try:
             list_item.set_child(None)
         except Exception:

@@ -428,14 +428,35 @@ def build_track_columnview(model, on_activate=None,
         pass
     column_view.add_css_class("track-list")
     # 整行单击：用 ColumnView 自带的 activate（整行级、命中准确）
+    #
+    # 内存泄漏修复（关键，与上面 sorter 环同模式）：
+    #   闭包 _on_row_activate 若直接捕获 on_row_click（页面绑定方法 → 页面），
+    #   则形成 column_view → "activate"信号 → 闭包 → on_row_click → 页面
+    #   → scroll → column_view 的跨 C/Python 环。C 层不参与 Python gc，
+    #   column_view 永不释放，其内部 cell 复用池（每次 splice 建的
+    #   ColumnViewCell）也随之永不回收 → ColumnViewCell 无界累积。
+    #   改为：回调挂到 column_view 上，闭包只捕获 column_view 的弱引用，
+    #   取回调时经弱引用拿——信号仍能触发，但不再强持有视图/页面。
     if on_row_click is not None:
+        try:
+            column_view._row_click_cb = on_row_click
+        except Exception:
+            column_view._row_click_cb = None
+        _cv_ref2 = weakref.ref(column_view)
+
         def _on_row_activate(_cv, position):
+            cv = _cv_ref2()
+            if cv is None:
+                return
+            cb = getattr(cv, "_row_click_cb", None)
+            if cb is None:
+                return
             try:
                 item = model.get_item(position)
             except Exception:
                 item = None
             if item is not None:
-                on_row_click(item)
+                cb(item)
         column_view.connect("activate", _on_row_activate)
 
     # 歌曲右键菜单

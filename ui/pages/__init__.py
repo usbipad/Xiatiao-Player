@@ -719,7 +719,18 @@ class LocalLibraryPage(Gtk.Box):
         while c is not None:
             nxt = c.get_next_sibling()
             try:
-                _detach_card(c)
+                # 【内存泄漏修复·关键】FlowBox 会把 append 进来的 card 包一层
+                # FlowBoxChild；_click_ctrl 存在真正的 card box（FlowBoxChild
+                # 的 child）上。此前直接对 FlowBoxChild 调 detach，取不到
+                # _click_ctrl → remove_controller 从未执行 → click controller
+                # 的跨 C/Python 引用环不破 → 卡片整棵树无法回收（实测切页/
+                # 切歌后 ColumnViewCell/Box/Label 无界累积）。这里先取 child。
+                _inner = None
+                try:
+                    _inner = c.get_child()
+                except Exception:
+                    _inner = None
+                _detach_card(_inner if _inner is not None else c)
             except Exception:
                 pass
             self._grid_flow.remove(c)

@@ -204,6 +204,11 @@ def _make_card(card: dict) -> Gtk.Widget:
         g.connect("released", lambda *_a: click())
         box.add_controller(g)
         box.set_cursor(Gdk.Cursor.new_from_name("pointer", None))
+        # 存引用，供 set_cards 移除卡片时断开（内存泄漏修复）。
+        # 环：box → g → lambda → click(页面方法) → 页面 → hbox → box，
+        # C 层持有 g，不显式 remove_controller 则卡片整棵树永不回收
+        # （与 media_grid.detach_card_click 同一模式）。
+        box._click_ctrl = g
 
     return box
 
@@ -254,6 +259,17 @@ class CardSection(Gtk.Box):
             child = self._hbox.get_first_child()
             while child is not None:
                 nxt = child.get_next_sibling()
+                # 移除前断开点击 controller（内存泄漏修复，见 _make_card）。
+                _c = getattr(child, "_click_ctrl", None)
+                if _c is not None:
+                    try:
+                        child.remove_controller(_c)
+                    except Exception:
+                        pass
+                    try:
+                        child._click_ctrl = None
+                    except Exception:
+                        pass
                 self._hbox.remove(child)
                 child = nxt
         except Exception:
