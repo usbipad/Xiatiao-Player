@@ -95,9 +95,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "nowplaying_blur_bg": True,
     # 模糊强度（越小越糊）
     "nowplaying_blur_px": 6,
-    # 背景亮度自适应阈值（WCAG 相对亮度，低于此值时前景切亮色）。
-    # 旧值 0.65 基于 299/587/114 近似公式，换成 WCAG 公式后等价约 0.38。
-    "nowplaying_dark_threshold": 0.38,
+    # 背景亮度自适应阈值（WCAG 相对亮度）：背景加权亮度**低于**此值时
+    # 用浅色前景（白字），否则用深色前景（黑字）。
+    # 实测（59 首样本）：0.55 约 86% 白字 / 14% 黑字，中灰/暖色封面（如
+    # 暖橙日落、浅蓝）多判白字，氛围更好；0.38（旧值）黑字偏多、发闷。
+    "nowplaying_dark_threshold": 0.55,
     # 主界面背景是否跟随当前封面主色调（关闭则用主题色 @view_bg_color）
     "main_bg_follow_cover": False,
     # 进度条已播段是否跟随当前封面主色（关闭则用默认深灰/白）

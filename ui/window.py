@@ -3141,12 +3141,14 @@ class MainWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._apply_track_assets, token, cover_panel_tex, cover_np_tex,
                       lyrics, rg_gain, bg_rgb, seekbar_rgb, bg_tex, bg_dark,
                       cover_raw, main_bg_rgb, assets.get("dominant_rgb"),
-                      assets.get("bg_png_path"), assets.get("popover_bg_path"))
+                      assets.get("bg_png_path"), assets.get("popover_bg_path"),
+                      assets.get("bg_dark_title"), assets.get("bg_dark_lyrics"))
 
     def _apply_track_assets(self, token: int, cover_panel_tex, cover_np_tex, lyrics, rg_gain,
                             bg_rgb=None, seekbar_rgb=None, bg_tex=None, bg_dark=None,
                             mpris_cover_raw=None, main_bg_rgb=None, dominant_rgb=None,
-                            bg_png_path=None, popover_bg_path=None) -> bool:
+                            bg_png_path=None, popover_bg_path=None,
+                            bg_dark_title=None, bg_dark_lyrics=None) -> bool:
         """主线程：应用后台已建好的 GdkTexture / 歌词 / ReplayGain。
 
         封面纹理在后台线程已解码完成，这里只 set_paintable，几乎零耗时。
@@ -3168,8 +3170,11 @@ class MainWindow(Adw.ApplicationWindow):
                 # 无封面：清空为占位，避免沿用上一首封面
                 self.player_panel.cover.set_cover(None)
             self.now_playing.set_cover_texture(cover_np_tex, bg_rgb, seekbar_rgb)
-            # 沉浸页背景：封面模糊图铺满（None 时清空 → 回退纯色背景）
-            self.now_playing.set_bg_texture(bg_tex, bg_dark)
+            # 沉浸页背景：封面模糊图铺满（None 时清空 → 回退纯色背景）。
+            # 歌名区 / 歌词区各自判定明暗（应对「左黑右白」双色封面）。
+            self.now_playing.set_bg_texture(
+                bg_tex, bg_dark,
+                title_dark=bg_dark_title, lyrics_dark=bg_dark_lyrics)
             # 记录模糊图路径/明暗，供沉浸页音效气泡作背景
             # 气泡用专用「超糊」图（比沉浸页背景更糊）。
             self._immersive_bg_path = popover_bg_path or bg_png_path

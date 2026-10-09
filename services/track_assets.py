@@ -149,6 +149,15 @@ def load_cover_assets(cover_raw: bytes | None,
                 from gi.repository import Gdk, GLib
                 out["bg_tex"] = Gdk.Texture.new_from_bytes(GLib.Bytes.new(png))
                 out["bg_dark"] = _is_dark_background(png, dark_threshold)
+                # 分区判定：歌名（左列中下）与歌词（右列）各自采样，
+                # 应对「左黑右白」这类双色封面（统一判定必然一半错）。
+                # 区域为归一化坐标，经验值；失败回退 None（用全图判定）。
+                _td = _is_dark_background(
+                    png, dark_threshold, region=(0.15, 0.55, 0.52, 0.92))
+                _ld = _is_dark_background(
+                    png, dark_threshold, region=(0.55, 0.10, 0.95, 0.92))
+                out["bg_dark_title"] = _td if _td is not None else out["bg_dark"]
+                out["bg_dark_lyrics"] = _ld if _ld is not None else out["bg_dark"]
                 # 模糊图写到临时文件：供沉浸页音效气泡用 CSS background-image
                 # 直接引用（GSK 无法模糊 popover 后方，用同一张模糊图作气泡底，
                 # 与沉浸页视觉一致）。
@@ -183,7 +192,7 @@ def load_cover_assets(cover_raw: bytes | None,
     return out
 
 
-def _is_dark_background(png_bytes: bytes, threshold: float):
+def _is_dark_background(png_bytes: bytes, threshold: float, region=None):
     """判断模糊背景是否偏暗（决定沉浸页前景黑白）；失败返回 None。
 
     改进（相比旧的「整图算术平均」）：
@@ -213,27 +222,40 @@ def _is_dark_background(png_bytes: bytes, threshold: float):
         nch = pb.get_n_channels()
         step = max(1, min(w, h) // 24)
 
+        # region=(x0,y0,x1,y1) 归一化 0..1：只采样该子区域（用于
+        # 「歌名区 / 歌词区分别判定」）。None = 全图 + 分区加权（旧行为）。
+        if region is not None:
+            rx0, ry0, rx1, ry1 = region
+            x_lo, x_hi = max(0, int(w * rx0)), min(w, int(w * rx1))
+            y_lo, y_hi = max(0, int(h * ry0)), min(h, int(h * ry1))
+        else:
+            x_lo, x_hi, y_lo, y_hi = 0, w, 0, h
+
         weighted_lums: list[tuple[float, float]] = []   # (亮度, 权重)
-        for y in range(0, h, step):
+        for y in range(y_lo, y_hi, step):
             base = y * stride
             fy = y / h            # 0(顶)..1(底)
-            for x in range(0, w, step):
+            for x in range(x_lo, x_hi, step):
                 o = base + x * nch
                 r, g, b = data[o], data[o + 1], data[o + 2]
                 lum = relative_luminance((r, g, b))
-                fx = x / w        # 0(左)..1(右)
-                # 区域权重：右侧歌词区权重最高，底部控件区次之。
-                wgt = 0.25
-                if fx >= 0.45:                       # 右半：歌词区
+                if region is not None:
+                    # 指定区域：区域内均匀权重（区域本身已完成定位）。
                     wgt = 1.0
-                elif fx >= 0.30:                     # 中右过渡
-                    wgt = 0.6
-                if fy >= 0.80:                       # 底部：控件区
-                    wgt += 0.6
-                elif fy >= 0.65:
-                    wgt += 0.2
-                if fy <= 0.10:                       # 顶部栏
-                    wgt += 0.2
+                else:
+                    fx = x / w        # 0(左)..1(右)
+                    # 区域权重：右侧歌词区权重最高，底部控件区次之。
+                    wgt = 0.25
+                    if fx >= 0.45:                       # 右半：歌词区
+                        wgt = 1.0
+                    elif fx >= 0.30:                     # 中右过渡
+                        wgt = 0.6
+                    if fy >= 0.80:                       # 底部：控件区
+                        wgt += 0.6
+                    elif fy >= 0.65:
+                        wgt += 0.2
+                    if fy <= 0.10:                       # 顶部栏
+                        wgt += 0.2
                 weighted_lums.append((lum, wgt))
         if not weighted_lums:
             return None
@@ -263,9 +285,12 @@ def _is_dark_background(png_bytes: bytes, threshold: float):
         try:
             thr = float(threshold)
         except Exception:
-            thr = 0.38
-        if thr > 0.55:
-            thr = 0.38
+            thr = 0.55
+        # 钳到合理范围。旧代码是 `if thr > 0.55: thr = 0.38`——把任何
+        # 高于 0.55 的阈值强制打回 0.38（偏低），导致大量中灰封面判黑字。
+        # 这是 bug：高阈值本身就是「更多白字」的诉求，不该被吃掉。
+        # 现在只做安全钳制（0.20~0.85），尊重传入值。
+        thr = max(0.20, min(0.85, thr))
         return median_lum < thr
     except Exception:
         return None

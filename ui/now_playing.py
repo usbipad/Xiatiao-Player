@@ -503,6 +503,13 @@ class NowPlayingPage(Gtk.Overlay):
         fs_ratio = min(1.0, avail_w / 1200.0)
         fs = int(max(13, round(20 * fs_ratio)))
         fs_active = int(max(18, round(28 * fs_ratio)))
+        # 活动行的放大倍数 = 活动字号 / 基础字号（用 transform: scale
+        # 实现平滑动画，不改 font-size 以免触发整树重排掉帧）。
+        lyric_scale = round(fs_active / max(fs, 1), 3)
+        # transform: scale 不改变布局尺寸：长行放大后左右会溢出、被容器
+        # 裁掉（用户反馈「同一行文字多时被切」）。给每行预留水平空间——
+        # 行宽 = 歌词区宽 / scale，放大后正好填满歌词区，不溢出。
+        lyric_pad = int(max(0, lyrics_w * (1.0 - 1.0 / max(lyric_scale, 1.0)) / 2.0))
         # 封面下方歌名 / 歌手 / 格式也随窗口缩放（基准 28 / 16 / 16px）。
         fs_track = int(max(17, round(28 * fs_ratio)))
         fs_secondary = int(max(11, round(16 * fs_ratio)))
@@ -515,7 +522,8 @@ class NowPlayingPage(Gtk.Overlay):
         fs_css = (
             ".now-playing-root {\n"
             f"    --np-lyric-fs: {fs}px;\n"
-            f"    --np-lyric-fs-active: {fs_active}px;\n"
+            f"    --np-lyric-scale: {lyric_scale};\n"
+            f"    --np-lyric-pad: {lyric_pad}px;\n"
             f"    --np-track-name-fs: {fs_track}px;\n"
             f"    --np-secondary-fs: {fs_secondary}px;\n"
             f"    --np-btn: {btn}px;\n"
@@ -639,12 +647,19 @@ class NowPlayingPage(Gtk.Overlay):
         except Exception:
             pass
 
-    def set_bg_texture(self, texture, dark=None) -> None:
+    def set_bg_texture(self, texture, dark=None,
+                       title_dark=None, lyrics_dark=None) -> None:
         """设置背景层的模糊封面图（None 时清空，露出纯色背景）。
 
         纹理由后台线程用 make_blurred_bg 生成好，主线程只 set_paintable。
-        dark: True/False 显式指定背景明暗（切换前景色）；None 时不动。
+        dark: 全局背景明暗（顶部栏/进度条等用）；None 时不动。
+        title_dark / lyrics_dark: 歌名区 / 歌词区各自的明暗判定（应对
+            「左黑右白」这类双色封面，让两块文字各自选黑/白）；
+            None 时回退全局 dark。
         """
+        # 记录分区明暗，供 _apply_plain_fg 注入两套前景色。
+        self._title_dark = title_dark
+        self._lyrics_dark = lyrics_dark
         # 显式断开旧纹理再设新：Gtk.Picture.set_paintable(new) 理论上会替换
         # 旧 paintable，但 GDK 对旧纹理的释放有延迟/可能被渲染缓存持有，
         # 表现为「切歌越多内存越涨且不回落」。先置 None 促使旧纹理尽快释放。
@@ -863,12 +878,19 @@ class NowPlayingPage(Gtk.Overlay):
             pass
 
     def _apply_plain_fg(self, dark: bool) -> None:
-        """按明暗注入纯黑白前景（无封面主色可依据时使用）。
+        """按明暗注入前景色（模糊背景图模式：只有明暗、无精确主色）。
 
-        与 _apply_fg_colors 的区别：不做对比度选色，直接按 dark 用黑/白，
-        适用于「背景是模糊图，只能判明暗、拿不到主色」的场景。
+        - 暗背景（dark=True）：白色前景（保持纯白，深底上干净）。
+        - 亮背景（dark=False）：**带背景色相的柔和深色**，而非死黑
+          `#1a1a1a`——纯黑压亮底观感生硬（用户反馈）。色相取自当前
+          背景色（封面主色）的色相，亮度压深、饱和度极低，得到
+          「深蓝灰 / 深棕 / 深墨绿」这类带色深色，与封面同一语境。
+          取不到色相时回退纯深灰。
         """
-        primary = (255, 255, 255) if dark else (26, 26, 26)
+        if dark:
+            primary = (255, 255, 255)
+        else:
+            primary = self._tinted_dark_fg()
         dec = {"is_dark": dark, "primary": primary, "dim": primary,
                "faint": primary, "on_primary": primary}
         self._fg_decision = dec
@@ -876,11 +898,30 @@ class NowPlayingPage(Gtk.Overlay):
             dim_a, faint_a = 0.82, 0.68
         else:
             dim_a, faint_a = 0.75, 0.58
+
+        # 分区前景：歌名区 / 歌词区各自按自己的明暗判定选黑/白。
+        # 未提供分区判定（None）时回退全局 dark。用「左黑右白」双色封面时，
+        # 歌名与歌词会得到相反的黑/白，各自可读（此前只能二选一，必然一半错）。
+        t_dark = getattr(self, "_title_dark", None)
+        if t_dark is None:
+            t_dark = dark
+        l_dark = getattr(self, "_lyrics_dark", None)
+        if l_dark is None:
+            l_dark = dark
+        title_fg = (255, 255, 255) if t_dark else self._tinted_dark_fg()
+        lyric_fg = (255, 255, 255) if l_dark else self._tinted_dark_fg()
+        t_dim_a, t_faint_a = (0.82, 0.68) if t_dark else (0.75, 0.58)
+        l_dim_a, l_faint_a = (0.82, 0.68) if l_dark else (0.75, 0.58)
         css = (
             ".now-playing-root {\n"
             f"    --np-fg: {rgb_to_css(primary)};\n"
             f"    --np-fg-dim: {rgb_to_css(primary, dim_a)};\n"
             f"    --np-fg-faint: {rgb_to_css(primary, faint_a)};\n"
+            f"    --np-title-fg: {rgb_to_css(title_fg)};\n"
+            f"    --np-title-fg-dim: {rgb_to_css(title_fg, t_dim_a)};\n"
+            f"    --np-lyric-fg: {rgb_to_css(lyric_fg)};\n"
+            f"    --np-lyric-fg-dim: {rgb_to_css(lyric_fg, l_dim_a)};\n"
+            f"    --np-lyric-fg-faint: {rgb_to_css(lyric_fg, l_faint_a)};\n"
             "}\n"
         )
         if css == self._fg_css_last:
@@ -906,6 +947,26 @@ class NowPlayingPage(Gtk.Overlay):
             self._progress.set_dark(bool(dark))
         except Exception:
             pass
+
+    def _tinted_dark_fg(self) -> tuple[int, int, int]:
+        """亮背景下的深色前景：带背景色相、非死黑。
+
+        取背景色相 H，用低亮度（0.17）、低饱和（0.14）生成——比纯黑
+        `#1a1a1a`（亮度 0.10、无饱和）更柔和、更「成套」，但仍是深色，
+        在亮背景（阈值判亮时背景加权亮度 >=0.55）上对比度足够。
+        取不到背景色相时回退 (26,26,26)。
+        """
+        try:
+            import colorsys
+            hint = getattr(self, "_bg_color_rgb", None)
+            if not hint:
+                return (26, 26, 26)
+            r, g, b = hint
+            h, _l, _s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+            rr, gg, bb = colorsys.hls_to_rgb(h, 0.17, 0.14)
+            return (int(rr * 255), int(gg * 255), int(bb * 255))
+        except Exception:
+            return (26, 26, 26)
 
     @staticmethod
     def _is_dark(r: int, g: int, b: int) -> bool:
