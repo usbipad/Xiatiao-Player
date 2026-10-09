@@ -10,87 +10,8 @@ from __future__ import annotations
 from typing import Callable, List, Optional
 
 from core.i18n import _
-from core.tasks import run_cover_async
 
 from .online_section import CardSection
-
-#: 卡片封面显示尺寸
-CARD_COVER_PX = 160
-#: 封面到容器边缘的距离（给 hover 浮起/阴影留空间）
-_GAP = 12
-#: 卡片容器宽度（封面 + 阴影留白）
-_CARD_W = CARD_COVER_PX + _GAP * 2
-#: 折叠时显示的行数
-_COLLAPSED_ROWS = 1
-#: 折叠态高度（一行卡片）
-_COLLAPSED_H = 200
-#: 展开态高度上限（-1 = 放开，由外层主页滚动接管）
-_EXPANDED_H = -1
-
-
-def _load_url_cover_async(url: str, on_done) -> None:
-    """后台下载封面图片，回主线程回调 (pixbuf_or_none)。"""
-    import urllib.request
-
-    def _work():
-        try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return resp.read()
-        except Exception:
-            return None
-
-    # 缓存键：与 song_list / player_panel 一致（"url::" 前缀，同一 LRU）。
-    ckey = "url::" + url
-    try:
-        from .pages.common import cache_get, cache_put, MISS
-    except Exception:
-        cache_get = cache_put = None
-        MISS = object()
-    if cache_get is not None:
-        cached = cache_get(ckey)
-        if cached is not MISS:
-            on_done(cached)
-            return
-
-    def _done(raw):
-        if not raw:
-            try:
-                cache_put(ckey, None)
-            except Exception:
-                pass
-            on_done(None)
-            return
-        try:
-            from gi.repository import GdkPixbuf
-            loader = GdkPixbuf.PixbufLoader.new()
-            loader.write(raw)
-            loader.close()
-            pb = loader.get_pixbuf()
-            if pb is None:
-                on_done(None)
-                return
-            # 居中裁成正方形
-            w, h = pb.get_width(), pb.get_height()
-            side = min(w, h)
-            x = (w - side) // 2
-            y = (h - side) // 2
-            if w != h:
-                pb = pb.new_subpixbuf(x, y, side, side)
-            # 缩放到封面尺寸
-            pb = pb.scale_simple(
-                CARD_COVER_PX, CARD_COVER_PX, GdkPixbuf.InterpType.BILINEAR)
-            from .online_section import _pixbuf_to_texture
-            tex = _pixbuf_to_texture(pb)
-            try:
-                cache_put(ckey, tex)
-            except Exception:
-                pass
-            on_done(tex)
-        except Exception:
-            on_done(None)
-
-    run_cover_async(work=_work, on_done=_done)
 
 
 class OnlinePlaylistSection(CardSection):

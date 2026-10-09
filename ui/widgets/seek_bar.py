@@ -33,11 +33,6 @@ BAR_H = 5          # 轨道高度
 THUMB_R = 7        # 滑块半径
 
 
-def fmt_seconds(seconds: float) -> str:
-    s = int(seconds or 0)
-    return f"{s // 60}:{s % 60:02d}"
-
-
 class SeekBar(Gtk.DrawingArea):
     """带 seek 交互的横向进度条（自绘）。"""
 
