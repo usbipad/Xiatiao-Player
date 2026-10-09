@@ -41,9 +41,28 @@ class LikedStore(SqliteStore):
                         source_type TEXT,
                         source_id TEXT,
                         cover_url TEXT,
+                        sample_rate INTEGER,
+                        bit_depth INTEGER,
+                        channels INTEGER,
+                        bitrate INTEGER,
+                        format_hint TEXT,
                         liked_at REAL
                     )"""
                 )
+                # 旧库迁移：补充技术参数 + format_hint 列
+                # （在线歌 DSD/DXD/HR 徽章判定用；与历史库对齐）。
+                existing = {
+                    row[1] for row in conn.execute("PRAGMA table_info(liked_tracks)")
+                }
+                for col, typ in (("sample_rate", "INTEGER"), ("bit_depth", "INTEGER"),
+                                 ("channels", "INTEGER"), ("bitrate", "INTEGER"),
+                                 ("format_hint", "TEXT")):
+                    if col in existing:
+                        continue
+                    try:
+                        conn.execute(f"ALTER TABLE liked_tracks ADD COLUMN {col} {typ}")
+                    except sqlite3.Error as exc:
+                        log.debug("补充喜欢库列 %s 失败: %s", col, exc)
                 conn.commit()
         except sqlite3.Error as exc:
             log.warning("初始化喜欢库失败: %s", exc)
@@ -71,8 +90,9 @@ class LikedStore(SqliteStore):
                 conn.execute(
                     """INSERT OR REPLACE INTO liked_tracks
                     (key,title,artist,album,duration,duration_seconds,filepath,
-                     source_type,source_id,cover_url,liked_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                     source_type,source_id,cover_url,sample_rate,bit_depth,
+                     channels,bitrate,format_hint,liked_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         self._key(track),
                         getattr(track, "title", ""),
@@ -84,6 +104,11 @@ class LikedStore(SqliteStore):
                         getattr(track, "source_type", "") or "",
                         getattr(track, "source_id", "") or "",
                         getattr(track, "cover_url", "") or "",
+                        int(getattr(track, "sample_rate", 0) or 0),
+                        int(getattr(track, "bit_depth", 0) or 0),
+                        int(getattr(track, "channels", 0) or 0),
+                        int(getattr(track, "bitrate", 0) or 0),
+                        str(getattr(track, "format_hint", "") or ""),
                         time.time(),
                     ),
                 )

@@ -87,16 +87,22 @@ def track_from_row(r: dict, stream_url: str = ""):
         from models import TrackItem, SOURCE_LOCAL
         source_type = r.get("source_type") or SOURCE_LOCAL
         filepath = r.get("filepath") or ""
-        rate = depth = channels = bitrate = 0
+        # 先取 DB 行里的技术参数（在线歌的关键：stream_url 无扩展名，
+        # 只能靠这些实测值 + format_hint 判 DSD/DXD/HR 徽章）。
+        rate = int(r.get("sample_rate") or 0)
+        depth = int(r.get("bit_depth") or 0)
+        channels = int(r.get("channels") or 0)
+        bitrate = int(r.get("bitrate") or 0)
+        # 本地文件：再用 mutagen 实时读取覆盖（DB 值可能缺失/过时）。
         if source_type == SOURCE_LOCAL and filepath:
             try:
                 from providers.local import LocalProvider
                 tech = LocalProvider._read_tech_mutagen(filepath)
                 if tech:
-                    rate = tech.get("sample_rate", 0) or 0
-                    depth = tech.get("bit_depth", 0) or 0
-                    channels = tech.get("channels", 0) or 0
-                    bitrate = tech.get("bitrate", 0) or 0
+                    rate = tech.get("sample_rate", 0) or rate
+                    depth = tech.get("bit_depth", 0) or depth
+                    channels = tech.get("channels", 0) or channels
+                    bitrate = tech.get("bitrate", 0) or bitrate
             except Exception:
                 pass
         return TrackItem(
@@ -114,6 +120,7 @@ def track_from_row(r: dict, stream_url: str = ""):
             bit_depth=depth,
             channels=channels,
             bitrate=bitrate,
+            format_hint=r.get("format_hint") or "",
         )
     except Exception:
         return None

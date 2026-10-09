@@ -1670,6 +1670,7 @@ class MainWindow(Adw.ApplicationWindow):
                         bit_depth=int(r.get("bit_depth") or 0),
                         channels=int(r.get("channels") or 0),
                         bitrate=int(r.get("bitrate") or 0),
+                        format_hint=r.get("format_hint") or "",
                     ))
                 except Exception:
                     continue
@@ -1763,6 +1764,7 @@ class MainWindow(Adw.ApplicationWindow):
                         bit_depth=int(r.get("bit_depth") or 0),
                         channels=int(r.get("channels") or 0),
                         bitrate=int(r.get("bitrate") or 0),
+                        format_hint=r.get("format_hint") or "",
                     ))
                 except Exception:
                     continue

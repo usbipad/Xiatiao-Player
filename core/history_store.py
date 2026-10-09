@@ -48,6 +48,7 @@ class HistoryStore(SqliteStore):
                         bit_depth INTEGER,
                         channels INTEGER,
                         bitrate INTEGER,
+                        format_hint TEXT,
                         played_at REAL
                     )"""
                 )
@@ -58,7 +59,8 @@ class HistoryStore(SqliteStore):
                     row[1] for row in conn.execute("PRAGMA table_info(history_tracks)")
                 }
                 for col, typ in (("sample_rate", "INTEGER"), ("bit_depth", "INTEGER"),
-                                 ("channels", "INTEGER"), ("bitrate", "INTEGER")):
+                                 ("channels", "INTEGER"), ("bitrate", "INTEGER"),
+                                 ("format_hint", "TEXT")):
                     if col in existing:
                         continue
                     try:
@@ -85,8 +87,8 @@ class HistoryStore(SqliteStore):
                     """INSERT OR REPLACE INTO history_tracks
                     (key,title,artist,album,duration,duration_seconds,filepath,
                      source_type,source_id,cover_url,sample_rate,bit_depth,
-                     channels,bitrate,played_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     channels,bitrate,format_hint,played_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         self._key(track),
                         getattr(track, "title", ""),
@@ -102,6 +104,7 @@ class HistoryStore(SqliteStore):
                         int(getattr(track, "bit_depth", 0) or 0),
                         int(getattr(track, "channels", 0) or 0),
                         int(getattr(track, "bitrate", 0) or 0),
+                        str(getattr(track, "format_hint", "") or ""),
                         time.time(),
                     ),
                 )
