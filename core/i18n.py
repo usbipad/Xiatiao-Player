@@ -602,15 +602,6 @@ def get_language() -> str:
     return _current
 
 
-def get_setting() -> str:
-    """返回配置里的语言选项（system / zh / en）。"""
-    try:
-        from config.settings import get_config
-        return get_config().get_str(CONFIG_KEY, "system")
-    except Exception:
-        return "system"
-
-
 def set_language(lang: str) -> None:
     """设置语言（system / zh / en），持久化并立即更新当前语言。"""
     global _current

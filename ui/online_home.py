@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional
 
-from gi.repository import Gdk, Gtk
-
 from core.i18n import _
 from core.tasks import run_cover_async
 
@@ -93,101 +91,6 @@ def _load_url_cover_async(url: str, on_done) -> None:
             on_done(None)
 
     run_cover_async(work=_work, on_done=_done)
-
-
-def _make_playlist_card(pl, on_click: Optional[Callable] = None) -> Gtk.Widget:
-    """构建单个歌单卡片（封面 + 名字 + 歌曲数）。"""
-    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-    box.set_size_request(_CARD_W, -1)
-    box.add_css_class("media-card")
-    box.set_valign(Gtk.Align.START)
-
-    # 封面容器
-    cover_frame = Gtk.Frame()
-    cover_frame.add_css_class("media-card-cover")
-    cover_frame.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
-    cover_frame.set_halign(Gtk.Align.CENTER)
-    cover_frame.set_valign(Gtk.Align.START)
-    # 四周留白：给 hover 浮起 / 阴影扩散留空间
-    cover_frame.set_margin_start(_GAP)
-    cover_frame.set_margin_end(_GAP)
-    cover_frame.set_margin_top(6)
-
-    holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-    # 占位图标
-    ph = Gtk.Image.new_from_icon_name("media-optical-symbolic")
-    ph.set_pixel_size(48)
-    ph.set_halign(Gtk.Align.CENTER)
-    ph.set_valign(Gtk.Align.CENTER)
-    ph.set_vexpand(True)
-    holder.append(ph)
-    cover_frame.set_child(holder)
-    box.append(cover_frame)
-
-    # 名字
-    name_lbl = Gtk.Label(label=pl.name)
-    name_lbl.set_ellipsize(3)
-    name_lbl.set_max_width_chars(14)
-    name_lbl.set_size_request(CARD_COVER_PX, -1)
-    name_lbl.set_margin_start(_GAP)
-    name_lbl.set_margin_end(_GAP)
-    name_lbl.add_css_class("media-card-title")
-    box.append(name_lbl)
-
-    # 歌曲数（有平台标签时附带）
-    sub_text = f"{pl.song_count} {_('首')}" if pl.song_count else ""
-    sub_lbl = Gtk.Label(label=sub_text)
-    sub_lbl.set_size_request(CARD_COVER_PX, -1)
-    sub_lbl.set_margin_start(_GAP)
-    sub_lbl.set_margin_end(_GAP)
-    sub_lbl.add_css_class("media-card-subtitle")
-    box.append(sub_lbl)
-
-    # 异步加载封面
-    if pl.cover_url:
-        try:
-            from .pages.common import cover_activity as _ca
-            _ca.mark_busy()
-        except Exception:
-            _ca = None
-
-        def _on_cover(tex):
-            try:
-                if tex is not None:
-                    pic = Gtk.Picture()
-                    pic.set_paintable(tex)
-                    pic.set_content_fit(Gtk.ContentFit.COVER)
-                    pic.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
-                    pic.set_hexpand(True)
-                    pic.set_vexpand(True)
-                    # 替换占位
-                    child = holder.get_first_child()
-                    while child is not None:
-                        nxt = child.get_next_sibling()
-                        holder.remove(child)
-                        child = nxt
-                    holder.append(pic)
-            except Exception as exc:
-                import logging
-                logging.getLogger(__name__).warning("歌单封面渲染失败: %s", exc)
-            # 设图后「下一帧」再 mark_idle，让图先渲染。
-            try:
-                if _ca is not None:
-                    from gi.repository import GLib as _GLib
-                    _GLib.idle_add(lambda: (_ca.mark_idle(), False)[1])
-            except Exception:
-                pass
-
-        _load_url_cover_async(pl.cover_url, _on_cover)
-
-    # 点击
-    if on_click is not None:
-        click = Gtk.GestureClick()
-        click.connect("released", lambda *_a: on_click(pl))
-        box.add_controller(click)
-        box.set_cursor(Gdk.Cursor.new_from_name("pointer", None))
-
-    return box
 
 
 class OnlinePlaylistSection(CardSection):

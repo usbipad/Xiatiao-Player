@@ -538,35 +538,6 @@ def _average_color(surf, lighten: float) -> tuple[int, int, int]:
     return (r, g, b)
 
 
-def _shrink_for_color(image_bytes: bytes, size: int = 64) -> bytes | None:
-    """把封面缩到 size x size 的 PNG 字节（用于快速取色）。失败返回 None。"""
-    try:
-        import gi
-
-        gi.require_version("GdkPixbuf", "2.0")
-        from gi.repository import GdkPixbuf, Gio, GLib
-
-        stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(image_bytes))
-        pixbuf = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
-        w, h = pixbuf.get_width(), pixbuf.get_height()
-        if w <= 0 or h <= 0:
-            return None
-        scale = max(size / w, size / h)
-        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-        scaled = pixbuf.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)
-        x = (nw - size) // 2
-        y = (nh - size) // 2
-        sq = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, size, size)
-        sq.fill(0x00000000)
-        scaled.composite(sq, 0, 0, size, size, -x, -y, 1.0, 1.0,
-                         GdkPixbuf.InterpType.BILINEAR, 255)
-        ok, buf = sq.save_to_bufferv("png", [], [])
-        return bytes(buf) if ok else None
-    except Exception as exc:
-        log.debug("缩图取色失败: %s", exc)
-        return None
-
-
 def _color_via_gdk(image_bytes: bytes, lighten: float) -> tuple[int, int, int] | None:
     """非 PNG 图片：用 Gdk 解码后取色。"""
     try:
@@ -613,39 +584,6 @@ def make_square_cover_bytes(image_bytes: bytes, size: int,
         return _square_cover_via_cairo(image_bytes, size, radius)
     except Exception as exc:
         log.debug("封面缩放失败(cairo): %s", exc)
-        return image_bytes
-
-
-def _preshrink_if_huge(image_bytes: bytes, size: int) -> bytes:
-    """若封面远大于目标尺寸，解码一次并缩到目标 2 倍以内，返回小图 PNG。
-
-    背景：内嵌封面可能高达 6000x6000（36MP），GdkPixbuf 解码就要 ~116ms。
-    旧实现里预缩 + cairo 路径会各解码一次大图（白花一倍时间）。
-    这里解码一次 → scale_simple（C 实现，快）→ 输出小图 PNG，
-    之后 cairo 路径处理的是小图，几乎无开销。
-    尺寸已够小则原样返回（不引入多余的解码/编码）。
-    """
-    try:
-        import gi
-
-        gi.require_version("GdkPixbuf", "2.0")
-        from gi.repository import GdkPixbuf, Gio, GLib
-
-        stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(image_bytes))
-        pb = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
-        if pb is None:
-            return image_bytes
-        w, h = pb.get_width(), pb.get_height()
-        limit = size * 2
-        if max(w, h) <= limit:
-            return image_bytes   # 已经够小，交给后续路径
-        scale = max(limit / w, limit / h)
-        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-        small = pb.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)
-        ok, buf = small.save_to_bufferv("png", [], [])
-        return bytes(buf) if ok else image_bytes
-    except Exception as exc:
-        log.debug("预缩放大图失败: %s", exc)
         return image_bytes
 
 
@@ -1161,52 +1099,3 @@ def make_blurred_bg(image_bytes: bytes, out_w: int = 640, out_h: int = 480,
     except Exception as exc:
         log.debug("生成模糊背景失败: %s", exc)
         return None
-
-
-def _apply_round_corners(pixbuf, radius: int):
-    """把 pixbuf 四角裁成透明圆角（用 cairo clip 后重绘）。
-
-    流程：pixbuf -> PNG -> cairo 表面 -> 圆角 clip 后绘制 -> PNG -> pixbuf。
-    走 PNG 中转可避免 new_from_data 的内存生命周期问题，最稳。
-    """
-    import io
-
-    import cairo
-    import gi
-
-    gi.require_version("GdkPixbuf", "2.0")
-    from gi.repository import GdkPixbuf
-
-    w, h = pixbuf.get_width(), pixbuf.get_height()
-    r = min(radius, w // 2, h // 2)
-
-    # pixbuf -> PNG bytes
-    ok, src_png = pixbuf.save_to_bufferv("png", [], [])
-    if not ok:
-        return pixbuf
-    # 读入 cairo 表面
-    src_surf = cairo.ImageSurface.create_from_png(io.BytesIO(bytes(src_png)))
-
-    # 新建带 alpha 的目标表面
-    dst_surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
-    ctx = cairo.Context(dst_surf)
-    # 圆角矩形路径
-    ctx.new_sub_path()
-    ctx.arc(w - r, r, r, -1.5708, 0)
-    ctx.arc(w - r, h - r, r, 0, 1.5708)
-    ctx.arc(r, h - r, r, 1.5708, 3.1416)
-    ctx.arc(r, r, r, 3.1416, 4.7124)
-    ctx.close_path()
-    ctx.clip()
-    # 在圆角内绘制原图
-    ctx.set_source_surface(src_surf, 0, 0)
-    ctx.paint()
-    dst_surf.flush()
-
-    # cairo 表面 -> PNG bytes -> pixbuf
-    out = io.BytesIO()
-    dst_surf.write_to_png(out)
-    stream = gi.repository.Gio.MemoryInputStream.new_from_bytes(
-        gi.repository.GLib.Bytes.new(out.getvalue())
-    )
-    return GdkPixbuf.Pixbuf.new_from_stream(stream, None)

@@ -177,10 +177,6 @@ BUILTIN_PRESETS: List[Dict[str, Any]] = [
 ]
 
 
-def preset_names() -> List[str]:
-    return [p["name"] for p in BUILTIN_PRESETS]
-
-
 def get_preset(name: str) -> Dict[str, Any] | None:
     for p in BUILTIN_PRESETS:
         if p["name"] == name:

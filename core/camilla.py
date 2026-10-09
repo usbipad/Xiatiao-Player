@@ -295,23 +295,6 @@ def _ir_channel_count(path: str) -> int:
         return 0
 
 
-def _ir_frame_count(path: str) -> int:
-    """读取 WAV/IRS 的帧数（不依赖 PyYAML；失败返回 0）。"""
-    try:
-        import wave
-        with wave.open(path, "rb") as w:
-            return int(w.getnframes())
-    except Exception:
-        pass
-    # 兜底：按 32-bit 立体声 WAV 估算（去掉 ~44 字节头）
-    try:
-        import os
-        sz = os.path.getsize(path)
-        return max(0, (sz - 44) // 8)
-    except Exception:
-        return 0
-
-
 def _wrap(samplerate: int, channels: int, sink: str,
           filters: Dict, processors: Dict, mixers: Dict,
           pipeline: List[Dict], chunksize: int = 1024) -> Dict[str, Any]:

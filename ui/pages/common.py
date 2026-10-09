@@ -266,27 +266,6 @@ def section_title(text: str) -> Gtk.Label:
     return label
 
 
-def add_hwheel_scroll(scroll: Gtk.ScrolledWindow) -> None:
-    """给横向 ScrolledWindow 挂滚轮：普通滚轮（竖向）也驱动横向滚动。"""
-    try:
-        def _on_scroll(_ctrl, _dx, dy):
-            try:
-                adj = scroll.get_hadjustment()
-                if adj is None:
-                    return False
-                step = adj.get_step_increment() or 40.0
-                adj.set_value(adj.get_value() + (dy * -step if dy else 0))
-                return True
-            except Exception:
-                return False
-
-        ctrl = Gtk.EventControllerScroll.new(Gtk.EventControllerScrollFlags.VERTICAL)
-        ctrl.connect("scroll", _on_scroll)
-        scroll.add_controller(ctrl)
-    except Exception:
-        pass
-
-
 # ================================================================
 # 排序
 # ================================================================

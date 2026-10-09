@@ -72,16 +72,6 @@ class PlaylistInfo:
     description: str = ""
 
 
-@dataclass
-class UserProfile:
-    """平台无关的用户资料（扩展端点 getUserProfile 返回）。"""
-    username: str = ""
-    nickname: str = ""
-    avatar_url: str = ""
-    is_vip: bool = False
-    source: str = ""
-
-
 class SubsonicError(Exception):
     """Subsonic 请求/解析错误。"""
 

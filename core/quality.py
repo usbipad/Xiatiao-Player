@@ -214,13 +214,6 @@ def dsd_spec_from_rate(sample_rate: int) -> str:
     return "dsd"
 
 
-def is_multichannel(info: dict) -> bool:
-    """是否多声道（>2 声道）。"""
-    if not isinstance(info, dict):
-        return False
-    return _to_int(info.get("channels")) > 2
-
-
 def multichannel_label(info: dict) -> str:
     """多声道标签（如 '5.1' / '4.0' / '6ch'）；非多声道返回空串。"""
     if not isinstance(info, dict):

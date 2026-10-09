@@ -252,35 +252,6 @@ def _on_cover_setup(_factory, list_item) -> None:
     list_item._cover_ph = ph_icon
 
 
-def _on_indicator_setup(_factory, list_item) -> None:
-    """指示器列单元格：一个播放跳动指示器（默认隐藏）。"""
-    indicator = PlayingIndicator(width=INDICATOR_SIZE, height=INDICATOR_SIZE)
-    indicator.set_halign(Gtk.Align.CENTER)
-    indicator.set_valign(Gtk.Align.CENTER)
-    # 与右侧封面之间留出间距（避免音符贴着封面显得挤）。
-    indicator.set_margin_end(10)
-    indicator.set_visible(False)
-    list_item.set_child(indicator)
-    list_item._indicator = indicator
-
-
-def _on_indicator_bind(_factory, list_item) -> None:
-    """指示器列：记录本行键，显隐由指示器自身每帧比对。"""
-    item = list_item.get_item()
-    indicator = getattr(list_item, "_indicator", None)
-    if indicator is None:
-        return
-    row_key = ""
-    if item is not None:
-        row_key = (getattr(item, "filepath", "") or getattr(item, "source_id", "")
-                   or getattr(item, "title", ""))
-    indicator.set_row_key(row_key)
-    try:
-        indicator.sync_now()
-    except Exception:
-        pass
-
-
 def _on_cover_bind(_factory, list_item) -> None:
     item = list_item.get_item()
     # 封面 cell 现在是 Box[指示器 + Overlay]，用存的属性取 overlay。
