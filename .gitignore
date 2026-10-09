@@ -62,16 +62,8 @@ squashfs-root/
 # 代码审查/体检记录（本地留存，不入库）
 reviews/
 
-# 测试代码现已纳入版本控制（见 tests/，run_all.sh 一键运行）：
-#   - smoke_test.py           冒烟自检（导入 / provider / 核心）
-#   - test_boundary.py        边界/单元（音质 / 配置 / 存储 / 队列）
-#   - test_dsp_state.py       DspState 单一真相源
-#   - test_ipc_protocol.py    IPC 契约与 Rust protocol.rs 对齐
-#   - test_online_lyrics.py   在线歌词加载/去重
-#   - test_replaygain_apply.py ReplayGain 读取/应用
-#   - test_seekbar.py         SeekBar 拖动状态机
-#   - integration_api.py      与 Subsonic 服务端联动（不可达自动跳过）
-# 这些是重构的安全网，必须随代码提交。
+# 测试代码（本地留存，不入库）
+tests/
 
 # 个人开发过程记录（本地留存，不入库）
 HANDOVER_DSD_SEEK.md
