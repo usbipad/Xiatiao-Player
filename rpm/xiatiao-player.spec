@@ -1,5 +1,5 @@
 Name:           xiatiao-player
-Version:        1.0.4
+Version:        1.0.5
 Release:        1%{?dist}
 Summary:        GTK4 local music player with a Rust audio backend
 
@@ -114,5 +114,8 @@ update-desktop-database %{_datadir}/applications &>/dev/null || :
 %{_libdir}/xiatiao-player/
 
 %changelog
+* Fri Oct 09 2026 usbipad <usbipad@163.com> - 1.0.5-1
+- Update to 1.0.5
+
 * Sun Sep 27 2026 usbipad <usbipad@163.com> - 1.0.4-1
 - Initial RPM package (1.0.4)

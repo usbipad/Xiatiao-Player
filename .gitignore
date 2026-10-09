@@ -83,6 +83,18 @@ docs/HANDOVER.md
 tools/audit_undef.py
 tools/test_lazy.py
 
+# 仅本地保留、不入库的工具与打包脚本（从版本控制移除）
+#   - chroot/sbuild 专用构建（跨 glibc 基线，本地发 release 才用）
+tools/build_deb_debian12.sh
+tools/prepare_debian12_chroot.sh
+#   - 内存诊断工具（依赖本地复现环境）
+tools/memprobe.py
+tools/memprobe_run.py
+#   - 图标生成脚本（源图 image.png 不入库，克隆后跑不了）
+tools/gen_icons.py
+#   - AUR 打包配置（仅保留 RPM 打包）
+packaging/aur/
+
 # 本地 AI 助手 skill（webcode 用，仅本地留存，不入库）
 .agents/
 .codex/
