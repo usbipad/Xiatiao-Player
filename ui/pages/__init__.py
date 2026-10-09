@@ -39,6 +39,17 @@ _COLLAPSED_ROWS = 1
 #: 单行高度估算
 _ROW_H = 210
 
+#: 折叠横向区「初始构建」的卡片数。
+#:
+#: 背景：折叠区（主页专辑/艺术家默认状态）此前一次性构建全部分组卡片。
+#: 曲库大时（如 321 专辑 + 253 艺术家 = 574 张卡，约 4700 个控件），
+#: 窗口最大化/resize 时 GTK 要重新布局这一万多个控件，主线程被卡住
+#: ~300ms，表现为「点最大化后动画延迟一下才出来」。
+#: 改为按需分批：初始只建前 N 张，横向滚动接近末尾时再追加，功能不变。
+_HBOX_INITIAL = 24
+#: 每次追加的卡片数。
+_HBOX_CHUNK = 24
+
 # 兼容旧私有名（window/player_panel 里有 from ui.pages import _cache_get, _MISS）
 _cache_get = cache_get
 _cache_put = cache_put
@@ -783,35 +794,77 @@ class LocalLibraryPage(Gtk.Box):
         except Exception:
             pass
 
+    def _hbox_sorted_names(self) -> list:
+        """折叠横向区分组的展示顺序（按名小写排序）。"""
+        groups = getattr(self, "_grid_groups", {}) or {}
+        return sorted(groups.keys(), key=lambda s: s.lower())
+
+    def _append_hbox_cards(self, count: int) -> None:
+        """从当前进度追加 count 张卡片到横向区（分批构建）。"""
+        groups = getattr(self, "_grid_groups", {}) or {}
+        names = self._hbox_sorted_names()
+        start = int(getattr(self, "_hbox_built_count", 0))
+        end = min(start + max(0, int(count)), len(names))
+        if start >= end:
+            return
+        group_items = list(groups.items())
+        rotate_on = self._card_rotate_enabled()
+        for name in names[start:end]:
+            items = groups[name]
+            hcard = None
+            try:
+                hcard = make_group_card(name, items, self._enter_group)
+                self._hbox.append(hcard)
+            except Exception:
+                hcard = None
+            if hcard is not None and rotate_on:
+                self._schedule_card_rotate(hcard, group_items)
+        self._hbox_built_count = end
+
     def _ensure_hbox_cards(self) -> None:
-        """懒构建折叠视图（横向一排）的卡片。
+        """懒构建折叠视图（横向一排）的卡片——**分批**。
 
         折叠视图此前与展开网格各建一份卡片，每组封面被解码两次、
-        控件数量翻倍。改为仅在需要折叠时构建，展开时不产生这份开销。
+        控件数量翻倍；且一次性构建全部分组卡片，曲库大时控件上万，
+        窗口 resize 重排极慢。现改为：初始只建 _HBOX_INITIAL 张，
+        横向滚动接近末尾时再按 _HBOX_CHUNK 追加（功能不变，仍能滚到全部）。
         """
         if getattr(self, "_hbox_built", False):
             return
         self._hbox_built = True
+        self._hbox_built_count = 0
         try:
-            groups = getattr(self, "_grid_groups", {}) or {}
-            group_items = list(groups.items())
-            if not group_items:
-                return
-            rotate_on = self._card_rotate_enabled()
-            for name in sorted(groups.keys(), key=lambda s: s.lower()):
-                items = groups[name]
-                hcard = None
-                try:
-                    hcard = make_group_card(name, items, self._enter_group)
-                    self._hbox.append(hcard)
-                except Exception:
-                    hcard = None
-                # 全部卡片都参与轮播：此前只调度前 12 张，横向滚动到
-                # 中后段的卡片不会轮播。不可见卡片由 _rotate_card 内部节流跳过。
-                if hcard is not None and rotate_on:
-                    self._schedule_card_rotate(hcard, group_items)
+            self._append_hbox_cards(_HBOX_INITIAL)
+            self._arm_hbox_scroll_more()
         except Exception:
             pass
+
+    def _arm_hbox_scroll_more(self) -> None:
+        """给折叠横向滚动区挂「接近末尾 → 追加卡片」钩子（只挂一次）。"""
+        if getattr(self, "_hbox_scroll_hooked", False):
+            return
+        self._hbox_scroll_hooked = True
+        try:
+            hadj = self._h_scroll.get_hadjustment()
+            if hadj is not None:
+                hadj.connect("value-changed", self._on_hbox_scroll)
+        except Exception:
+            pass
+
+    def _on_hbox_scroll(self, adj) -> None:
+        """横向滚动接近末尾时追加下一批卡片。"""
+        try:
+            remaining = adj.get_upper() - adj.get_page_size() - adj.get_value()
+        except Exception:
+            return
+        if remaining > 400:
+            return
+        names = self._hbox_sorted_names()
+        if int(getattr(self, "_hbox_built_count", 0)) < len(names):
+            try:
+                self._append_hbox_cards(_HBOX_CHUNK)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------
     # 卡片轮播

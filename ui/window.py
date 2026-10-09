@@ -55,6 +55,18 @@ NAV_ITEMS = [
 ]
 
 
+#: 惰性页面开关（默认开启）：切页时只把当前页挂在控件树上，
+#: 其余页面从 Stack 移出（unparent）。
+#:
+#: 为什么：GTK 的窗口重排成本 ∝ 控件树上的控件总数。不可见的页面
+#: 若仍挂在 Stack 上，窗口最大化/resize 时照样被遍历（实测曲库页
+#: 1200+ 控件会把最大化 CPU 从 ~90ms 抬到 ~170ms）。切走即摘下，
+#: 既降低重排开销，也降低常驻资源占用。
+#: 设 XIATIAO_LAZY_PAGES=0 可关闭（用于对比/排查）。
+_LAZY_PAGES = os.environ.get("XIATIAO_LAZY_PAGES", "1").strip().lower() not in (
+    "0", "false", "no", "off")
+
+
 class MainWindow(Adw.ApplicationWindow):
     """主窗口。"""
 
@@ -1012,6 +1024,15 @@ class MainWindow(Adw.ApplicationWindow):
             on_playlist_track=self._on_playlist_track,
         )
         self.stack.add_named(self.playlists_page, "playlists")
+        # 惰性页面：记录所有页面，供 _swap_stack_child 按需挂载/卸载。
+        self._stack_pages = {
+            "home": self.home_page,
+            "local": self.library_page,
+            "online": self.online_page,
+            "liked": self.liked_page,
+            "playlists": self.playlists_page,
+        }
+        self._stack_mounted = set(self._stack_pages.keys())
         # 专辑 / 艺术家页（供主页复用其数据接口，不再单独作为导航页）
         self.albums_page = self.home_page.albums_page
         self.artists_page = self.home_page.artists_page
@@ -1350,6 +1371,55 @@ class MainWindow(Adw.ApplicationWindow):
         if page is not None and hasattr(page, "set_filter_text"):
             page.set_filter_text(text)
 
+    #: 惰性页面保留数（LRU）。
+    #: 1 = 只保留当前页 → 窗口最大化始终快；代价：切到「重页面」
+    #:     （曲库/在线）时要重挂一次（一次性，~200ms）。
+    #: 2 = 保留当前页 + 上一个 → 切页快；但访问过的大页面会持续
+    #:     挂在树上，之后每次最大化都变慢（实测现象）。
+    #: 可用 XIATIAO_LAZY_KEEP 覆盖，便于对比。
+    _STACK_KEEP = max(1, int(os.environ.get("XIATIAO_LAZY_KEEP", "1") or "1"))
+
+    def _swap_stack_child(self, key: str) -> None:
+        """惰性页面：只保留最近访问的 N 个页面挂在 Stack 上。
+
+        移出的页面仍被 self._stack_pages 强引用（不被 GC），切回时
+        重新 add_named 挂回，页面内部状态（滚动位置/数据）保持不变。
+        目的：不常访问的大页面（曲库 3500+ 控件）不参与 GTK 的布局与
+        CSS 遍历，窗口最大化更快；同时用 LRU 避免来回切页反复重挂。
+        """
+        pages = getattr(self, "_stack_pages", None)
+        if not pages or key not in pages:
+            return
+        recent = getattr(self, "_stack_recent", None)
+        if recent is None:
+            recent = []
+            self._stack_recent = recent
+        if key in recent:
+            recent.remove(key)
+        recent.insert(0, key)
+        del recent[self._STACK_KEEP:]
+        keep = set(recent)
+        try:
+            # 挂载需要保留、但当前未挂的页
+            for k in keep:
+                if k not in self._stack_mounted and k in pages:
+                    self.stack.add_named(pages[k], k)
+                    self._stack_mounted.add(k)
+            # 卸载不再保留的页
+            for k in list(self._stack_mounted):
+                if k in keep:
+                    continue
+                pg = pages.get(k)
+                if pg is None:
+                    continue
+                try:
+                    self.stack.remove(pg)
+                except Exception:
+                    pass
+                self._stack_mounted.discard(k)
+        except Exception:
+            log.debug("惰性页面切换失败", exc_info=True)
+
     def _switch_page(self, key: str) -> None:
         # 切页即清空搜索框：各页搜索互不干扰。
         # 放在唯一入口 _switch_page（而非 _on_nav_clicked），未来新增切页
@@ -1361,6 +1431,12 @@ class MainWindow(Adw.ApplicationWindow):
             se.set_text("")
         # 只做「立即」的事：切页 + 高亮导航（不阻塞）
         self._active_source = key
+        # 惰性页面：切页时只保留当前页在控件树上，其余暂时移出。
+        # 目的：不可见页面（如曲库 1200+ 控件）仍挂在 Stack 上会被 GTK
+        # 布局/CSS 遍历，拖慢窗口最大化。移出后 resize 显著变快，
+        # 同时降低常驻资源占用。设 XIATIAO_LAZY_PAGES=0 可关闭。
+        if _LAZY_PAGES:
+            self._swap_stack_child(key)
         self.stack.set_visible_child_name(key)
         for k, btn in self._nav_buttons.items():
             if k == key:
@@ -3937,14 +4013,11 @@ class MainWindow(Adw.ApplicationWindow):
                 self.now_playing.viz.start()
         except Exception:
             pass
-        self._was_maximized = self.is_maximized()
-        if not self._was_maximized:
-            # 用 idle_add 延后最大化：先让切页动画立即开始，
-            # 最大化放到主循环空闲时执行，避免窗口最大化动画阻塞切页。
-            try:
-                GLib.idle_add(self.maximize)
-            except Exception:
-                self.maximize()
+        # 进入沉浸页不再自动最大化窗口：按用户当前窗口大小进入，
+        # 由响应式布局（_apply_responsive）适配尺寸。若用户本就把窗口
+        # 最大化了，则保持最大化；否则保持原窗口大小。
+        # （此前会自动 maximize，退出时再 unmaximize 还原，但用户希望
+        #  进入沉浸页不改变窗口状态，故移除。）
 
     def _apply_cover_color_for_now_playing(self) -> None:
         """进入沉浸页时：用缓存的封面原图算主色，设背景与进度条色。"""
@@ -4174,8 +4247,9 @@ class MainWindow(Adw.ApplicationWindow):
                 self._viz_pipeline.stop()
         except Exception:
             pass
-        if not getattr(self, "_was_maximized", False):
-            self.unmaximize()
+        # 退出沉浸页不再还原窗口：进入时没有改变窗口状态（见
+        # _enter_fullscreen），故退出时也不应改动——保持用户当前的
+        # 窗口最大化/大小状态不变。
 
     # ============================================================
     def apply_dsd_mode(self, mode: str) -> None:
