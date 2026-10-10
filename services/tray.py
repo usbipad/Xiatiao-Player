@@ -79,7 +79,7 @@ _MENU_XML = """
       <arg direction="in" type="i" name="recursionDepth"/>
       <arg direction="in" type="as" name="propertyNames"/>
       <arg direction="out" type="u" name="revision"/>
-      <arg direction="out" type="a(ia{sv}av)" name="layout"/>
+      <arg direction="out" type="(ia{sv}av)" name="layout"/>
     </method>
     <method name="GetGroupProperties">
       <arg direction="in" type="ai" name="ids"/>
@@ -300,25 +300,36 @@ class Tray:
         try:
             if method == "GetLayout":
                 log.info("托盘：GetLayout 被调用")
-                # DBus 方法返回值必须是「元组」，其元素依次对应 out 参数。
-                # 用 new_tuple(revision, layout) 显式组装，避免把已打包的
-                # variant 当普通值再序列化（否则类型不符 -> GLib-CRITICAL）。
-                # dbusmenu 标准：GetLayout 的 layout 出参是「结构数组」
-                # a(ia{sv}av)，而非单个 (ia{sv}av)。GNOME Shell 按标准解析，
-                # 若返回单个结构会类型不符 -> GLib 崩溃（段错误）。
+                # 返回 revision + 单个根结构 (ia{sv}av)。
+                # 与主流实现（如 libappindicator）一致：扩展按单结构解包。
                 layout = GLib.Variant.new_tuple(
                     GLib.Variant("u", self._revision),
-                    GLib.Variant.new_array(
-                        GLib.VariantType.new("(ia{sv}av)"),
-                        [self._layout()],
-                    ),
+                    self._layout(),
                 )
                 inv.return_value(layout)
                 return
             if method == "GetGroupProperties":
-                # 出参 (a(ia{sv}))：同样必须用元组包裹。
+                # 出参 (a(ia{sv}))：返回请求 id 的真实属性。
+                # 返回空数组会让 GNOME 扩展认为菜单项无属性 → 菜单空白/不显示。
+                ids, _prop_names = params.unpack()
+                items = {mid: (label, key, sep)
+                         for mid, label, key, sep in self._menu_items()}
+                out = []
+                for mid in ids:
+                    if mid not in items:
+                        continue
+                    label, _key, sep = items[mid]
+                    if sep:
+                        props = {"type": GLib.Variant("s", "separator")}
+                    else:
+                        props = {
+                            "label": GLib.Variant("s", label),
+                            "enabled": GLib.Variant("b", True),
+                            "visible": GLib.Variant("b", True),
+                        }
+                    out.append((mid, props))
                 inv.return_value(GLib.Variant.new_tuple(
-                    GLib.Variant("a(ia{sv})", [])))
+                    GLib.Variant("a(ia{sv})", out)))
                 return
             if method == "GetProperty":
                 # 出参 (v)：元组包裹一个 variant。
