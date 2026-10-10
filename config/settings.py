@@ -95,7 +95,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 界面语言：system（跟随系统）/ zh（中文）/ en（英文）
     "language": "system",
     # 沉浸页背景：开启后使用封面模糊图铺满背景（关闭则用纯色）
-    "nowplaying_blur_bg": True,
+    "nowplaying_blur_bg": False,
     # 模糊强度（越小越糊）
     "nowplaying_blur_px": 6,
     # 背景亮度自适应阈值（WCAG 相对亮度）：背景加权亮度**低于**此值时
@@ -106,7 +106,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # 主界面背景是否跟随当前封面主色调（关闭则用主题色 @view_bg_color）
     "main_bg_follow_cover": False,
     # 进度条已播段是否跟随当前封面主色（关闭则用默认深灰/白）
-    "progress_follow_cover": True,
+    "progress_follow_cover": False,
     # ---- 行为 ----
     "auto_scan_on_start": True,
     "close_to_tray": False,
@@ -127,7 +127,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "vol_down": "",
     },
     # ---- 主页卡片随机轮播 ----
-    "card_rotate_enabled": True,
+    "card_rotate_enabled": False,
     # 轮播速度：slow / medium / fast
     "card_rotate_speed": "medium",
 }

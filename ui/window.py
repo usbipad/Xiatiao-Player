@@ -3104,7 +3104,7 @@ class MainWindow(Adw.ApplicationWindow):
             _dark_theme = False
         assets = load_cover_assets(
             cover_raw, p_size, n_size,
-            blur_on=_cfg.get_bool("nowplaying_blur_bg", True),
+            blur_on=_cfg.get_bool("nowplaying_blur_bg", False),
             blur_px=_cfg.get_int("nowplaying_blur_px", 6),
             dark_threshold=_cfg.get("nowplaying_dark_threshold", 0.65),
             dark_theme=_dark_theme,
@@ -4046,10 +4046,10 @@ class MainWindow(Adw.ApplicationWindow):
             # 「进度条跟随封面取色」开关控制（关闭则回退默认深灰/白）。
             from config.settings import get_config as _get_cfg
             _cfg = _get_cfg()
-            _blur_on = _cfg.get_bool("nowplaying_blur_bg", True)
+            _blur_on = _cfg.get_bool("nowplaying_blur_bg", False)
             bg_rgb = lighten_for_background((r, g, b)) if _blur_on else None
             try:
-                _follow = _cfg.get_bool("progress_follow_cover", True)
+                _follow = _cfg.get_bool("progress_follow_cover", False)
             except Exception:
                 _follow = True
             f = 0.72
@@ -4203,7 +4203,7 @@ class MainWindow(Adw.ApplicationWindow):
         同时应用到左侧面板进度条与沉浸页进度条。
         """
         try:
-            enabled = get_config().get_bool("progress_follow_cover", True)
+            enabled = get_config().get_bool("progress_follow_cover", False)
         except Exception:
             enabled = True
         rgb = None

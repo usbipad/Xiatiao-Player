@@ -1090,7 +1090,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         blur_row = Adw.SwitchRow()
         blur_row.set_title(_("沉浸页背景模糊"))
         blur_row.set_subtitle(_("用当前封面生成模糊背景；关闭则用纯色背景"))
-        blur_row.set_active(cfg.get_bool("nowplaying_blur_bg", True))
+        blur_row.set_active(cfg.get_bool("nowplaying_blur_bg", False))
         blur_row.connect("notify::active", self._on_blur_bg_toggled)
         group.add(blur_row)
 
@@ -1106,7 +1106,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         prog_row = Adw.SwitchRow()
         prog_row.set_title(_("进度条跟随封面取色"))
         prog_row.set_subtitle(_("进度条已播段用当前封面主色；关闭则用默认深灰/白"))
-        prog_row.set_active(cfg.get_bool("progress_follow_cover", True))
+        prog_row.set_active(cfg.get_bool("progress_follow_cover", False))
         prog_row.connect("notify::active", self._on_progress_follow_toggled)
         group.add(prog_row)
 
@@ -1119,7 +1119,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         rot_row = Adw.SwitchRow()
         rot_row.set_title(_("主页卡片随机轮播"))
         rot_row.set_subtitle(_("折叠时卡片自动随机切换展示的专辑 / 艺术家"))
-        rot_row.set_active(cfg.get_bool("card_rotate_enabled", True))
+        rot_row.set_active(cfg.get_bool("card_rotate_enabled", False))
 
         def _on_rot_toggled(r, _p):
             cfg.set_bool("card_rotate_enabled", r.get_active())

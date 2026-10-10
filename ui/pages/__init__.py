@@ -962,7 +962,7 @@ class LocalLibraryPage(Gtk.Box):
     def _card_rotate_enabled() -> bool:
         try:
             from config.settings import get_config
-            return get_config().get_bool("card_rotate_enabled", True)
+            return get_config().get_bool("card_rotate_enabled", False)
         except Exception:
             return True
 
