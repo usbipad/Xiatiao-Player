@@ -488,7 +488,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         """键位字符串 → 可读显示（如 Ctrl+Left → Ctrl+←）。"""
         m = {
             "Left": "←", "Right": "→", "Up": "↑", "Down": "↓",
-            "space": "空格", "Return": "回车", "Escape": "Esc",
+            "space": _("空格"), "Return": _("回车"), "Escape": "Esc",
             "comma": ",", "period": ".", "slash": "/",
             "Ctrl": "Ctrl", "Control": "Ctrl",
             "Alt": "Alt", "Shift": "Shift", "Super": "Super",
@@ -497,7 +497,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         out = []
         for p in parts:
             out.append(m.get(p, p))
-        return "+".join(out) if out else "（未设置）"
+        return "+".join(out) if out else _("（未设置）")
 
     def _on_capture_shortcut(self, btn, action: str, row) -> None:
         """点击改键：弹出对话框捕获按键。"""
@@ -667,12 +667,12 @@ class SettingsWindow(Adw.PreferencesWindow):
         credits.set_title(_("开源组件"))
         credits.set_description(_("本项目基于以下开源项目构建，谨致谢意"))
         for name, desc in (
-            ("CamillaDSP", "GPL-3.0 · 嵌入式 DSP 引擎"),
-            ("Symphonia", "MPL-2.0 · 音频解码（mp3/flac/aac/ogg/wav/alac）"),
-            ("PipeWire / ALSA", "音频输出（含独占与采样率跟随）"),
-            ("GTK4 / libadwaita", "LGPL · 图形界面"),
-            ("FFmpeg", "LGPL/GPL · 冷门格式与 DSD 解码"),
-            ("NumPy / PyYAML / Mutagen / Pycairo", "Python 依赖"),
+            ("CamillaDSP", _("GPL-3.0 · 嵌入式 DSP 引擎")),
+            ("Symphonia", _("MPL-2.0 · 音频解码（mp3/flac/aac/ogg/wav/alac）")),
+            ("PipeWire / ALSA", _("音频输出（含独占与采样率跟随）")),
+            ("GTK4 / libadwaita", _("LGPL · 图形界面")),
+            ("FFmpeg", _("LGPL/GPL · 冷门格式与 DSD 解码")),
+            ("NumPy / PyYAML / Mutagen / Pycairo", _("Python 依赖")),
         ):
             credits.add(self._make_info_row(_(name), desc))
         page.add(credits)
@@ -1007,44 +1007,23 @@ class SettingsWindow(Adw.PreferencesWindow):
         dev_row.connect("notify::selected", _on_dev_changed)
         out_group.add(dev_row)
 
-        # ---- 主页卡片轮播 ----
-        rotate_group = Adw.PreferencesGroup()
-        rotate_group.set_title(_("主页卡片"))
-        rotate_group.set_description(_("主页专辑 / 艺术家卡片的随机轮播"))
-        page.add(rotate_group)
+        # ---- 行为 ----
+        behave = Adw.PreferencesGroup()
+        behave.set_title(_("行为"))
+        page.add(behave)
 
-        rot_row = Adw.SwitchRow()
-        rot_row.set_title(_("主页卡片随机轮播"))
-        rot_row.set_subtitle(_("折叠时卡片自动随机切换展示的专辑 / 艺术家"))
-        rot_row.set_active(cfg.get_bool("card_rotate_enabled", True))
+        row = Adw.SwitchRow()
+        row.set_title(_("启动时自动扫描本地曲库"))
+        row.set_active(cfg.get_bool("auto_scan_on_start", True))
+        row.connect("notify::active", lambda r, _p: cfg.set_bool("auto_scan_on_start", r.get_active()))
+        behave.add(row)
 
-        def _on_rot_toggled(r, _p):
-            cfg.set_bool("card_rotate_enabled", r.get_active())
-            # 开启时提示需重启生效
-            if r.get_active():
-                try:
-                    self.add_toast(Adw.Toast.new(_("已启用，重启应用后生效")))
-                except Exception:
-                    pass
-
-        rot_row.connect("notify::active", _on_rot_toggled)
-        rotate_group.add(rot_row)
-
-        spd_row = Adw.ComboRow()
-        spd_row.set_title(_("轮播速度"))
-        spd_model = Gtk.StringList()
-        for label in (_("慢速"), _("中等"), _("快速")):
-            spd_model.append(label)
-        spd_row.set_model(spd_model)
-        self._rotate_speed_values = ["slow", "medium", "fast"]
-        _cur_spd = cfg.get_str("card_rotate_speed", "medium")
-        _idx = self._rotate_speed_values.index(_cur_spd) if _cur_spd in self._rotate_speed_values else 1
-        spd_row.set_selected(_idx)
-        spd_row.connect("notify::selected",
-                        lambda r, _p: cfg.set_str("card_rotate_speed",
-                                                  self._rotate_speed_values[r.get_selected()]
-                                                  if 0 <= r.get_selected() < 3 else "medium"))
-        rotate_group.add(spd_row)
+        row = Adw.SwitchRow()
+        row.set_title(_("关闭时最小化到后台"))
+        row.set_subtitle(_("关闭窗口不退出程序"))
+        row.set_active(cfg.get_bool("close_to_tray", False))
+        row.connect("notify::active", lambda r, _p: cfg.set_bool("close_to_tray", r.get_active()))
+        behave.add(row)
 
     # ------------------------------------------------------------
     # 外观设置页
@@ -1129,23 +1108,43 @@ class SettingsWindow(Adw.PreferencesWindow):
         prog_row.connect("notify::active", self._on_progress_follow_toggled)
         group.add(prog_row)
 
-        # 行为分组
-        behave = Adw.PreferencesGroup()
-        behave.set_title(_("行为"))
-        page.add(behave)
+        # ---- 主页卡片轮播 ----
+        rotate_group = Adw.PreferencesGroup()
+        rotate_group.set_title(_("主页卡片"))
+        rotate_group.set_description(_("主页专辑 / 艺术家卡片的随机轮播"))
+        page.add(rotate_group)
 
-        row = Adw.SwitchRow()
-        row.set_title(_("启动时自动扫描本地曲库"))
-        row.set_active(cfg.get_bool("auto_scan_on_start", True))
-        row.connect("notify::active", lambda r, _p: cfg.set_bool("auto_scan_on_start", r.get_active()))
-        behave.add(row)
+        rot_row = Adw.SwitchRow()
+        rot_row.set_title(_("主页卡片随机轮播"))
+        rot_row.set_subtitle(_("折叠时卡片自动随机切换展示的专辑 / 艺术家"))
+        rot_row.set_active(cfg.get_bool("card_rotate_enabled", True))
 
-        row = Adw.SwitchRow()
-        row.set_title(_("关闭时最小化到后台"))
-        row.set_subtitle(_("关闭窗口不退出程序"))
-        row.set_active(cfg.get_bool("close_to_tray", False))
-        row.connect("notify::active", lambda r, _p: cfg.set_bool("close_to_tray", r.get_active()))
-        behave.add(row)
+        def _on_rot_toggled(r, _p):
+            cfg.set_bool("card_rotate_enabled", r.get_active())
+            if r.get_active():
+                try:
+                    self.add_toast(Adw.Toast.new(_("已启用，重启应用后生效")))
+                except Exception:
+                    pass
+
+        rot_row.connect("notify::active", _on_rot_toggled)
+        rotate_group.add(rot_row)
+
+        spd_row = Adw.ComboRow()
+        spd_row.set_title(_("轮播速度"))
+        spd_model = Gtk.StringList()
+        for label in (_("慢速"), _("中等"), _("快速")):
+            spd_model.append(label)
+        spd_row.set_model(spd_model)
+        self._rotate_speed_values = ["slow", "medium", "fast"]
+        _cur_spd = cfg.get_str("card_rotate_speed", "medium")
+        _idx = self._rotate_speed_values.index(_cur_spd) if _cur_spd in self._rotate_speed_values else 1
+        spd_row.set_selected(_idx)
+        spd_row.connect("notify::selected",
+                        lambda r, _p: cfg.set_str("card_rotate_speed",
+                                                  self._rotate_speed_values[r.get_selected()]
+                                                  if 0 <= r.get_selected() < 3 else "medium"))
+        rotate_group.add(spd_row)
 
     def _on_theme_changed(self, row, _pspec) -> None:
         idx = row.get_selected()
@@ -1159,12 +1158,36 @@ class SettingsWindow(Adw.PreferencesWindow):
             get_config().set_str("row_density", self._density_values[idx])
 
     def _on_language_changed(self, row, _pspec) -> None:
-        """切换界面语言：持久化并提示重启生效。"""
+        """切换界面语言：持久化，并询问是否立即重启以生效。"""
         idx = row.get_selected()
-        if 0 <= idx < len(getattr(self, "_lang_values", [])):
-            set_language(self._lang_values[idx])
+        if not (0 <= idx < len(getattr(self, "_lang_values", []))):
+            return
+        new_lang = self._lang_values[idx]
+        win = self._get_window()
+        try:
+            dlg = Adw.MessageDialog(
+                transient_for=self, modal=True,
+                heading=_("语言已切换"),
+                body=_("重启应用后生效。是否立即重启？"),
+            )
+            dlg.add_response("cancel", _("稍后"))
+            dlg.add_response("restart", _("立即重启"))
+            dlg.set_response_appearance("restart", Adw.ResponseAppearance.SUGGESTED)
+            dlg.set_default_response("restart")
+            dlg.set_close_response("cancel")
+
+            def _on_resp(_d, resp):
+                set_language(new_lang)
+                if resp == "restart" and win is not None \
+                        and hasattr(win, "_restart_app"):
+                    win._restart_app()
+
+            dlg.connect("response", _on_resp)
+            dlg.present()
+        except Exception:
+            # 降级：直接切换 + toast 提示
+            set_language(new_lang)
             try:
-                win = self._get_window()
                 if win is not None and hasattr(win, "add_toast"):
                     win.add_toast(Adw.Toast.new(_("语言已切换，重启应用后生效")))
             except Exception:
