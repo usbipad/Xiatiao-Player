@@ -113,7 +113,7 @@ class DownloadController:
             qrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             qrow.append(Gtk.Label(label=_("音质"), xalign=0))
             q_dropdown = Gtk.DropDown.new_from_strings(
-                [_(label) for _, label in QUALITY_LABELS])
+                [_(label) for _k, label in QUALITY_LABELS])
             q_dropdown.set_hexpand(True)
             if cur_q in keys:
                 q_dropdown.set_selected(keys.index(cur_q))
