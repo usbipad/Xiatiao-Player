@@ -32,7 +32,7 @@ jobs:
           echo "RUSTUP_HOME=/usr/local/rustup" >> $GITHUB_ENV
           echo "CARGO_HOME=/usr/local/cargo" >> $GITHUB_ENV
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Ensure vendored deps
         run: |
@@ -49,7 +49,7 @@ jobs:
           cp ../xiatiao-player_*_amd64.deb dist/ 2>/dev/null || true
           ls -la dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: deb-package
           path: dist/*.deb
@@ -66,7 +66,7 @@ jobs:
             alsa-lib-devel pipewire-devel clang-devel \
             desktop-file-utils libappstream-glib git tar xz
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build .rpm
         run: |
@@ -84,7 +84,7 @@ jobs:
           cp ~/rpmbuild/RPMS/x86_64/*.rpm dist/ 2>/dev/null || true
           ls -la dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: rpm-package
           path: dist/*.rpm
@@ -96,9 +96,9 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: artifacts
 
@@ -111,7 +111,7 @@ jobs:
           fi
 
       - name: Publish
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Xiatiao Player ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.file }}
