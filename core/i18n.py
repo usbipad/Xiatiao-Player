@@ -568,6 +568,201 @@ _EN: dict[str, str] = {
     "播放控制": "Playback Controls",
     "显示 / 隐藏播放器面板": "Show / Hide Player Panel",
     "键盘快捷键": "Keyboard Shortcuts",
+
+    # ---- 在线音源（online）----
+    "在线音源（Subsonic）": "Online Source (Subsonic)",
+    "启用在线音源": "Enable Online Source",
+    "启用在线音源；关闭后不再连接在线服务、隐藏在线音乐入口":
+        "Enable online source; when off, no online service is connected and online entries are hidden",
+    "在线音源未配置": "Online source not configured",
+    "在线音源未配置，请在设置中填写服务地址和用户名":
+        "Online source not configured. Set the server address and username in Settings.",
+    "在线音源连接失败，请检查设置":
+        "Failed to connect to the online source. Check your settings.",
+    "无法连接到在线音源服务，请检查设置":
+        "Cannot reach the online source. Check your settings.",
+    "我的歌单": "My Playlists",
+    "搜索结果": "Search Results",
+    "搜索：{q}": "Search: {q}",
+    "切换网格 / 列表": "Switch Grid / List",
+    "推荐加载失败：{err}": "Failed to load recommendations: {err}",
+    "歌单加载失败：{err}": "Failed to load playlists: {err}",
+
+    # ---- 播放 / 音质（playback）----
+    "当前实际播放音质": "Current playback quality",
+    "选择在线音质": "Select online quality",
+    "音质已切换为 {name}": "Quality switched to {name}",
+    "正在切换音质…": "Switching quality…",
+    "所选 {a} 不可用，实际为 {b}": "Selected {a} unavailable; using {b}",
+    "播放失败，已跳过": "Playback failed, skipped",
+    "无法连接到音频后端，请检查后端是否已启动":
+        "Cannot connect to the audio backend. Check whether it is running.",
+    "文件不存在或不在曲库：{name}": "File missing or not in library: {name}",
+    "已取消收藏": "Removed from Favorites",
+
+    # ---- 设置 / 连接（settings）----
+    "连接": "Connect",
+    "已连接": "Connected",
+    "正在连接…": "Connecting…",
+
+    # ---- 下载（download）----
+    "仅支持下载在线曲目": "Only online tracks can be downloaded",
+    "选择下载目录": "Choose download folder",
+    "选择保存位置": "Choose save location",
+    "选择音质与保存位置": "Choose quality and save location",
+    "开始下载": "Start download",
+    "下载完成（元数据未写入）：{path}":
+        "Download complete (metadata not written): {path}",
+    "文件名": "File Name",
+    "目录": "Folder",
+    "浏览": "Browse",
+    "音质": "Quality",
+
+    # ---- 曲库 / 账号（library / account）----
+    "本地": "Local",
+    "账号": "Account",
+    "管理员": "Administrator",
+
+    # ---- 歌曲信息 / 字段 ----
+    "歌名": "Title",
+    "歌手": "Artist",
+    "专辑": "Album",
+    "时长": "Duration",
+    "采样率": "Sample Rate",
+    "位深": "Bit Depth",
+    "声道": "Channels",
+    "码率": "Bitrate",
+    "文件路径": "File Path",
+    "文件大小": "File Size",
+    "单声道 (1)": "Mono (1)",
+    "立体声 (2)": "Stereo (2)",
+    "未知歌曲": "Unknown Song",
+    "未知歌手": "Unknown Artist",
+    "未知专辑": "Unknown Album",
+    "未知艺术家": "Unknown Artist",
+    "未知错误": "Unknown error",
+    "未知": "Unknown",
+
+    # ---- 收藏 / 列表 ----
+    "已加入我喜欢": "Added to Favorites",
+    "已取消喜欢": "Removed from Favorites",
+    "已喜欢：{title}": "Added to Favorites: {title}",
+    "已取消喜欢：{title}": "Removed from Favorites: {title}",
+    "还没有收藏的歌曲，点歌曲旁的小爱心即可收藏":
+        "No favorites yet. Tap the heart next to a song to add it.",
+    "当前没有播放曲目": "No track playing",
+    "该曲目无可投送地址": "This track has no castable address",
+    "已复制文件路径": "File path copied",
+    "已从列表移除": "Removed from list",
+    "移除失败": "Removal failed",
+    "移除失败: ": "Removal failed: ",
+    "当前列表不支持移除": "Current list does not support removal",
+    "仅移除": "Remove Only",
+    "确定要从列表移除「": "Remove from list: 「",
+    "」吗？": "」?",
+    "勾选下方将同时删除本地文件（移入回收站，可恢复）。":
+        "Check below to also delete the local file (moved to trash, recoverable).",
+    "该曲目没有本地文件": "This track has no local file",
+    "该曲目没有本地文件。": "This track has no local file.",
+    "该曲目没有本地文件路径": "This track has no local file path",
+    "删除歌曲": "Delete Song",
+    "删除文件": "Delete File",
+    "已移入回收站": "Moved to trash",
+    "删除超时（文件可能在慢速或网络位置）":
+        "Delete timed out (file may be on a slow or network location)",
+    "删除失败: ": "Delete failed: ",
+    "打开目录失败: ": "Failed to open folder: ",
+
+    # ---- 歌单 ----
+    "重命名歌单": "Rename Playlist",
+    "歌单为空": "Playlist is empty",
+    "此歌单暂无歌曲": "This playlist has no songs yet",
+    "还没有播放记录": "No play history yet",
+
+    # ---- 音效预设 ----
+    "保存": "Save",
+    "保存预设": "Save Preset",
+    "新建预设": "New Preset",
+    "创建": "Create",
+    "知道了": "Got it",
+    "已重置": "Reset",
+    "所有参数已重置为初始设置。": "All parameters reset to defaults.",
+    "输入预设名称（保存当前参数）": "Enter preset name (saves current parameters)",
+    "输入预设名称（保存当前整套 DSP 配置）":
+        "Enter preset name (saves the entire DSP configuration)",
+    "流行": "Pop",
+    "摇滚": "Rock",
+    "古典": "Classical",
+    "爵士": "Jazz",
+    "低音增强": "Bass Boost",
+    "无损": "Lossless",
+
+    # ---- 在线 / 后端 ----
+    "播放地址为空": "Playback URL is empty",
+    "文件不存在: {path}": "File not found: {path}",
+    "音频后端未连接（未启动或已断开），请检查后端是否就绪":
+        "Audio backend not connected (not started or disconnected). Check whether it is running.",
+    "在线音源未就绪": "Online source not ready",
+    "在线音源不可用": "Online source unavailable",
+    "服务端错误": "Server error",
+    "音频后端已断开，正在尝试恢复":
+        "Audio backend disconnected, attempting to recover",
+    "该服务端不支持全量曲库浏览，请使用搜索、歌单或推荐":
+        "This server does not support full library browsing; use search, playlists, or recommendations",
+    "无结果": "No results",
+
+    # ---- 投送 / IR ----
+    "已进入投送模式：播放控制将发送到设备":
+        "Entered casting mode: playback controls will be sent to the device",
+    "已退出投送模式": "Exited casting mode",
+    "已加载 IR：": "IR loaded: ",
+    "已清除 IR": "IR cleared",
+
+    # ---- 快捷键 / 关于 ----
+    "空格": "Space",
+    "回车": "Enter",
+    "（未设置）": "(Not set)",
+    "打开设置": "Open Settings",
+    "上传": "Upload",
+    "封面": "Cover",
+    "分享": "Share",
+    "Python 依赖": "Python Dependencies",
+    "GPL-3.0 · 嵌入式 DSP 引擎": "GPL-3.0 · Embedded DSP engine",
+    "MPL-2.0 · 音频解码（mp3/flac/aac/ogg/wav/alac）":
+        "MPL-2.0 · Audio decoding (mp3/flac/aac/ogg/wav/alac)",
+    "音频输出（含独占与采样率跟随）":
+        "Audio output (with exclusive mode and sample-rate following)",
+    "LGPL · 图形界面": "LGPL · UI framework",
+    "LGPL/GPL · 冷门格式与 DSD 解码":
+        "LGPL/GPL · Rare formats and DSD decoding",
+
+    # ---- 音质档位 ----
+    "标准 128k": "Standard 128k",
+    "高品 320k": "High 320k",
+    "母带": "Master",
+    "高品": "High",
+
+    # ---- 内置音效预设 ----
+    "参考平直": "Reference Flat",
+    "播客人声": "Podcast Voice",
+    "哈曼曲线": "Harman Curve",
+    "现代流行": "Modern Pop",
+    "清澈人声": "Clear Vocal",
+    "微笑曲线": "Smile Curve",
+    "耳机空间": "Headphone Space",
+    "音箱空间": "Speaker Space",
+    "现场感": "Live",
+    "深夜聆听": "Late Night",
+    "内置音效": "Built-in Effects",
+    "我的预设": "My Presets",
+    "还没有自定义预设": "No custom presets yet",
+    "删除该预设": "Delete this preset",
+
+    # ---- 语言切换 ----
+    "语言已切换": "Language Changed",
+    "重启应用后生效。是否立即重启？": "Restart the app to take effect. Restart now?",
+    "稍后": "Later",
+    "立即重启": "Restart Now",
 }
 
 

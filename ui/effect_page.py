@@ -287,15 +287,15 @@ class EffectPage(Adw.PreferencesPage):
         """新建预设：弹命名框，用当前参数创建。"""
         dialog = Adw.MessageDialog(
             transient_for=self.get_root(),
-            heading="新建预设",
-            body="输入预设名称（保存当前参数）",
+            heading=_("新建预设"),
+            body=_("输入预设名称（保存当前参数）"),
         )
         entry = Gtk.Entry()
         entry.set_placeholder_text(_("预设名称"))
         entry.set_margin_top(6)
         dialog.set_extra_child(entry)
-        dialog.add_response("cancel", "取消")
-        dialog.add_response("ok", "创建")
+        dialog.add_response("cancel", _("取消"))
+        dialog.add_response("ok", _("创建"))
         dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("ok")
         dialog.connect("response", self._on_new_response, entry)
@@ -1655,10 +1655,10 @@ class EffectPage(Adw.PreferencesPage):
         try:
             dlg = Adw.MessageDialog(
                 transient_for=self.get_root(),
-                heading="已重置",
-                body="所有参数已重置为初始设置。",
+                heading=_("已重置"),
+                body=_("所有参数已重置为初始设置。"),
             )
-            dlg.add_response("ok", "知道了")
+            dlg.add_response("ok", _("知道了"))
             dlg.set_default_response("ok")
             dlg.present()
         except Exception:

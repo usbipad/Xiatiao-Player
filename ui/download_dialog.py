@@ -112,7 +112,8 @@ class DownloadController:
         if _is_private:
             qrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             qrow.append(Gtk.Label(label=_("音质"), xalign=0))
-            q_dropdown = Gtk.DropDown.new_from_strings([label for _, label in QUALITY_LABELS])
+            q_dropdown = Gtk.DropDown.new_from_strings(
+                [_(label) for _, label in QUALITY_LABELS])
             q_dropdown.set_hexpand(True)
             if cur_q in keys:
                 q_dropdown.set_selected(keys.index(cur_q))
@@ -204,7 +205,7 @@ class DownloadController:
         def _work():
             p = self._get_provider("subsonic")
             if p is None:
-                raise RuntimeError("在线音源不可用")
+                raise RuntimeError(_("在线音源不可用"))
             # 私有协议后端才按所选档位下载；
             # 标准 Subsonic 不按档位转码——下载原文件直传（maxBitRate=0）。
             _is_private = bool(getattr(track, "is_private_backend", False))

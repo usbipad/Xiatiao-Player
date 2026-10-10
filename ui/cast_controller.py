@@ -25,6 +25,8 @@ from typing import Callable, Optional
 
 from gi.repository import GLib
 
+from core.i18n import _
+
 log = logging.getLogger(__name__)
 
 
@@ -111,7 +113,7 @@ class CastController:
         except Exception:
             pass
         self.start_poll()
-        self._toast("已进入投送模式：播放控制将发送到设备")
+        self._toast(_("已进入投送模式：播放控制将发送到设备"))
 
     def on_stopped(self) -> None:
         """停止投送：退出投送模式，控制恢复本机。"""
@@ -122,7 +124,7 @@ class CastController:
             self._ui_set_playing(False)
         except Exception:
             pass
-        self._toast("已退出投送模式")
+        self._toast(_("已退出投送模式"))
 
     # ------------------------------------------------------------
     # 播放控制（投送模式）

@@ -8,6 +8,8 @@ from collections import OrderedDict as _OrderedDict
 
 from gi.repository import GObject, Gtk
 
+from core.i18n import _
+
 
 # ================================================================
 # 列表封面缓存（LRU）
@@ -106,8 +108,8 @@ def track_from_row(r: dict, stream_url: str = ""):
             except Exception:
                 pass
         return TrackItem(
-            title=r.get("title") or "未知歌曲",
-            artist=r.get("artist") or "未知歌手",
+            title=r.get("title") or _("未知歌曲"),
+            artist=r.get("artist") or _("未知歌手"),
             album=r.get("album") or "",
             duration=r.get("duration") or "0:00",
             duration_seconds=float(r.get("duration_seconds") or 0.0),

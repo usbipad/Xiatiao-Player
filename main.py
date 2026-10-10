@@ -4,7 +4,28 @@ import os
 import sys
 import threading
 
-import gi
+
+def _apply_process_locale() -> None:
+    """按用户配置的语言设置进程 locale。
+
+    libadwaita / GTK 的内置文案（如 Adw.AboutDialog 的按钮文字）走 gettext，
+    跟随进程 locale（LANGUAGE / LC_ALL / LANG），而非本项目 i18n 的 _()。
+    必须在 import gi 之前设置——GTK 初始化后 locale 即固定，再改无效。
+    """
+    try:
+        from core.i18n import get_language
+        lang = get_language()
+    except Exception:
+        return
+    if lang == "en":
+        os.environ["LANGUAGE"] = "en"
+    elif lang == "zh":
+        os.environ["LANGUAGE"] = "zh_CN"
+
+
+_apply_process_locale()
+
+import gi  # noqa: E402
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")

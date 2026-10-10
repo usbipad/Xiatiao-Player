@@ -1070,7 +1070,7 @@ class NowPlayingPage(Gtk.Overlay):
         }
         self._repeat_icon.set_from_icon_name(icons[self._repeat_mode])
         self._repeat_num.set_text("1" if self._repeat_mode == 2 else "")
-        tips = {0: "不循环", 1: "列表循环", 2: "单曲循环"}
+        tips = {0: _("不循环"), 1: _("列表循环"), 2: _("单曲循环")}
         self._btn_repeat.set_tooltip_text(tips[self._repeat_mode])
 
     def update_play_button_accent(self, rgb: tuple[int, int, int] | None) -> None:
@@ -1233,4 +1233,4 @@ class NowPlayingPage(Gtk.Overlay):
         self._max_btn.set_icon_name(
             "window-restore-symbolic" if maximized else "window-maximize-symbolic"
         )
-        self._max_btn.set_tooltip_text("还原" if maximized else "最大化")
+        self._max_btn.set_tooltip_text(_("还原") if maximized else _("最大化"))

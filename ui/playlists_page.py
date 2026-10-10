@@ -104,7 +104,7 @@ class PlaylistsPage(Gtk.Box):
         self._back_btn.set_tooltip_text(_("返回歌单"))
         self._back_btn.connect("clicked", lambda *_: self.show_list())
         header.append(self._back_btn)
-        self._title = _section_title("歌单")
+        self._title = _section_title(_("歌单"))
         header.append(self._title)
         header.append(Gtk.Box(hexpand=True))
         self._count_label = Gtk.Label(label="")
@@ -425,7 +425,7 @@ class PlaylistsPage(Gtk.Box):
 
     # ---- 操作 ----
     def _create_playlist(self) -> None:
-        self._prompt_name("新建歌单", "新歌单", lambda name: self._do_create(name))
+        self._prompt_name(_("新建歌单"), _("新歌单"), lambda name: self._do_create(name))
 
     def _do_create(self, name: str) -> None:
         try:
@@ -437,7 +437,7 @@ class PlaylistsPage(Gtk.Box):
         self.show_list()
 
     def _rename_playlist(self, pid, old_name) -> None:
-        self._prompt_name("重命名歌单", old_name or "", lambda name: self._do_rename(pid, name))
+        self._prompt_name(_("重命名歌单"), old_name or "", lambda name: self._do_rename(pid, name))
 
     def _do_rename(self, pid, name: str) -> None:
         try:

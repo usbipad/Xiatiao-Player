@@ -775,14 +775,14 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             _role_labels = [
-                ("adminRole", "管理员"),
-                ("downloadRole", "下载"),
-                ("streamRole", "播放"),
-                ("coverArtRole", "封面"),
-                ("shareRole", "分享"),
-                ("playlistRole", "歌单"),
+                ("adminRole", _("管理员")),
+                ("downloadRole", _("下载")),
+                ("streamRole", _("播放")),
+                ("coverArtRole", _("封面")),
+                ("shareRole", _("分享")),
+                ("playlistRole", _("歌单")),
                 ("scrobblingEnabled", "Scrobble"),
-                ("uploadRole", "上传"),
+                ("uploadRole", _("上传")),
             ]
             active = [(k, l) for k, l in _role_labels if roles.get(k)]
             per_row = 3
@@ -1656,8 +1656,8 @@ class MainWindow(Adw.ApplicationWindow):
                         hist.append(hit)
                         continue
                     hist.append(_TI(
-                        title=r.get("title") or "未知歌曲",
-                        artist=r.get("artist") or "未知歌手",
+                        title=r.get("title") or _("未知歌曲"),
+                        artist=r.get("artist") or _("未知歌手"),
                         album=r.get("album") or "",
                         duration=r.get("duration") or "0:00",
                         duration_seconds=float(r.get("duration_seconds") or 0.0),
@@ -1750,8 +1750,8 @@ class MainWindow(Adw.ApplicationWindow):
                         continue
                     # 回退：历史快照（无技术参数）
                     hist.append(_TI(
-                        title=r.get("title") or "未知歌曲",
-                        artist=r.get("artist") or "未知歌手",
+                        title=r.get("title") or _("未知歌曲"),
+                        artist=r.get("artist") or _("未知歌手"),
                         album=r.get("album") or "",
                         duration=r.get("duration") or "0:00",
                         duration_seconds=float(r.get("duration_seconds") or 0.0),
@@ -1923,7 +1923,7 @@ class MainWindow(Adw.ApplicationWindow):
         stream_url 是播放时构造的，切换档位后需要让当前及队列里的在线歌
         重新生成 URL（带上新的 maxBitRate），否则仍用旧音质。
         """
-        name = self._QUALITY_NAMES.get(key, key)
+        name = _(self._QUALITY_NAMES.get(key, key))
         # 立即提示「正在切换音质」（切换涉及重建 URL + 重载，有可感延迟）。
         try:
             self._toast(_("正在切换音质…"))
@@ -2016,7 +2016,7 @@ class MainWindow(Adw.ApplicationWindow):
             # 大歌单（数千首）加载较慢，失败不再静默当空，交由 _done 提示。
             p = self._get_provider("subsonic")
             if p is None:
-                return ([], "在线音源未就绪")
+                return ([], _("在线音源未就绪"))
             _ta = _t.monotonic()
             result = p.playlist_tracks_safe(pl.id)
             log.info("[歌单计时] 网络拉取+转换 %.0fms（%d 首）",
@@ -2613,7 +2613,7 @@ class MainWindow(Adw.ApplicationWindow):
         def _work():
             p = self._get_provider("subsonic")
             if p is None:
-                return ([], "在线音源未就绪")
+                return ([], _("在线音源未就绪"))
             return p.playlist_tracks_safe(playlist_id)
 
         def _done(result):
@@ -2811,11 +2811,11 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_like_current(self) -> None:
         track = self.playlist.current_track()
         if track is None:
-            self._toast("当前没有播放曲目")
+            self._toast(_("当前没有播放曲目"))
             return
         liked = get_liked_store().toggle(track)
         self.player_panel.set_liked(liked)
-        self._toast("已加入我喜欢" if liked else "已取消喜欢")
+        self._toast(_("已加入我喜欢") if liked else _("已取消喜欢"))
         if self._active_source == "liked":
             self._refresh_liked_page()
 
@@ -2823,7 +2823,7 @@ class MainWindow(Adw.ApplicationWindow):
         """把当前播放曲目加入歌单（弹出歌单选择对话框）。"""
         track = self.playlist.current_track()
         if track is None:
-            self._toast("当前没有播放曲目")
+            self._toast(_("当前没有播放曲目"))
             return
         self._on_add_tracks_to_playlist([track])
 
@@ -2832,11 +2832,11 @@ class MainWindow(Adw.ApplicationWindow):
         from .cast_dialog import CastDialog
         track = self.playlist.current_track()
         if track is None:
-            self._toast("当前没有播放曲目")
+            self._toast(_("当前没有播放曲目"))
             return
         # 本地用 filepath；在线歌用 stream_url（http），都能投递。
         if not (getattr(track, "filepath", "") or getattr(track, "stream_url", "")):
-            self._toast("该曲目无可投送地址")
+            self._toast(_("该曲目无可投送地址"))
             return
         try:
             dlg = CastDialog(
@@ -3594,8 +3594,8 @@ class MainWindow(Adw.ApplicationWindow):
             for r in rows:
                 try:
                     tracks.append(_TI(
-                        title=r.get("title") or "未知歌曲",
-                        artist=r.get("artist") or "未知歌手",
+                        title=r.get("title") or _("未知歌曲"),
+                        artist=r.get("artist") or _("未知歌手"),
                         album=r.get("album") or "",
                         duration=r.get("duration") or "0:00",
                         duration_seconds=float(r.get("duration_seconds") or 0.0),
@@ -3725,7 +3725,7 @@ class MainWindow(Adw.ApplicationWindow):
         if not isinstance(track, TrackItem):
             return
         liked = get_liked_store().toggle(track)
-        self._toast(_("已喜欢：{title}" if liked else "已取消喜欢：{title}").format(title=track.title))
+        self._toast((_("已喜欢：{title}") if liked else _("已取消喜欢：{title}")).format(title=track.title))
         cur = self.playlist.current_track()
         if cur is not None and getattr(cur, "source_id", "") == getattr(track, "source_id", ""):
             self.player_panel.set_liked(liked)
@@ -3778,29 +3778,29 @@ class MainWindow(Adw.ApplicationWindow):
             if "." in pp:
                 fmt = pp.rsplit(".", 1)[-1].upper()
         sr = int(getattr(track, "sample_rate", 0) or 0)
-        sr_txt = f"{sr / 1000:.1f} kHz".replace(".0 kHz", " kHz") if sr else "未知"
+        sr_txt = f"{sr / 1000:.1f} kHz".replace(".0 kHz", " kHz") if sr else _("未知")
         bd = int(getattr(track, "bit_depth", 0) or 0)
-        bd_txt = f"{bd} bit" if bd else "未知"
+        bd_txt = f"{bd} bit" if bd else _("未知")
         ch = int(getattr(track, "channels", 0) or 0)
-        ch_txt = {1: "单声道 (1)", 2: "立体声 (2)"}.get(ch, f"{ch} 声道") if ch else "未知"
+        ch_txt = {1: _("单声道 (1)"), 2: _("立体声 (2)")}.get(ch, f"{ch} {_('声道')}") if ch else _("未知")
         br = int(getattr(track, "bitrate", 0) or 0)
         br_txt = f"{br // 1000} kbps" if br else "未知"
         rows = [
-            ("歌名", track.title or ""),
-            ("歌手", track.artist or ""),
-            ("专辑", track.album or ""),
-            ("时长", track.duration or ""),
+            (_("歌名"), track.title or ""),
+            (_("歌手"), track.artist or ""),
+            (_("专辑"), track.album or ""),
+            (_("时长"), track.duration or ""),
             (_("编码格式"), fmt or _("未知")),
-            ("采样率", sr_txt),
-            ("位深", bd_txt),
-            ("声道", ch_txt),
-            ("码率", br_txt),
+            (_("采样率"), sr_txt),
+            (_("位深"), bd_txt),
+            (_("声道"), ch_txt),
+            (_("码率"), br_txt),
         ]
         path = getattr(track, "filepath", "") or ""
         if path:
-            rows.append(("文件路径", path))
+            rows.append((_("文件路径"), path))
             try:
-                rows.append(("文件大小", human_size(_os.path.getsize(path))))
+                rows.append((_("文件大小"), human_size(_os.path.getsize(path))))
             except OSError:
                 pass
         return rows
@@ -3843,13 +3843,13 @@ class MainWindow(Adw.ApplicationWindow):
             return
         path = getattr(track, "filepath", "") or ""
         if not path:
-            self._toast("该曲目没有本地文件路径")
+            self._toast(_("该曲目没有本地文件路径"))
             return
         try:
             display = Gdk.Display.get_default()
             if display is not None:
                 display.get_clipboard().set(path)
-                self._toast("已复制文件路径")
+                self._toast(_("已复制文件路径"))
         except Exception:
             self._toast(path)
 
@@ -3859,7 +3859,7 @@ class MainWindow(Adw.ApplicationWindow):
             return
         path = getattr(track, "filepath", "") or ""
         if not path or not os.path.isfile(path):
-            self._toast("该曲目没有本地文件")
+            self._toast(_("该曲目没有本地文件"))
             return
         try:
             import subprocess
@@ -3873,7 +3873,7 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 subprocess.Popen(["xdg-open", folder])
         except Exception as exc:
-            self._toast(f"打开目录失败: {exc}")
+            self._toast(f"{_('打开目录失败: ')}{exc}")
 
     def _active_page(self):
         """返回当前活动页面对象（用于列表移除等操作）。"""
@@ -3896,7 +3896,7 @@ class MainWindow(Adw.ApplicationWindow):
             return
         page = self._active_page()
         if page is None or not hasattr(page, "remove_track"):
-            self._toast("当前列表不支持移除")
+            self._toast(_("当前列表不支持移除"))
             return
         try:
             if page is getattr(self, "liked_page", None):
@@ -3906,9 +3906,9 @@ class MainWindow(Adw.ApplicationWindow):
                 self._toast(_("已取消收藏"))
                 return
             ok = page.remove_track(track)
-            self._toast("已从列表移除" if ok else "移除失败")
+            self._toast(_("已从列表移除") if ok else _("移除失败"))
         except Exception as exc:
-            self._toast(f"移除失败: {exc}")
+            self._toast(f"{_('移除失败: ')}{exc}")
 
     def _track_ctx_delete_file(self, track) -> None:
         """删除：弹确认框，询问是否同时删除本地文件（走回收站，可恢复）。"""
@@ -3919,14 +3919,14 @@ class MainWindow(Adw.ApplicationWindow):
         try:
             dialog = Adw.MessageDialog(
                 transient_for=self,
-                heading="删除歌曲",
-                body=(f"确定要从列表移除「{track.title}」吗？\n\n"
-                      + ("勾选下方将同时删除本地文件（移入回收站，可恢复）。" if has_file else "该曲目没有本地文件。")),
+                heading=_("删除歌曲"),
+                body=(_("确定要从列表移除「{title}」吗？").format(title=track.title) + "\n\n"
+                      + (_("勾选下方将同时删除本地文件（移入回收站，可恢复）。") if has_file else _("该曲目没有本地文件。"))),
             )
-            dialog.add_response("cancel", "取消")
-            dialog.add_response("remove", "仅移除")
+            dialog.add_response("cancel", _("取消"))
+            dialog.add_response("remove", _("仅移除"))
             if has_file:
-                dialog.add_response("delete", "删除文件")
+                dialog.add_response("delete", _("删除文件"))
                 dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
             dialog.set_default_response("cancel")
             dialog.set_close_response("cancel")
@@ -3971,16 +3971,16 @@ class MainWindow(Adw.ApplicationWindow):
 
         def _done(r):
             if r.returncode == 0:
-                self._toast("已移入回收站")
+                self._toast(_("已移入回收站"))
             else:
-                self._toast(f"删除失败: {r.stderr.strip() or '未知错误'}")
+                self._toast(f"{_('删除失败: ')}{r.stderr.strip() or _('未知错误')}")
 
         def _err(exc):
             import subprocess
             if isinstance(exc, subprocess.TimeoutExpired):
-                self._toast("删除超时（文件可能在慢速或网络位置）")
+                self._toast(_("删除超时（文件可能在慢速或网络位置）"))
             else:
-                self._toast(f"删除失败: {exc}")
+                self._toast(f"{_('删除失败: ')}{exc}")
 
         from core.tasks import run_async
         run_async(work=_work, on_done=_done, on_error=_err)
@@ -4471,7 +4471,7 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         try:
-            self._toast(message or "音频后端已断开，正在尝试恢复")
+            self._toast(message or _("音频后端已断开，正在尝试恢复"))
         except Exception:
             pass
 
@@ -4614,7 +4614,7 @@ class MainWindow(Adw.ApplicationWindow):
                 if _exp and spec_rank(spec) < spec_rank(_exp):
                     names = self._QUALITY_NAMES
                     self._toast(_("所选 {a} 不可用，实际为 {b}").format(
-                        a=names.get(chosen, chosen),
+                        a=_(names.get(chosen, chosen)),
                         b=spec_display_name(spec)))
         except Exception as exc:
             log.debug("降级提示失败: %s", exc)
@@ -4820,7 +4820,7 @@ class MainWindow(Adw.ApplicationWindow):
             from config.settings import get_config
             get_config().set("convolution_ir", path)
             self._convolution_ir_path = path
-            self._toast(f"已加载 IR：{os.path.basename(path)}")
+            self._toast(f"{_('已加载 IR：')}{os.path.basename(path)}")
         except Exception as exc:
             log.debug("记录卷积 IR 失败: %s", exc)
 
@@ -4830,7 +4830,7 @@ class MainWindow(Adw.ApplicationWindow):
             from config.settings import get_config
             get_config().set("convolution_ir", "")
             self._convolution_ir_path = ""
-            self._toast("已清除 IR")
+            self._toast(_("已清除 IR"))
         except Exception as exc:
             log.debug("清除卷积 IR 记录失败: %s", exc)
 
@@ -5176,6 +5176,35 @@ class MainWindow(Adw.ApplicationWindow):
         app = self.get_application()
         if app is not None:
             app.quit()
+
+    def _restart_app(self) -> None:
+        """重启应用：保存会话、停服务后，用新进程替换当前进程。
+
+        用于「切换语言后立即生效」——重建界面代价高且易出边缘 bug，
+        直接重启进程更干净。音频后端为独立进程，届时会随新进程重启。
+        """
+        self._force_quit = True
+        try:
+            self._cancel_all_timers()
+        except Exception:
+            log.debug("重启前取消定时器失败", exc_info=True)
+        try:
+            self._persist_on_close()
+        except Exception:
+            log.debug("重启前保存会话失败", exc_info=True)
+        try:
+            self._shutdown_services()
+        except Exception:
+            log.debug("重启前停服务失败", exc_info=True)
+        try:
+            import os as _os
+            import sys as _sys
+            _os.execv(_sys.executable, [_sys.executable] + _sys.argv)
+        except Exception as exc:
+            log.error("重启失败，改为退出: %s", exc)
+            app = self.get_application()
+            if app is not None:
+                app.quit()
 
     def _save_queue(self) -> None:
         """保存播放会话（队列 + 当前索引 + 位置 + 模式 + 音量），供重启恢复。"""

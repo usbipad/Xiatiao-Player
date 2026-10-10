@@ -23,6 +23,7 @@ from gi.repository import GLib
 
 from .audio_backend import AudioBackend, PlayerState
 from .ipc_protocol import Cmd, Evt, Field
+from .i18n import _
 
 log = logging.getLogger(__name__)
 
@@ -292,7 +293,7 @@ class RustBackend(AudioBackend):
     def _emit_backend_lost(self) -> bool:
         """主线程：发 backend-lost 信号。"""
         try:
-            self.emit("backend-lost", "音频后端已断开，正在尝试恢复")
+            self.emit("backend-lost", _("音频后端已断开，正在尝试恢复"))
         except Exception:
             pass
         return False
@@ -514,11 +515,11 @@ class RustBackend(AudioBackend):
     def play_file(self, path: str) -> bool:
         log.info("[API] play_file: %s", path)
         if not path:
-            self.emit("error-occur", "播放地址为空")
+            self.emit("error-occur", _("播放地址为空"))
             return False
         is_url = "://" in path
         if not is_url and not os.path.isfile(path):
-            self.emit("error-occur", f"文件不存在: {path}")
+            self.emit("error-occur", _("文件不存在: {path}").format(path=path))
             return False
         # 立即本地进入播放态，UI 按钮能马上响应
         self._state = PlayerState.PLAYING
@@ -528,7 +529,7 @@ class RustBackend(AudioBackend):
             # 避免静默失败后由「卡住检测」给出笼统的「播放失败，已跳过」。
             self._state = PlayerState.STOPPED
             self._position = 0.0
-            self.emit("error-occur", "音频后端未连接（未启动或已断开），请检查后端是否就绪")
+            self.emit("error-occur", _("音频后端未连接（未启动或已断开），请检查后端是否就绪"))
             return False
         return True
 

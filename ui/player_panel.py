@@ -257,7 +257,7 @@ class PlayerPanel(Gtk.Box):
         self.quality_dropdown.set_visible(False)
         self.quality_dropdown.set_tooltip_text(_("选择在线音质"))
         self.quality_dropdown.add_css_class("quality-dropdown")
-        self._quality_btn_label = Gtk.Label(label="无损")
+        self._quality_btn_label = Gtk.Label(label=_("无损"))
         # MenuButton 自定义 child 后不显示内置箭头，手动补一个下拉三角。
         _btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         _btn_box.append(self._quality_btn_label)
@@ -276,7 +276,7 @@ class PlayerPanel(Gtk.Box):
         _pop_box.set_margin_end(6)
         self._quality_pop_btns = {}
         for _k, _label in self._QUALITY_LABELS:
-            _b = Gtk.Button(label=_label)
+            _b = Gtk.Button(label=_(_label))
             _b.add_css_class("flat")
             _b.set_halign(Gtk.Align.FILL)
             _b.connect("clicked", self._on_quality_popover_choice, _k)
@@ -950,7 +950,7 @@ class PlayerPanel(Gtk.Box):
         try:
             if hasattr(self, "_quality_btn_label"):
                 self._quality_btn_label.set_text(
-                    self._QUALITY_SHORT.get(key, key or "无损"))
+                    _(self._QUALITY_SHORT.get(key, key or "无损")))
         except Exception as exc:
             log.debug("同步音质按钮失败: %s", exc)
 
@@ -978,15 +978,7 @@ class PlayerPanel(Gtk.Box):
             except Exception:
                 pass
 
-    #: 音效预设展示名（键与 PlayerCore 一致）
-    _EFFECT_LABELS = [
-        ("off", "关闭"),
-        ("pop", "流行"),
-        ("rock", "摇滚"),
-        ("classical", "古典"),
-        ("jazz", "爵士"),
-        ("bass", "低音增强"),
-    ]
+
 
     #: 是否启用「主页音效按钮 → 模态对话框」模式（由 window 打开）
     use_effect_dialog: bool = False
@@ -1031,7 +1023,7 @@ class PlayerPanel(Gtk.Box):
         for preset in BUILTIN_PRESETS:
             name = preset["name"]
             row = Adw.ActionRow()
-            row.set_title(name)
+            row.set_title(_(name))
             row.set_activatable(True)
             row.connect("activated", self._on_effect_dialog_choice, name)
             group.add(row)
@@ -1406,7 +1398,7 @@ class PlayerPanel(Gtk.Box):
         }
         self._repeat_icon.set_from_icon_name(icons[self._repeat_mode])
         self._repeat_num.set_text("1" if self._repeat_mode == 2 else "")
-        tips = {0: "不循环", 1: "列表循环", 2: "单曲循环"}
+        tips = {0: _("不循环"), 1: _("列表循环"), 2: _("单曲循环")}
         self.btn_repeat.set_tooltip_text(tips[self._repeat_mode])
 
     # ---- 音量交互 ----

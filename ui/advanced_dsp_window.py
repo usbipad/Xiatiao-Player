@@ -86,11 +86,11 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
     # ------------------------------------------------------------
     #: (页标题, [only 键...], 图标)
     _FEATURE_PAGES = (
-        ("ReplayGain / 增益", ["replaygain", "gain"], "audio-volume-high-symbolic"),
-        ("均衡器（图形 EQ / 参数 EQ）", ["eq", "peq"], "multimedia-equalizer-symbolic"),
-        ("卷积 / 音调", ["convolution", "bass_treble"], "audio-input-microphone-symbolic"),
-        ("响度 / 动态", ["loudness", "compressor", "limiter"], "audio-volume-high-symbolic"),
-        ("空间 / 声道", ["stereo", "crossfeed", "routing", "reverb"], "audio-stereo-symbolic"),
+        (_("ReplayGain / 增益"), ["replaygain", "gain"], "audio-volume-high-symbolic"),
+        (_("均衡器（图形 EQ / 参数 EQ）"), ["eq", "peq"], "multimedia-equalizer-symbolic"),
+        (_("卷积 / 音调"), ["convolution", "bass_treble"], "audio-input-microphone-symbolic"),
+        (_("响度 / 动态"), ["loudness", "compressor", "limiter"], "audio-volume-high-symbolic"),
+        (_("空间 / 声道"), ["stereo", "crossfeed", "routing", "reverb"], "audio-stereo-symbolic"),
     )
 
     def _build_feature_pages(self) -> None:
@@ -412,15 +412,15 @@ class AdvancedDspWindow(Adw.PreferencesWindow):
     def _on_preset_save(self, _btn) -> None:
         """弹命名框，保存当前 params。"""
         dialog = Adw.MessageDialog(
-            transient_for=self, heading="保存预设",
-            body="输入预设名称（保存当前整套 DSP 配置）",
+            transient_for=self, heading=_("保存预设"),
+            body=_("输入预设名称（保存当前整套 DSP 配置）"),
         )
         entry = Gtk.Entry()
         entry.set_placeholder_text(_("预设名称"))
         entry.set_margin_top(6)
         dialog.set_extra_child(entry)
-        dialog.add_response("cancel", "取消")
-        dialog.add_response("ok", "保存")
+        dialog.add_response("cancel", _("取消"))
+        dialog.add_response("ok", _("保存"))
         dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("ok")
         dialog.connect("response", self._on_preset_save_response, entry)
