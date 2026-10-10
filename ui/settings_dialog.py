@@ -7,7 +7,7 @@ from typing import List
 
 from gi.repository import Adw, Gdk, Gtk
 
-from config.settings import get_config
+from config.settings import APP_VERSION, get_config
 from core.i18n import _, set_language
 
 log = logging.getLogger(__name__)
@@ -618,7 +618,7 @@ class SettingsWindow(Adw.PreferencesWindow):
     _ABOUT = {
         "name": "虾条播放器",
         "name_en": "Xiatiao",
-        "version": "1.0.4",
+        "version": APP_VERSION,
         "developer": "usbipad",
         "website": "https://github.com/usbipad/Xiatiao-Player",
         "issue": "https://github.com/usbipad/Xiatiao-Player/issues",

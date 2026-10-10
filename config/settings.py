@@ -13,6 +13,9 @@ log = logging.getLogger(__name__)
 APP_DIR_NAME = "xiatiao"
 CONFIG_FILENAME = "config.json"
 
+#: 应用版本号（单一真相源）。发版时只改这里。
+APP_VERSION = "1.0.5"
+
 
 def xdg_config_dir() -> str:
     """$XDG_CONFIG_HOME/xiatiao（未设置 XDG_CONFIG_HOME 时回退 ~/.config）。"""

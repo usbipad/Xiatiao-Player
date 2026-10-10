@@ -14,7 +14,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
 from core.i18n import _
 
-from config.settings import get_config
+from config.settings import APP_VERSION, get_config
 from core import Playlist, PlayerCore, get_cache, tracks_to_list, list_to_tracks
 from core.liked_store import get_liked_store
 from models import (
@@ -5154,7 +5154,7 @@ class MainWindow(Adw.ApplicationWindow):
                 dlg = Adw.AboutDialog()
                 dlg.set_application_name(_("虾条播放器"))
                 dlg.set_application_icon("xiatiao")
-                dlg.set_version("1.0.4")
+                dlg.set_version(APP_VERSION)
                 dlg.set_comments(_("GTK4 本地音乐播放器，Rust 音频后端，支持 DSD 直通与 DSP"))
                 dlg.set_copyright("© 2026 usbipad")
                 # 法律信息：GTK 会据此提供 GPL-3.0 全文入口。
