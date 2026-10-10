@@ -1003,6 +1003,8 @@ class MainWindow(Adw.ApplicationWindow):
         # 搜索结果滚动加载更多：注入翻页回调。
         try:
             self.online_page._on_result_more_ext = self._on_online_search_more
+            # 搜索结果点歌：用「搜索结果列表」作播放队列（区别于歌单详情）。
+            self.online_page._on_result_track = self._on_online_search_track
         except Exception:
             pass
         self.stack.add_named(self.online_page, "online")
@@ -2084,6 +2086,14 @@ class MainWindow(Adw.ApplicationWindow):
         """点歌单里的在线歌：把整个歌单设为播放队列，从该首开始播。"""
         try:
             lib = getattr(self, "_online_detail_tracks", None) or []
+        except Exception:
+            lib = []
+        self._play_from_list(track, lib)
+
+    def _on_online_search_track(self, track) -> None:
+        """点搜索结果里的在线歌：用「当前搜索结果列表」作播放队列，从该首开始。"""
+        try:
+            lib = list(getattr(self.online_page, "_result_tracks", None) or [])
         except Exception:
             lib = []
         self._play_from_list(track, lib)

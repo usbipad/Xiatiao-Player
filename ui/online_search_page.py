@@ -181,8 +181,16 @@ class OnlineSearchPage(Gtk.Box):
         self.status_lbl.add_css_class("dim-label")
         self.status_lbl.set_halign(Gtk.Align.START)
         result.append(self.status_lbl)
+        # 搜索结果点歌用专用回调（区别于歌单详情）；未注入时回退通用回调。
+        self._on_result_track: Optional[Callable] = on_track_activated
+
+        def _result_track_activated(track):
+            cb = getattr(self, "_on_result_track", None) or on_track_activated
+            if callable(cb):
+                cb(track)
+
         self.result_page = LocalLibraryPage(
-            on_track_activated=on_track_activated,
+            on_track_activated=_result_track_activated,
             on_online_load_more=self._on_result_load_more,
             title="",
             empty_text="",
@@ -194,6 +202,8 @@ class OnlineSearchPage(Gtk.Box):
         #: 搜索结果翻页状态
         self._result_query = ""
         self._result_offset = 0
+        #: 当前搜索结果列表（点歌时作播放队列）
+        self._result_tracks: list = []
         self._result_loading = False
         self.result_page.set_vexpand(True)
         result.append(self.result_page)
@@ -644,6 +654,7 @@ class OnlineSearchPage(Gtk.Box):
         # 记录本次搜索条件与已加载数量（供滚动翻页）。
         self._result_query = query or ""
         self._result_offset = len(tracks)
+        self._result_tracks = list(tracks)
         self.result_page.set_tracks(tracks)
         self.status_lbl.set_text(
             ("%d " % len(tracks)) + _("首") if tracks else _("无结果"))
@@ -654,6 +665,7 @@ class OnlineSearchPage(Gtk.Box):
         tracks = list(tracks or [])
         if tracks:
             self._result_offset += len(tracks)
+            self._result_tracks = list(self._result_tracks) + list(tracks)
             self.result_page.append_tracks(tracks)
         if done:
             # 没有更多：清空 query 让后续滚动不再触发。
