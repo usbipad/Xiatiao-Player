@@ -40,13 +40,13 @@ class SettingsWindow(Adw.PreferencesWindow):
         self._on_subsonic_tested = on_subsonic_tested
         self._subsonic_connected = bool(subsonic_connected)
 
+        self._build_appearance_page()
         self._build_local_group()
         self._build_subsonic_group()
         self._build_playback_page()
         self._build_shortcuts_page()
         self._build_effect_page()
         self._build_visualization_page()
-        self._build_appearance_page()
         self._build_about_page()
         self._reload_dir_rows()
 
@@ -1071,10 +1071,12 @@ class SettingsWindow(Adw.PreferencesWindow):
 
         # 语言
         lang_row = Adw.ComboRow()
-        lang_row.set_title(_("语言"))
+        lang_row.set_title("语言 Language")
         lang_model = Gtk.StringList()
         self._lang_values = ["system", "zh", "en"]
-        for label in (_("跟随系统"), _("中文"), _("英文")):
+        # 语言选项用各自母语显示（不随界面语言翻译）：
+        # 中文项始终显示「中文」，英文项始终显示「English」。
+        for label in (_("跟随系统"), "中文", "English"):
             lang_model.append(label)
         lang_row.set_model(lang_model)
         try:
