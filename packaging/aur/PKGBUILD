@@ -1,0 +1,101 @@
+# Maintainer: usbipad <usbipad@163.com>
+#
+# ⚠️ 未测试：此 PKGBUILD 由作者附带提供，未在 Arch 环境实测。
+#    使用中如遇问题，欢迎到 https://github.com/usbipad/Xiatiao-Player/issues 反馈。
+#
+# 构建：makepkg -si
+# 依赖 v1.0.5 的 GitHub Release（源码 tarball）已发布。
+
+pkgname=xiatiao-player
+pkgver=1.0.5
+pkgrel=1
+pkgdesc="A GTK4 local music player with a Rust audio backend"
+arch=('x86_64')
+url="https://github.com/usbipad/Xiatiao-Player"
+license=('GPL-3.0-or-later')
+depends=(
+    python
+    python-gobject
+    python-cairo
+    python-mutagen
+    python-numpy
+    python-yaml
+    gtk4
+    libadwaita
+    gdk-pixbuf2
+    librsvg
+    alsa-lib
+    pipewire
+    pipewire-audio
+    ffmpeg
+    iproute2
+    glib2
+    xdg-utils
+    dbus
+)
+makedepends=(
+    cargo
+    rust
+    clang
+)
+optdepends=('python-setproctitle: 让进程名显示为 xiatiao-player（可选）')
+options=('!lto')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "Xiatiao-Player-$pkgver"
+    # 删项目级 cargo 配置：它指向 vendor/（未随源码分发），强制联网拉 crates。
+    rm -f audio_backend_rs/.cargo/config.toml
+}
+
+build() {
+    cd "Xiatiao-Player-$pkgver/audio_backend_rs"
+    # 联网构建（源码包不含 vendor/，.cargo/config.toml 已在 prepare() 删除）。
+    cargo build --release --locked
+}
+
+package() {
+    cd "Xiatiao-Player-$pkgver"
+
+    # Python 源码 + 资源 → /usr/lib/xiatiao-player
+    install -d "$pkgdir/usr/lib/xiatiao-player"
+    cp -r main.py config core models providers services ui \
+        "$pkgdir/usr/lib/xiatiao-player/"
+    install -d "$pkgdir/usr/lib/xiatiao-player/data"
+    cp -r data/icons "$pkgdir/usr/lib/xiatiao-player/data/"
+
+    # Rust 后端二进制
+    install -m755 audio_backend_rs/target/release/xiatiao-audio-backend \
+        "$pkgdir/usr/lib/xiatiao-player/"
+
+    # 清理字节码缓存
+    find "$pkgdir/usr/lib/xiatiao-player" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+    find "$pkgdir/usr/lib/xiatiao-player" -name '*.pyc' -delete 2>/dev/null || true
+
+    # 图标
+    for size in 16 24 32 48 64 128 256; do
+        install -d "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps"
+        cp "data/icons/xiatiao-${size}.png" \
+            "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/xiatiao.png"
+    done
+    install -d "$pkgdir/usr/share/icons/hicolor/scalable/actions"
+    cp data/icons/hicolor/scalable/actions/*.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/actions/" 2>/dev/null || true
+
+    # 启动器
+    install -d "$pkgdir/usr/bin"
+    cat > "$pkgdir/usr/bin/xiatiao-player" <<'EOF'
+#!/bin/sh
+exec python3 /usr/lib/xiatiao-player/main.py "$@"
+EOF
+    chmod 755 "$pkgdir/usr/bin/xiatiao-player"
+
+    # desktop 文件
+    install -d "$pkgdir/usr/share/applications"
+    cp data/com.xiatiao.player.desktop \
+        "$pkgdir/usr/share/applications/com.xiatiao.player.desktop"
+
+    # 许可证
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
