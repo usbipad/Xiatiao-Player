@@ -572,6 +572,8 @@ _EN: dict[str, str] = {
     # ---- 在线音源（online）----
     "在线音源（Subsonic）": "Online Source (Subsonic)",
     "启用在线音源": "Enable Online Source",
+    "只需填写 IP:端口，例如 127.0.0.1:4533":
+        "Just enter IP:port, e.g. 127.0.0.1:4533",
     "启用在线音源；关闭后不再连接在线服务、隐藏在线音乐入口":
         "Enable online source; when off, no online service is connected and online entries are hidden",
     "在线音源未配置": "Online source not configured",

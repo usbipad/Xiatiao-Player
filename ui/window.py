@@ -839,7 +839,7 @@ class MainWindow(Adw.ApplicationWindow):
             # 在线音源关闭时隐藏「在线」入口
             if key == "online":
                 try:
-                    if not get_config().get_bool("subsonic_enabled", True):
+                    if not get_config().get_bool("subsonic_enabled", False):
                         btn.set_visible(False)
                 except Exception:
                     pass
@@ -1112,7 +1112,7 @@ class MainWindow(Adw.ApplicationWindow):
         # 需与「在线音源服务不通」区分提示（见 _refresh_online_offline_hint）。
         self._refresh_backend_availability()
         try:
-            enabled = get_config().get_bool("subsonic_enabled", True)
+            enabled = get_config().get_bool("subsonic_enabled", False)
         except Exception:
             enabled = True
         self._subsonic_enabled = enabled
@@ -1176,7 +1176,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _subsonic_usable(self) -> bool:
         """在线音源是否启用（总开关开）。关闭时一切在线请求都不应发起。"""
         try:
-            return bool(get_config().get_bool("subsonic_enabled", True))
+            return bool(get_config().get_bool("subsonic_enabled", False))
         except Exception:
             return True
 
@@ -1274,7 +1274,7 @@ class MainWindow(Adw.ApplicationWindow):
             btn = None
         if btn is None:
             return
-        enabled = getattr(self, "_subsonic_enabled", True)
+        enabled = getattr(self, "_subsonic_enabled", False)
         if not enabled:
             btn.set_visible(False)
             return

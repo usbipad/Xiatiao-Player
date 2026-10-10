@@ -60,7 +60,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "download_dir": "",
     # ---- 在线音源（Subsonic 通用客户端）----
     # 在线音源总开关：关闭后不主动连接/显示在线音乐（默认启用）
-    "subsonic_enabled": True,
+    "subsonic_enabled": False,
     # 服务端地址（如 http://127.0.0.1:4533 指向 Navidrome/自建服务）
     "subsonic_url": "",
     "subsonic_user": "",

@@ -114,7 +114,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         # 总开关：放在分组标题右侧（启用 / 关闭在线音源）
         enabled_switch = Gtk.Switch()
         enabled_switch.set_valign(Gtk.Align.CENTER)
-        enabled_switch.set_active(cfg.get_bool("subsonic_enabled", True))
+        enabled_switch.set_active(cfg.get_bool("subsonic_enabled", False))
         enabled_switch.set_tooltip_text(
             _("启用在线音源；关闭后不再连接在线服务、隐藏在线音乐入口"))
 
@@ -142,12 +142,27 @@ class SettingsWindow(Adw.PreferencesWindow):
             group.add(row)
         page.add(group)
 
-        # 服务地址
+        # 服务地址：http:// 前缀固定（不显示，用户只填 IP:端口），
+        # 避免用户误删 http:// 导致连接失败。https:// 仍兼容（保留原样）。
         url_row = Adw.EntryRow()
         url_row.set_title(_("服务地址"))
-        url_row.set_text(cfg.get_str("subsonic_url", ""))
-        url_row.set_tooltip_text(_("例如 http://127.0.0.1:4533"))
-        url_row.connect("changed", lambda r: (cfg.set_str("subsonic_url", r.get_text().strip()), self._reset_subsonic_state()))
+        _full_url = cfg.get_str("subsonic_url", "")
+        _host = _full_url
+        for _p in ("https://", "http://"):
+            if _host.startswith(_p):
+                _host = _host[len(_p):]
+                break
+        url_row.set_text(_host)
+        url_row.set_tooltip_text(_("只需填写 IP:端口，例如 127.0.0.1:4533"))
+
+        def _on_url_changed(r):
+            text = r.get_text().strip()
+            # 未带协议 → 自动补 http://；已带协议（如 https://）保留。
+            full = text if (not text or "://" in text) else "http://" + text
+            cfg.set_str("subsonic_url", full)
+            self._reset_subsonic_state()
+
+        url_row.connect("changed", _on_url_changed)
         group.add(url_row)
         self._subsonic_rows = [url_row]
 
@@ -207,7 +222,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         self._subsonic_rows.append(test_row)
         # 按当前开关状态设置一次可用性
         self._apply_subsonic_rows_sensitive(
-            cfg.get_bool("subsonic_enabled", True))
+            cfg.get_bool("subsonic_enabled", False))
         # 按实际连接状态初始化（避免每次进设置都显示「未连接」）
         if self._subsonic_connected:
             try:
