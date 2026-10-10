@@ -142,27 +142,12 @@ class SettingsWindow(Adw.PreferencesWindow):
             group.add(row)
         page.add(group)
 
-        # 服务地址：http:// 前缀固定（不显示，用户只填 IP:端口），
-        # 避免用户误删 http:// 导致连接失败。https:// 仍兼容（保留原样）。
+        # 服务地址：用户手动填写完整地址（http:// 或 https://）。
         url_row = Adw.EntryRow()
         url_row.set_title(_("服务地址"))
-        _full_url = cfg.get_str("subsonic_url", "")
-        _host = _full_url
-        for _p in ("https://", "http://"):
-            if _host.startswith(_p):
-                _host = _host[len(_p):]
-                break
-        url_row.set_text(_host)
-        url_row.set_tooltip_text(_("只需填写 IP:端口，例如 127.0.0.1:4533"))
-
-        def _on_url_changed(r):
-            text = r.get_text().strip()
-            # 未带协议 → 自动补 http://；已带协议（如 https://）保留。
-            full = text if (not text or "://" in text) else "http://" + text
-            cfg.set_str("subsonic_url", full)
-            self._reset_subsonic_state()
-
-        url_row.connect("changed", _on_url_changed)
+        url_row.set_text(cfg.get_str("subsonic_url", ""))
+        url_row.set_tooltip_text(_("例如 http://127.0.0.1:4533（https 亦可）"))
+        url_row.connect("changed", lambda r: (cfg.set_str("subsonic_url", r.get_text().strip()), self._reset_subsonic_state()))
         group.add(url_row)
         self._subsonic_rows = [url_row]
 
