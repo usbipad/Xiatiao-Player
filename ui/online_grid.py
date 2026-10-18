@@ -194,12 +194,20 @@ class OnlineCardGrid(Gtk.ScrolledWindow):
         box.add_css_class("media-card")
         box.set_valign(Gtk.Align.START)
         box.set_halign(Gtk.Align.CENTER)
+        # 同上：禁止横向伸展，避免卡片被 GridView 单元撑宽。
+        box.set_hexpand(False)
 
         frame = Gtk.Frame()
         frame.add_css_class("media-card-cover")
         frame.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
         frame.set_halign(Gtk.Align.CENTER)
         frame.set_valign(Gtk.Align.START)
+        # 锁死尺寸：Gtk.GridView 会按可用宽度均分列宽，窗口宽时
+        # 单元可能远大于卡片宽。若不禁止伸缩，Frame 会被拉伸，
+        # 内部的 150px 封面纹理随之放大 → 画面模糊（其他页面用
+        # 定宽 FlowBox 不存在该问题）。
+        frame.set_hexpand(False)
+        frame.set_vexpand(False)
         frame.set_margin_start(_GAP)
         frame.set_margin_end(_GAP)
         frame.set_margin_top(6)
@@ -282,6 +290,11 @@ class OnlineCardGrid(Gtk.ScrolledWindow):
                     pic.set_paintable(tex)
                     pic.set_content_fit(Gtk.ContentFit.COVER)
                     pic.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
+                    # 锁死：不随 holder 拉伸，保证纹理按 1:1 显示。
+                    pic.set_hexpand(False)
+                    pic.set_vexpand(False)
+                    pic.set_halign(Gtk.Align.CENTER)
+                    pic.set_valign(Gtk.Align.CENTER)
                     _set_holder_child(_box._holder, pic)
             except Exception:
                 pass

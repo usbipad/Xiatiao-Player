@@ -43,13 +43,15 @@ def _default_download_dir() -> str:
 
 def _current_quality() -> str:
     """默认音质：跟当前播放档位（运行时优先，回落到配置）。"""
-    cur_q = "lossless"
+    from core.quality import DEFAULT_ONLINE_QUALITY
+    cur_q = DEFAULT_ONLINE_QUALITY
     try:
         from providers.subsonic import _RUNTIME_QUALITY
-        cur_q = _RUNTIME_QUALITY or get_config().get_str("online_quality", "lossless")
+        cur_q = _RUNTIME_QUALITY or get_config().get_str(
+            "online_quality", DEFAULT_ONLINE_QUALITY)
     except Exception:
         pass
-    return str(cur_q or "lossless").lower()
+    return str(cur_q or DEFAULT_ONLINE_QUALITY).lower()
 
 
 class DownloadController:
@@ -206,13 +208,8 @@ class DownloadController:
             p = self._get_provider("subsonic")
             if p is None:
                 raise RuntimeError(_("在线音源不可用"))
-            # 私有协议后端才按所选档位下载；
-            # 标准 Subsonic 不按档位转码——下载原文件直传（maxBitRate=0）。
-            _is_private = bool(getattr(track, "is_private_backend", False))
-            if _is_private:
-                url = p.download_url(sid, quality)
-            else:
-                url = p.stream_url(sid, max_bit_rate=0)
+            # 私有按所选档位 / 标准直传的差异，统一由 provider.playable_url 处理。
+            url = p.playable_url(sid, quality=quality)
             path = _dl.download_audio(url, dest_dir, base_name)
             # 元数据（尽力而为，失败不影响音频）。
             meta_err = ""

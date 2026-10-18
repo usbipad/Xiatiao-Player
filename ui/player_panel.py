@@ -11,6 +11,7 @@ from typing import Callable
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
+from core import track_key
 from core.i18n import _
 from models import TrackItem
 
@@ -593,9 +594,10 @@ class PlayerPanel(Gtk.Box):
             # 记录本行键，显隐/高亮由 PlayingIndicator 依全局当前键自更新。
             ind = getattr(item, "_q_indicator", None)
             if ind is not None:
-                key = (getattr(track, "filepath", "") or getattr(track, "source_id", "")
-                       or getattr(track, "title", ""))
-                ind.set_row_key(key or "")
+                # 行键统一走 core.track_key（与曲库/历史/歌单同一规则）。
+                # track 可能为 None（列表复用的空 item），显式判空避免
+                # track_key 落到 title|artist 兜底产出无意义的 '|'。
+                ind.set_row_key(track_key(track) if track is not None else "")
                 ind.sync_now()
             # 右键菜单（每次 bind 重挂，item 复用需重置）
             self._attach_queue_row_menu(item, track)
@@ -868,9 +870,11 @@ class PlayerPanel(Gtk.Box):
             pass
         try:
             from config.settings import get_config
-            return get_config().get_str("online_quality", "lossless")
+            from core.quality import DEFAULT_ONLINE_QUALITY
+            return get_config().get_str("online_quality", DEFAULT_ONLINE_QUALITY)
         except Exception:
-            return "lossless"
+            from core.quality import DEFAULT_ONLINE_QUALITY as _d
+            return _d
 
     #: 规格 → 显示名 / CSS 类（与 models/track.py 的 quality_badge 一致）。
     _SPEC_LABELS = {
@@ -957,21 +961,19 @@ class PlayerPanel(Gtk.Box):
     def _set_quality(self, key: str) -> None:
         """切换音质档位。
 
-        母带 / Hi-Res：只设「运行时档位」（当前会话生效，不持久化）。
-        其它档位（标准/高品/无损）：写配置 + 设运行时档位。
-        持久化上限为「无损」——重启后母带/Hi-Res 回落。
+        所有档位（含母带 / Hi-Res）都写配置 + 设运行时档位：
+        用户选什么，重启后就用什么，不擅自回落。
         """
         try:
             from providers.subsonic import set_runtime_quality
             set_runtime_quality(key)
         except Exception:
             pass
-        if key not in ("master", "hires"):
-            try:
-                from config.settings import get_config
-                get_config().set_str("online_quality", key)
-            except Exception:
-                pass
+        try:
+            from config.settings import get_config
+            get_config().set_str("online_quality", key)
+        except Exception:
+            pass
         if callable(getattr(self, "_on_quality", None)):
             try:
                 self._on_quality(key)

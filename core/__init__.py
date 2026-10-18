@@ -6,6 +6,7 @@ from .cache import (
     tracks_to_list,
     list_to_tracks,
 )
+from ._base_store import track_key
 
 __all__ = [
     "Playlist",
@@ -16,4 +17,5 @@ __all__ = [
     "get_cache",
     "tracks_to_list",
     "list_to_tracks",
+    "track_key",
 ]

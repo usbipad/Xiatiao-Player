@@ -64,13 +64,6 @@ class BaseMusicProvider(GObject.Object):
         """分页拉取在线曲库（可选能力）。默认空。"""
         return []
 
-    def fetch_stream_url(self, source_id: str, quality: str = "") -> str:
-        """按曲目 source_id 构造可播放流 URL（可选能力）。默认空串。
-
-        在线音源应覆盖；返回空串表示不可播。quality 为通用档位 key。
-        """
-        return ""
-
     def fetch_user_profile(self, username: str = ""):
         """拉取用户资料（可选能力，扩展端点）。默认空 dict。"""
         return {}

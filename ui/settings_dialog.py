@@ -870,7 +870,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         row = Adw.SwitchRow()
         row.set_title(_("启动时恢复上次播放会话"))
         row.set_subtitle(_("恢复上次的播放队列、当前歌曲、进度、音量与播放模式"))
-        row.set_active(cfg.get_bool("restore_playback", True))
+        row.set_active(cfg.get_bool("restore_playback", cfg.default("restore_playback")))
         row.connect("notify::active", lambda r, _p: cfg.set_bool("restore_playback", r.get_active()))
         group.add(row)
 
@@ -1106,7 +1106,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         prog_row = Adw.SwitchRow()
         prog_row.set_title(_("进度条跟随封面取色"))
         prog_row.set_subtitle(_("进度条已播段用当前封面主色；关闭则用默认深灰/白"))
-        prog_row.set_active(cfg.get_bool("progress_follow_cover", False))
+        prog_row.set_active(cfg.get_bool("progress_follow_cover", cfg.default("progress_follow_cover")))
         prog_row.connect("notify::active", self._on_progress_follow_toggled)
         group.add(prog_row)
 

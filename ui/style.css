@@ -174,6 +174,27 @@ aspectframe,
     background: transparent;
 }
 
+/* 沉浸式歌词：用 CSS mask 让滚动内容在上下边缘渐隐（约半行高度）。
+
+   为什么用 mask 而非盖色块：沉浸页背景是动态模糊封面，任何固定色
+   都会对不上；mask 直接让内容透明，背景原样透出。
+
+   高度取 0.6em 量级（约半行歌词）：太小看不出渐隐，太大吃掉正文。
+   用 calc 让它随字号（--np-lyric-fs）自适应。
+   注：GTK 4.16+ 支持 mask-image；旧版本忽略该属性，退化为无遮罩
+   （不会报错，只是没有渐隐）。 */
+.np-lyrics-scroll {
+    --np-lyric-fade-h: calc(var(--np-lyric-fs, 20px) * 0.85);
+    -gtk-icon-style: regular;  /* 占位：避免某些主题把该节点当图标容器 */
+    mask-image: linear-gradient(
+        to bottom,
+        transparent 0,
+        rgba(0, 0, 0, 1) var(--np-lyric-fade-h),
+        rgba(0, 0, 0, 1) calc(100% - var(--np-lyric-fade-h)),
+        transparent 100%
+    );
+}
+
 
 
 /* 歌词行：平滑过渡（模拟聚焦）

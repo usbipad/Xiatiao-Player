@@ -221,6 +221,17 @@ class AppConfig:
         self.set_music_dirs(dirs)
         return True
 
+    # ---- 默认值 ----
+    def default(self, key: str) -> Any:
+        """返回该配置键的权威默认值（来自 DEFAULT_CONFIG）。
+
+        用途：调用点需要显式写出「用默认值」时，用 cfg.default("key")
+        而非手写字面量——避免同一键的默认值在多处漂移
+        （曾出现 progress_follow_cover 在两处一 True 一 False 的矛盾）。
+        键不存在时返回 None。
+        """
+        return DEFAULT_CONFIG.get(key)
+
     # ---- 通用读写 ----
     def get(self, key: str, default: Any = None) -> Any:
         with self._lock:

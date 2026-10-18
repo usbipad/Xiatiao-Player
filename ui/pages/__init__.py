@@ -14,6 +14,7 @@ from typing import Callable, List, Optional
 
 from gi.repository import Gio, GLib, Gtk
 
+from core import track_key
 from core.i18n import _
 from models import TrackItem
 from ui.widgets.playing_indicator import set_current_key as set_playing_key
@@ -505,12 +506,8 @@ class LocalLibraryPage(Gtk.Box):
     # 定位当前播放
     # ------------------------------------------------------------
     def set_now_playing(self, track) -> None:
-        if track is None:
-            key = ""
-        else:
-            key = (getattr(track, "filepath", "") or getattr(track, "source_id", "")
-                   or getattr(track, "title", ""))
-            key = key or ""
+        # 键规则统一走 core.track_key（与历史/收藏/歌单同一规则）。
+        key = track_key(track) if track is not None else ""
         self._now_playing_key = key
         try:
             self._now_playing_ref["key"] = key

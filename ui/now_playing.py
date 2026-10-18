@@ -639,6 +639,22 @@ class NowPlayingPage(Gtk.Overlay):
             seek = (r / 255.0 * f, g / 255.0 * f, b / 255.0 * f)
         self.set_cover_ready(fixed, bg, seek)
 
+    def set_lyric_fade_colors(self, top_rgb=None, bottom_rgb=None) -> None:
+        """设置歌词区上下渐隐蒙层（半透明，依背景明暗自适应黑/白）。
+
+        为什么不用采样色：背景是动态模糊封面，固定色盖上去必然在渐变处
+        露出色差。半透明黑/白蒙层让背景始终透出，只压淡边缘歌词——
+        这是各播放器歌词渐隐的主流做法。
+
+        top_rgb/bottom_rgb 保留签名兼容（不再参与取色）；
+        明暗取自 _lyrics_dark（歌词区背景判定的结果）。
+        """
+        try:
+            l_dark = getattr(self, "_lyrics_dark", None)
+            self.lyrics.set_fade_colors(top_rgb, bottom_rgb, dark=l_dark)
+        except Exception:
+            pass
+
     def set_bg_colors(self, bg_rgb=None, seekbar_rgb=None) -> None:
         """只更新沉浸页背景色与进度条色（不动封面纹理）。"""
         self._apply_bg_color(bg_rgb)

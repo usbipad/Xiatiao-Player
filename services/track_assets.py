@@ -124,9 +124,16 @@ def load_cover_assets(cover_raw: bytes | None,
                 # 进度条跟随封面取色：开关关闭时不输出颜色（进度条回退默认深灰/白）
                 try:
                     from config.settings import get_config
-                    _follow = get_config().get_bool("progress_follow_cover", True)
+                    _cfg = get_config()
+                    # 默认值取权威 DEFAULT_CONFIG（False），此前此处写 True，
+                    # 与设置界面/主窗口的 False 矛盾——键缺失时会算出进度条
+                    # 颜色却又被主窗口丢弃，两线程依据不一致。
+                    _follow = _cfg.get_bool(
+                        "progress_follow_cover",
+                        bool(_cfg.default("progress_follow_cover")),
+                    )
                 except Exception:
-                    _follow = True
+                    _follow = False
                 if _follow:
                     out["seekbar_rgb"] = (r / 255.0 * f, g / 255.0 * f, b / 255.0 * f)
             except Exception:
@@ -138,10 +145,13 @@ def load_cover_assets(cover_raw: bytes | None,
             png = None
             if blur_on:
                 from models.coverart import make_blurred_bg
+                # edge_vignette=0：上下渐隐改由歌词遮罩层完成（见
+                # ui/widgets/lyrics_view.py::set_fade_colors）。
+                # 此前两者并用 = 双重压暗，边缘发脏、渐变块明显。
                 png = make_blurred_bg(work_cover, 640, 480,
                                       darken=0.0, blur_px=blur_px,
                                       lighten=0.25,
-                                      edge_vignette=0.55)   # 上下暗角→歌词边缘隐去
+                                      edge_vignette=0.0)
             else:
                 # 关闭背景功能：背景回退主题色；进度条仍跟随封面主色
                 out["bg_rgb"] = None

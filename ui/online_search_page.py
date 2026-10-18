@@ -39,6 +39,9 @@ class OnlineSearchPage(Gtk.Box):
         self._on_section_more = on_section_more
         #: 搜索结果翻页回调（由 window 注入）：(query, offset, count) -> None
         self._on_result_more_ext: Optional[Callable] = None
+        #: 搜索结果返回时通知外部（由 window 注入，用于清空顶栏搜索框）。
+        #: 页面自身拿不到顶栏 SearchEntry，故通过回调交给 window 处理。
+        self._on_result_back_ext: Optional[Callable] = None
         # 供 section 列表视图按类型重建（专辑/艺术家列头不同）
         self._on_track_activated = on_track_activated
         self._track_actions = track_actions
@@ -177,10 +180,21 @@ class OnlineSearchPage(Gtk.Box):
 
         # ---- result：搜索结果 ----
         result = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        # 结果页头部：返回按钮 + 结果计数。
+        # 与 detail / section 保持一致——此前结果页无返回入口，用户搜完
+        # 只能清空搜索框或切页才能回到浏览视图。
+        r_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        r_back = Gtk.Button(icon_name="go-previous-symbolic")
+        r_back.add_css_class("flat")
+        r_back.set_tooltip_text(_("返回"))
+        r_back.connect("clicked", lambda *_: self._result_back())
+        r_header.append(r_back)
         self.status_lbl = Gtk.Label(label="")
         self.status_lbl.add_css_class("dim-label")
         self.status_lbl.set_halign(Gtk.Align.START)
-        result.append(self.status_lbl)
+        self.status_lbl.set_hexpand(True)
+        r_header.append(self.status_lbl)
+        result.append(r_header)
         # 搜索结果点歌用专用回调（区别于歌单详情）；未注入时回退通用回调。
         self._on_result_track: Optional[Callable] = on_track_activated
 
@@ -685,6 +699,38 @@ class OnlineSearchPage(Gtk.Box):
             cb(self._result_query, self._result_offset, count)
         except Exception:
             self._result_loading = False
+
+    def current_view(self) -> str:
+        """当前可见视图名：browse / detail / result / section。
+
+        供外部（window 切页逻辑）判断用户此刻停留在哪一层，
+        避免切回在线页时把详情/搜索结果视图重置回浏览页。
+        """
+        try:
+            return str(self._stack.get_visible_child_name() or "browse")
+        except Exception:
+            return "browse"
+
+    def _result_back(self) -> None:
+        """搜索结果返回：回到浏览视图，清空结果态与顶栏搜索框。
+
+        清空 _result_query 是为了让后续滚动不再触发翻页请求
+        （否则离开结果页后仍可能拉下一页）。
+        顶栏搜索框由 window 持有，通过注入的回调清空——否则输入框里
+        仍留着上次的关键词，与已回到浏览视图的界面对不上。
+        """
+        self._result_query = ""
+        self._result_loading = False
+        try:
+            self._stack.set_visible_child_name("browse")
+        except Exception:
+            pass
+        cb = getattr(self, "_on_result_back_ext", None)
+        if callable(cb):
+            try:
+                cb()
+            except Exception:
+                pass
 
     def show_browse(self) -> None:
         self._stack.set_visible_child_name("browse")

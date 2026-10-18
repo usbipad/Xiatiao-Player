@@ -8,6 +8,7 @@ import weakref
 
 from gi.repository import Gdk, GLib, Gio, Gtk
 
+from core import track_key
 from core.i18n import _
 from core.tasks import run_cover_async
 from ui.widgets.playing_indicator import PlayingIndicator
@@ -270,11 +271,9 @@ def _on_cover_bind(_factory, list_item) -> None:
     # 跳动音符：按当前行键决定是否在本行封面左侧显示（切歌时自动刷新）。
     ind = getattr(list_item, "_cover_indicator", None)
     if ind is not None:
-        row_key = ""
-        if item is not None:
-            row_key = (getattr(item, "filepath", "") or getattr(item, "source_id", "")
-                       or getattr(item, "title", ""))
-        ind.set_row_key(row_key)
+        # 行键统一走 core.track_key（与历史/收藏/歌单同一规则），避免各列表
+        # 各写一套导致指示器亮错行。
+        ind.set_row_key(track_key(item) if item is not None else "")
         try:
             ind.sync_now()
         except Exception:

@@ -35,7 +35,8 @@ class VizSettingsPage(Adw.PreferencesPage):
         sw.set_title(_("启用可视化"))
         sw.set_subtitle(_("显示沉浸式页面的频谱；关闭可省 CPU"))
         try:
-            sw.set_active(bool(get_config().get_bool("viz_enabled", True)))
+            _cfg = get_config()
+            sw.set_active(bool(_cfg.get_bool("viz_enabled", _cfg.default("viz_enabled"))))
         except Exception:
             sw.set_active(True)
         sw.connect("notify::active", self._on_viz_enabled_toggled)
@@ -223,11 +224,12 @@ class VizSettingsPage(Adw.PreferencesPage):
         cfg = get_config()
         options = ["256", "512", "1024", "2048", "4096"]
         dd = Gtk.DropDown.new_from_strings(options)
-        cur = str(cfg.get_int("viz_fft_window", 1024))
+        # 默认值取权威 DEFAULT_CONFIG（2048），此前写 1024 与配置层不一致。
+        cur = str(cfg.get_int("viz_fft_window", cfg.default("viz_fft_window")))
         if cur in options:
             dd.set_selected(options.index(cur))
         else:
-            dd.set_selected(options.index("1024"))
+            dd.set_selected(options.index(str(cfg.default("viz_fft_window"))))
         dd.connect("notify::selected", self._on_viz_window_changed, options)
         return dd
 
@@ -236,7 +238,7 @@ class VizSettingsPage(Adw.PreferencesPage):
         cfg = get_config()
         options = [_("柱状"), _("波形"), _("平滑曲线")]
         dd = Gtk.DropDown.new_from_strings(options)
-        cur = cfg.get_str("viz_style", "bars")
+        cur = cfg.get_str("viz_style", cfg.default("viz_style"))
         idx = {"bars": 0, "wave": 1, "curve": 2}.get(cur, 0)
         dd.set_selected(idx)
         dd.connect("notify::selected", self._on_viz_style_changed, ["bars", "wave", "curve"])

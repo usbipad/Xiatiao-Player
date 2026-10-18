@@ -15,7 +15,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 from core.i18n import _
 
 from config.settings import APP_VERSION, get_config
-from core import Playlist, PlayerCore, get_cache, tracks_to_list, list_to_tracks
+from core import Playlist, PlayerCore, get_cache, tracks_to_list, list_to_tracks, track_key
 from core.liked_store import get_liked_store
 from models import (
     TrackItem,
@@ -139,6 +139,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._pending_restore_key = ""
         self._dsp_yaml_timer = None
         self._pending_dsp_params = None
+        #: 窗口级定时器注册表（见 _add_timer / _cancel_all_timers）。
+        self._timers: set = set()
         # ---- 投送控制器（DLNA 状态机，从本类抽出）----
         self._cast = CastController(
             get_current_track=lambda: self.playlist.current_track(),
@@ -391,10 +393,14 @@ class MainWindow(Adw.ApplicationWindow):
         GLib.idle_add(self._init_subsonic_entry)
         GLib.idle_add(self._apply_cache_async)
         GLib.idle_add(self._initial_scan)
-        if get_config().get_bool("restore_playback", False):
+        # 默认值统一取 DEFAULT_CONFIG（restore_playback=True），
+        # 此前手写 False 与权威默认相反（靠键必然存在才没出问题）。
+        _cfg0 = get_config()
+        if _cfg0.get_bool("restore_playback", bool(_cfg0.default("restore_playback"))):
             # 延后到窗口显示、控件就绪后再恢复（避免恢复时 UI 未就绪被覆盖）
-            GLib.timeout_add(600, self._restore_last_playback)
-        if get_config().get_bool("remember_window_size", True) and get_config().get_bool("window_maximized", False):
+            self._add_timer(600, self._restore_last_playback)
+        if _cfg0.get_bool("remember_window_size", bool(_cfg0.default("remember_window_size"))) and \
+                _cfg0.get_bool("window_maximized", bool(_cfg0.default("window_maximized"))):
             GLib.idle_add(lambda: (self.maximize(), False)[1])
 
         # ---- MPRIS2：桌面媒体控件 / 媒体键 / 锁屏控制 ----
@@ -1005,6 +1011,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.online_page._on_result_more_ext = self._on_online_search_more
             # 搜索结果点歌：用「搜索结果列表」作播放队列（区别于歌单详情）。
             self.online_page._on_result_track = self._on_online_search_track
+            # 搜索结果「返回」：清空顶栏搜索框（页面自身拿不到它）。
+            self.online_page._on_result_back_ext = self._clear_search_entry
         except Exception:
             pass
         self.stack.add_named(self.online_page, "online")
@@ -1142,19 +1150,17 @@ class MainWindow(Adw.ApplicationWindow):
         # 后台 ping 一次，把 type 记入全局标志（决定音质档位等）。
         try:
             from core.tasks import run_async
-            from providers.subsonic import SubsonicProvider, set_backend_type
+            from providers.subsonic import SubsonicProvider
 
             def _work():
                 try:
-                    return SubsonicProvider()._request("ping", timeout=5.0)
+                    # ping() 内部会记录后端类型（私有/标准判定），
+                    # 无需调用方再手动 set_backend_type。
+                    return SubsonicProvider().ping()
                 except Exception:
                     return {}
 
             def _done(body):
-                try:
-                    set_backend_type((body or {}).get("type", ""))
-                except Exception:
-                    pass
                 # 类型可能变化 → 刷新当前面板（音质下拉可见性）
                 try:
                     cur = self.playlist.current_track()
@@ -1221,21 +1227,14 @@ class MainWindow(Adw.ApplicationWindow):
         def _work():
             p = SubsonicProvider()
             try:
-                # 直接请求 ping，用较短超时避免卡顿
-                return p._request("ping", timeout=5.0)
+                # ping() 内部记录后端类型（标准 Subsonic vs 私有协议后端），
+                # 据此决定是否启用音质档位；调用方无需再手动设置。
+                return p.ping()
             except Exception:
                 return None
 
         def _done(result):
             self._subsonic_online = bool(result)
-            # 记录后端类型（标准 Subsonic vs 私有协议后端）。
-            # 私有后端返回自定义 type（如 xiatiao-api）；标准返回
-            # navidrome/subsonic 等。据此决定是否显示音质档位等。
-            try:
-                from providers.subsonic import set_backend_type
-                set_backend_type((result or {}).get("type", ""))
-            except Exception:
-                pass
             # 后端类型可能变化（用户切换后端）→ 刷新当前面板。
             try:
                 cur = self.playlist.current_track()
@@ -1343,6 +1342,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_global_search(self, entry) -> None:
         """HeaderBar 搜索框：在线页走异步搜索，其他页过滤当前页。"""
+        # 程序性清空（如搜索结果返回）不应触发搜索逻辑，见 _clear_search_entry。
+        if getattr(self, "_suppress_search_changed", False):
+            return
         text = entry.get_text().strip()
         # 在线页：搜索走 Subsonic 异步
         if getattr(self, "_active_source", None) == "online":
@@ -1423,16 +1425,19 @@ class MainWindow(Adw.ApplicationWindow):
             log.debug("惰性页面切换失败", exc_info=True)
 
     def _switch_page(self, key: str) -> None:
-        # 切页即清空搜索框：各页搜索互不干扰。
-        # 放在唯一入口 _switch_page（而非 _on_nav_clicked），未来新增切页
-        # 路径也自动生效。set_text("") 触发 search-changed → _on_global_search，
-        # 此刻 _active_source 仍是旧页，先清旧页过滤；随后 _fill_page_data
-        # 以空词同步新页。
+        # 只做「立即」的事：切页 + 高亮导航（不阻塞）
+        #
+        # 【顺序很重要】必须先更新 _active_source 再清空搜索框。
+        # 原因：set_text("") 会触发 search-changed → _on_global_search，
+        # 而该方法按「当前页」分派。若此刻 _active_source 仍是旧页，
+        # 从「在线」切走时就会走到在线分支的 _online_search_input("")，
+        # 其中空词分支会 show_browse()——把用户正在看的歌单详情/分区/
+        # 搜索结果强制切回在线主界面（切回来时已无法恢复）。
+        # 先切页后清框：清空作用在目标页上，不影响源页的视图层级。
+        self._active_source = key
         se = getattr(self, "_search_entry", None)
         if se is not None and se.get_text():
             se.set_text("")
-        # 只做「立即」的事：切页 + 高亮导航（不阻塞）
-        self._active_source = key
         # 惰性页面：切页时只保留当前页在控件树上，其余暂时移出。
         # 目的：不可见页面（如曲库 1200+ 控件）仍挂在 Stack 上会被 GTK
         # 布局/CSS 遍历，拖慢窗口最大化。移出后 resize 显著变快，
@@ -1452,8 +1457,14 @@ class MainWindow(Adw.ApplicationWindow):
         """idle 回调：切页后异步填数据（读缓存/provider + 渲染）。"""
         try:
             # 同步搜索关键词到新页
-            if getattr(self, "_search_entry", None) is not None:
-                self._on_global_search(self._search_entry)
+            # 同步搜索关键词到新页——但**仅在搜索框非空时**。
+            # 空词对在线页不是「无过滤」，而是「回到浏览视图」
+            # （_online_search_input 的空词分支会 show_browse()），
+            # 会在切回在线页时把用户所在的歌单详情/分区/搜索结果
+            # 强制重置回主界面。空词时各页本就无需过滤，跳过即可。
+            _se = getattr(self, "_search_entry", None)
+            if _se is not None and _se.get_text().strip():
+                self._on_global_search(_se)
             if key == "local":
                 self._ensure_local_provider()
             if key == "home":
@@ -1481,7 +1492,19 @@ class MainWindow(Adw.ApplicationWindow):
                 # 已预加载（启动时拉过）→ 不重复请求，但要看封面是否就绪：
                 # 封面仍在加载时先显示 loading，等空闲再切内容，
                 # 否则内容过早显示会出现「卡片还没封面」的观感。
+                #
+                # 【关键】仅在用户当前停留在「浏览视图」时才动加载态。
+                # 若用户离开时在歌单详情 / 分区 / 搜索结果，切回来必须原样
+                # 保留那一层——show_loading()/show_status() 会把 _stack 切到
+                # browse/result，导致「切走再回来被弹回在线主界面」。
                 if getattr(self, "_online_loaded", False):
+                    try:
+                        _cur_view = self.online_page.current_view()
+                    except Exception:
+                        _cur_view = "browse"
+                    if _cur_view != "browse":
+                        # 用户停留在深层视图：保持原样，不重置。
+                        return False
                     try:
                         from ui.pages import cover_activity
                         if cover_activity.busy:
@@ -1779,16 +1802,28 @@ class MainWindow(Adw.ApplicationWindow):
             log.debug("主页历史填充失败: %s", exc)
         # 注：在线歌单已挪到「在线」页，主页不再拉取（见 _fill_page_data）
 
+    def _clear_search_entry(self) -> None:
+        """静默清空顶栏搜索框（不触发搜索回调）。
+
+        供在线页「搜索结果 → 返回」时调用：用户已回到浏览视图，
+        输入框不应残留上次关键词。用 set_text("") 会触发 search-changed
+        → _on_global_search，进而在在线页再走一次空词分支（多余的
+        show_browse 与队列重载）；这里先置标志屏蔽该次回调。
+        """
+        se = getattr(self, "_search_entry", None)
+        if se is None or not se.get_text():
+            return
+        self._suppress_search_changed = True
+        try:
+            se.set_text("")
+        finally:
+            self._suppress_search_changed = False
+
     def _online_search_input(self, text: str) -> None:
         """顶栏搜索框在「在线」页输入：空→回歌单浏览；非空→防抖后异步搜索。"""
         # 取消上一次防抖
-        tid = getattr(self, "_online_search_timer", 0)
-        if tid:
-            try:
-                GLib.source_remove(tid)
-            except Exception:
-                pass
-            self._online_search_timer = 0
+        self._remove_timer(getattr(self, "_online_search_timer", 0))
+        self._online_search_timer = 0
         if not text:
             # 清空搜索：在线页回浏览视图；曲库页在线 tab 重拉在线曲库首屏
             # （原列表已被搜索结果覆盖，无法就地恢复，只能重拉）。
@@ -1802,7 +1837,7 @@ class MainWindow(Adw.ApplicationWindow):
                 pass
             return
         # 500ms 防抖
-        self._online_search_timer = GLib.timeout_add(500, self._online_search_fire, text)
+        self._online_search_timer = self._add_timer(500, self._online_search_fire, text)
 
     def _online_search_fire(self, text: str) -> bool:
         log.info("[在线搜索fire] text=%r", text)
@@ -1998,7 +2033,9 @@ class MainWindow(Adw.ApplicationWindow):
                         if self.player.play_file(url):
                             if pos > 0.5:
                                 # 稍等新流就绪再 seek 到原位置
-                                GLib.timeout_add(300, lambda _p=pos: (self.player.seek_seconds(_p), False)[1])
+                                self._add_timer(
+                                    300,
+                                    lambda _p=pos: (self.player.seek_seconds(_p), False)[1])
         except Exception as exc:
             log.debug("音质无缝续播失败: %s", exc)
         self._toast(_("音质已切换为 {name}").format(name=name))
@@ -2271,17 +2308,32 @@ class MainWindow(Adw.ApplicationWindow):
         import time as _t0
         self._online_t0 = _t0.monotonic()
 
-        def _try_show() -> bool:
+        def _disconnect() -> None:
+            """断开本次 busy-changed 连接（幂等）。
+
+            cover_activity 是模块级单例、进程级存活。若每次进在线页都
+            connect 一个捕获 self 的闭包且从不断开，单例会永久持有所有
+            历史 window 引用 → window 关闭后无法回收（内存泄漏）。
+            故连接后必须在「已完成」或「窗口销毁」时断开。
+            """
+            hid = getattr(self, "_online_busy_handler_id", None)
+            if not hid:
+                return
+            try:
+                cover_activity.disconnect(hid)
+            except Exception:
+                pass
+            self._online_busy_handler_id = None
+
+        def _try_show(*_args) -> bool:
             if not getattr(self, "_online_pending_show", False):
+                _disconnect()
                 return False
             try:
-                _now = _t0.monotonic()
-                _dt = _now - getattr(self, "_online_t0", _now)
-                log.info("[在线loading] t=%.2f +%.2fs busy=%s pending=%s（busy-changed 处理）",
-                         _now, _dt, cover_activity.busy, self._online_pending_show)
                 if not cover_activity.busy:
                     self._online_pending_show = False
                     self.online_page.show_content()
+                    _disconnect()
                     return False
             except Exception:
                 pass
@@ -2296,10 +2348,11 @@ class MainWindow(Adw.ApplicationWindow):
             if not cover_activity.busy:
                 self._online_pending_show = False
                 self.online_page.show_content()
-                log.info("[在线loading] 进入即空闲，立即显示（+%.2fs）",
-                         _t1.monotonic() - self._online_t0)
                 return
-            cover_activity.connect("busy-changed", lambda _o, busy: _try_show())
+            # 先断开上一次残留连接（防御：正常路径上次结束时会断）。
+            _disconnect()
+            self._online_busy_handler_id = cover_activity.connect(
+                "busy-changed", _try_show)
         except Exception:
             self._online_pending_show = False
             try:
@@ -2307,14 +2360,20 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
         # 兜底：最多等 3 秒（封面异常时不至于永远 spinner）
-        GLib.timeout_add(3000, lambda: (self._try_show_now(), False)[1])
+        self._add_timer(3000, lambda: (self._try_show_now(), False)[1])
 
     def _try_show_now(self) -> None:
         if getattr(self, "_online_pending_show", False):
-            import time as _t2
-            log.info("[在线loading] 兜底 3s 触发显示（+%.2fs）",
-                     _t2.monotonic() - getattr(self, "_online_t0", _t2.monotonic()))
             self._online_pending_show = False
+            # 兜底路径同样要断开 busy-changed 连接（否则泄漏）。
+            hid = getattr(self, "_online_busy_handler_id", None)
+            if hid:
+                try:
+                    from ui.pages import cover_activity
+                    cover_activity.disconnect(hid)
+                except Exception:
+                    pass
+                self._online_busy_handler_id = None
             try:
                 self.online_page.show_content()
             except Exception:
@@ -2701,10 +2760,8 @@ class MainWindow(Adw.ApplicationWindow):
             p = self._get_provider("subsonic")
             if p is None:
                 return ""
-            from providers.subsonic import is_private_backend
-            if is_private_backend():
-                return p.stream_url(sid)
-            return p.stream_url(sid, max_bit_rate=0)
+            # 私有/标准后端差异统一由 provider.playable_url 处理。
+            return p.playable_url(sid)
         except Exception as exc:
             log.debug("构造在线 stream_url 失败: %s", exc)
             return ""
@@ -3004,7 +3061,7 @@ class MainWindow(Adw.ApplicationWindow):
                         log.debug("恢复位置 seek 失败", exc_info=True)
                     return False
 
-                GLib.timeout_add(300, _seek_resume)
+                self._add_timer(300, _seek_resume)
             if not started:
                 # 后端未连接/未启动：play_file 已发出明确错误（error-occur
                 # → 提示），此处不再假装播放中，避免误导用户并避免随后
@@ -3035,17 +3092,16 @@ class MainWindow(Adw.ApplicationWindow):
             try:
                 p = self._get_provider("subsonic")
                 if p is not None and sid:
-                    # 私有协议后端才按音质档位请求；
-                    # 标准 Subsonic 不按档位转码——有什么歌播什么歌
-                    # （maxBitRate=0 原文件直传，避免被服务端降码率）。
-                    _is_private = bool(getattr(track, "is_private_backend", False))
-                    url = (p.stream_url(sid) if _is_private
-                           else p.stream_url(sid, max_bit_rate=0))
+                    # 流地址统一走 provider.playable_url（私有按档位 /
+                    # 标准直传的单一入口），与历史/收藏/队列构造保持一致。
+                    url = p.playable_url(sid)
                     track.stream_url = url  # 回写，保持一致
                     return url
             except Exception as exc:
                 log.debug("重建在线 stream_url 失败: %s", exc)
-        return getattr(track, "play_url", "") or getattr(track, "stream_url", "") or ""
+        # track.play_url = stream_url or filepath，已涵盖在线流与本地路径，
+        # 无需再叠一层 stream_url 兜底。
+        return getattr(track, "play_url", "") or ""
 
     def _dispatch_track_assets(self, track, restoring: bool) -> None:
         """在专用后台线程加载封面/歌词/ReplayGain（重活，避免切歌卡顿）。"""
@@ -3187,6 +3243,11 @@ class MainWindow(Adw.ApplicationWindow):
             self.now_playing.set_bg_texture(
                 bg_tex, bg_dark,
                 title_dark=bg_dark_title, lyrics_dark=bg_dark_lyrics)
+            # 歌词区上下渐隐蒙层（半透明，依歌词区背景明暗自适应）。
+            try:
+                self.now_playing.set_lyric_fade_colors()
+            except Exception:
+                pass
             # 记录模糊图路径/明暗，供沉浸页音效气泡作背景
             # 气泡用专用「超糊」图（比沉浸页背景更糊）。
             self._immersive_bg_path = popover_bg_path or bg_png_path
@@ -4025,7 +4086,7 @@ class MainWindow(Adw.ApplicationWindow):
         # 进入沉浸页：启动可视化采集 + 渲染（主界面期间不跑）
         try:
             if getattr(self, "_viz_pipeline", None) is not None and \
-                    bool(get_config().get_bool("viz_enabled", True)):
+                    bool(get_config().get_bool("viz_enabled", get_config().default("viz_enabled"))):
                 self._viz_pipeline.start()
                 self.now_playing.viz.start()
         except Exception:
@@ -4059,9 +4120,13 @@ class MainWindow(Adw.ApplicationWindow):
             _blur_on = _cfg.get_bool("nowplaying_blur_bg", False)
             bg_rgb = lighten_for_background((r, g, b)) if _blur_on else None
             try:
-                _follow = _cfg.get_bool("progress_follow_cover", False)
+                _follow = _cfg.get_bool(
+                    "progress_follow_cover",
+                    bool(_cfg.default("progress_follow_cover")),
+                )
             except Exception:
-                _follow = True
+                # 兜底与权威默认一致（False），此前写 True，与正常路径相反。
+                _follow = False
             f = 0.72
             seek = ((r / 255.0 * f, g / 255.0 * f, b / 255.0 * f)
                     if _follow else None)
@@ -4213,9 +4278,14 @@ class MainWindow(Adw.ApplicationWindow):
         同时应用到左侧面板进度条与沉浸页进度条。
         """
         try:
-            enabled = get_config().get_bool("progress_follow_cover", False)
+            _cfg = get_config()
+            enabled = _cfg.get_bool(
+                "progress_follow_cover",
+                bool(_cfg.default("progress_follow_cover")),
+            )
         except Exception:
-            enabled = True
+            # 兜底与权威默认一致（False）；此前写 True，与正常路径相反。
+            enabled = False
         rgb = None
         if enabled:
             dom = getattr(self, "_current_dominant_rgb", None)
@@ -4367,10 +4437,9 @@ class MainWindow(Adw.ApplicationWindow):
         import time as _t
         now = _t.monotonic()
         cur = self.playlist.current_track()
-        key = ""
-        if cur is not None:
-            key = (getattr(cur, "filepath", "") or getattr(cur, "source_id", "")
-                   or getattr(cur, "title", "") or "")
+        # 键规则统一走 core.track_key（与指示器/列表高亮同一规则），
+        # 否则「秒结束」失效判定可能与 UI 高亮认的不是同一首。
+        key = track_key(cur) if cur is not None else ""
         same = (key != "" and key == getattr(self, "_last_eos_key", ""))
         recent = (now - getattr(self, "_last_eos_time", 0.0)) < 3.0
         if same and recent:
@@ -4410,14 +4479,9 @@ class MainWindow(Adw.ApplicationWindow):
             # 否则每切一首歌（stopped→playing）就新增一个常驻每秒定时器，
             # 且 _check_playback_stuck 在正常播放时返回 True 一直存活，
             # 定时器数量随播放次数线性增长（缓慢内存/CPU 泄漏）。
-            _old_stuck = getattr(self, "_stuck_timer_id", 0)
-            if _old_stuck:
-                try:
-                    GLib.source_remove(_old_stuck)
-                except Exception:
-                    pass
+            self._remove_timer(getattr(self, "_stuck_timer_id", 0))
             try:
-                self._stuck_timer_id = GLib.timeout_add_seconds(
+                self._stuck_timer_id = self._add_timer_seconds(
                     1, self._check_playback_stuck)
             except Exception:
                 self._stuck_timer_id = 0
@@ -4520,7 +4584,8 @@ class MainWindow(Adw.ApplicationWindow):
             try:
                 q = self.player_panel._current_quality()
             except Exception:
-                q = "lossless"
+                from core.quality import DEFAULT_ONLINE_QUALITY
+                q = DEFAULT_ONLINE_QUALITY
             # 该歌支持的音质档位；仅私有协议后端才显示音质下拉框。
             qlevels = getattr(track, "quality_levels", None)
             is_private = bool(getattr(track, "is_private_backend", False))
@@ -4616,9 +4681,12 @@ class MainWindow(Adw.ApplicationWindow):
                 if not chosen:
                     try:
                         from config.settings import get_config
-                        chosen = get_config().get_str("online_quality", "lossless")
+                        from core.quality import DEFAULT_ONLINE_QUALITY
+                        chosen = get_config().get_str(
+                            "online_quality", DEFAULT_ONLINE_QUALITY)
                     except Exception:
-                        chosen = "lossless"
+                        from core.quality import DEFAULT_ONLINE_QUALITY as _d
+                        chosen = _d
                 from core.quality import spec_rank, quality_expect_spec, spec_display_name
                 _exp = quality_expect_spec(chosen)
                 if _exp and spec_rank(spec) < spec_rank(_exp):
@@ -4735,9 +4803,8 @@ class MainWindow(Adw.ApplicationWindow):
             return
         # 防抖
         try:
-            if getattr(self, "_state_push_timer", None) is not None:
-                GLib.source_remove(self._state_push_timer)
-            self._state_push_timer = GLib.timeout_add(80, self._flush_state_push)
+            self._remove_timer(getattr(self, "_state_push_timer", 0))
+            self._state_push_timer = self._add_timer(80, self._flush_state_push)
         except Exception:
             self._flush_state_push()
 
@@ -4775,12 +4842,8 @@ class MainWindow(Adw.ApplicationWindow):
             return
         # 防抖：拖滑块时合并，避免每个中间值都生成 YAML。
         self._pending_dsp_params = dict(params)
-        if getattr(self, "_dsp_yaml_timer", None) is not None:
-            try:
-                GLib.source_remove(self._dsp_yaml_timer)
-            except Exception:
-                pass
-        self._dsp_yaml_timer = GLib.timeout_add(80, self._emit_camilla_yaml_now)
+        self._remove_timer(getattr(self, "_dsp_yaml_timer", 0))
+        self._dsp_yaml_timer = self._add_timer(80, self._emit_camilla_yaml_now)
 
     def _on_dsp_changed(self, params: dict, *, clear_mark: bool = True,
                         immediate: bool = False) -> None:
@@ -4865,9 +4928,9 @@ class MainWindow(Adw.ApplicationWindow):
             self.now_playing.viz.set_fall_speed(float(cfg.get("viz_fall_speed", 0.35)))
             self.now_playing.viz.set_rise_speed(float(cfg.get("viz_rise_speed", 0.6)))
             self.now_playing.viz.set_db_floor(float(cfg.get("viz_db_floor", -60.0)))
-            self.now_playing.viz.set_fps(int(cfg.get_int("viz_fps", 60)))
+            self.now_playing.viz.set_fps(int(cfg.get_int("viz_fps", cfg.default("viz_fps"))))
             # 按总开关设初始显隐
-            self.now_playing.viz.set_visible(bool(cfg.get_bool("viz_enabled", True)))
+            self.now_playing.viz.set_visible(bool(cfg.get_bool("viz_enabled", cfg.default("viz_enabled"))))
             # 启动时确保渲染器 tick 停止（主界面不跑）
             try:
                 self.now_playing.viz.stop()
@@ -4888,12 +4951,12 @@ class MainWindow(Adw.ApplicationWindow):
             # 面板样式与下落速度同步
             from config.settings import get_config
             cfg = get_config()
-            style = cfg.get_str("viz_style", "bars")
+            style = cfg.get_str("viz_style", cfg.default("viz_style"))
             self.now_playing.viz.set_style(style)
             self.now_playing.viz.set_fall_speed(float(cfg.get("viz_fall_speed", 0.35)))
             self.now_playing.viz.set_rise_speed(float(cfg.get("viz_rise_speed", 0.6)))
             self.now_playing.viz.set_db_floor(float(cfg.get("viz_db_floor", -60.0)))
-            self.now_playing.viz.set_fps(int(cfg.get_int("viz_fps", 60)))
+            self.now_playing.viz.set_fps(int(cfg.get_int("viz_fps", cfg.default("viz_fps"))))
             # 大窗口渲染器同步全部可视化参数
             _vw = getattr(self, "_viz_window", None)
             if _vw is not None and getattr(_vw, "renderer", None) is not None:
@@ -4902,9 +4965,9 @@ class MainWindow(Adw.ApplicationWindow):
                 _vw.renderer.set_fall_speed(float(cfg.get("viz_fall_speed", 0.35)))
                 _vw.renderer.set_rise_speed(float(cfg.get("viz_rise_speed", 0.6)))
                 _vw.renderer.set_db_floor(float(cfg.get("viz_db_floor", -60.0)))
-                _vw.renderer.set_fps(int(cfg.get_int("viz_fps", 60)))
+                _vw.renderer.set_fps(int(cfg.get_int("viz_fps", cfg.default("viz_fps"))))
             # 总开关：显隐沉浸页频谱
-            enabled = bool(cfg.get_bool("viz_enabled", True))
+            enabled = bool(cfg.get_bool("viz_enabled", cfg.default("viz_enabled")))
             self.now_playing.viz.set_visible(enabled)
         except Exception as exc:
             log.debug("可视化参数更新失败: %s", exc)
@@ -4914,7 +4977,7 @@ class MainWindow(Adw.ApplicationWindow):
         try:
             from config.settings import get_config
             from .viz_window import VizWindow
-            style = get_config().get_str("viz_style", "bars")
+            style = get_config().get_str("viz_style", get_config().default("viz_style"))
             win = getattr(self, "_viz_window", None)
             # 频谱窗口以「设置窗口」为 transient 父窗口：作为模态设置窗口的
             # 子窗口，处于其模态链内 → 可交互 / 可关闭；同时设置窗口保持模态，
@@ -4930,7 +4993,7 @@ class MainWindow(Adw.ApplicationWindow):
                 win.renderer.set_fall_speed(float(_cfg.get("viz_fall_speed", 0.35)))
                 win.renderer.set_rise_speed(float(_cfg.get("viz_rise_speed", 0.6)))
                 win.renderer.set_db_floor(float(_cfg.get("viz_db_floor", -60.0)))
-                win.renderer.set_fps(int(_cfg.get_int("viz_fps", 60)))
+                win.renderer.set_fps(int(_cfg.get_int("viz_fps", _cfg.default("viz_fps"))))
 
                 def _on_viz_closed(*_a):
                     # 关闭：清窗口整体持有（renderer draw_func + 控件树回调）+ 停管线
@@ -4966,7 +5029,7 @@ class MainWindow(Adw.ApplicationWindow):
             # 启动可视化采集管线：主界面默认不跑（省电），但独立频谱窗口需要数据
             try:
                 if getattr(self, "_viz_pipeline", None) is not None and \
-                        bool(get_config().get_bool("viz_enabled", True)):
+                        bool(get_config().get_bool("viz_enabled", get_config().default("viz_enabled"))):
                     self._viz_pipeline.start()
             except Exception:
                 log.debug("启动可视化管线失败", exc_info=True)
@@ -5049,12 +5112,73 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
 
+    # ============================================================
+    # 定时器注册表
+    # ============================================================
+    #
+    # 为什么用注册表而非「手工列表 + 记得同步补」：
+    # 旧实现靠一个硬编码属性名元组逐个 source_remove，注释里甚至写着
+    # 「新增定时器时记得同步补进这里」——靠人记性的约束必然被遗漏。
+    # 实测已有 5 个定时器未纳入清理，其中 4 个连 id 都没保存（无法取消），
+    # 窗口关闭后仍可能在已析构控件上回调。
+    #
+    # 现在：所有窗口级定时器一律经 _add_timer()/_add_timer_seconds() 创建，
+    # 自动登记 id；_cancel_all_timers() 遍历注册表统一清理，无需记性。
+    # 一次性回调（idle_add）无需登记——它们不重复触发，且不持有窗口引用。
+
+    def _add_timer(self, interval_ms: int, callback, *args) -> int:
+        """创建并登记一个毫秒级定时器（窗口销毁时自动取消）。"""
+        tid = GLib.timeout_add(interval_ms, callback, *args)
+        try:
+            self._timers.add(tid)
+        except AttributeError:
+            self._timers = {tid}
+        return tid
+
+    def _add_timer_seconds(self, interval_s: int, callback, *args) -> int:
+        """创建并登记一个秒级定时器（窗口销毁时自动取消）。"""
+        tid = GLib.timeout_add_seconds(interval_s, callback, *args)
+        try:
+            self._timers.add(tid)
+        except AttributeError:
+            self._timers = {tid}
+        return tid
+
+    @staticmethod
+    def _source_alive(tid: int) -> bool:
+        """该 source id 是否仍存活。
+
+        一次性定时器的回调返回 False 后，GLib 会自动移除该 source，
+        但注册表里仍留着这个 id。此时再 source_remove 会打印
+        "Source ID N was not found" 警告（不抛异常，故 except 拦不住）。
+        移除前先查存活，既消除噪音，也让注册表语义更准确。
+        """
+        try:
+            ctx = GLib.MainContext.default()
+            return ctx.find_source_by_id(tid) is not None
+        except Exception:
+            # 查询失败：保守返回 True，让 source_remove 走原路径。
+            return True
+
+    def _remove_timer(self, tid: int) -> None:
+        """取消并注销一个定时器（幂等）。"""
+        if not tid:
+            return
+        try:
+            self._timers.discard(tid)
+        except AttributeError:
+            pass
+        if not self._source_alive(tid):
+            return
+        try:
+            GLib.source_remove(tid)
+        except Exception:
+            pass
+
     def _cancel_all_timers(self) -> None:
         """统一移除本窗口注册的所有 GLib 定时器。
 
-        为什么集中管理：定时器散落各处（DSP 防抖、seek 恢复等），
-        窗口销毁后若仍有定时器待触发，会在控件已析构后回调，属隐患。
-        这里统一 source_remove，幂等、可重复调用。
+        遍历注册表，幂等、可重复调用。
         闪屏定时器由 SplashController 自行管理，这里调用其 cancel()。
         """
         # 闪屏定时器
@@ -5064,18 +5188,18 @@ class MainWindow(Adw.ApplicationWindow):
                 ctrl.cancel()
         except Exception:
             pass
-        # 窗口自身定时器（新增定时器时记得同步补进这里）
-        for attr in ("_dsp_yaml_timer", "_state_push_timer", "_stuck_timer_id"):
-            tid = getattr(self, attr, 0)
-            if tid:
+        # 注册表内的全部窗口级定时器（已自动结束的 source 跳过，避免警告）
+        try:
+            for tid in list(self._timers):
+                if not self._source_alive(tid):
+                    continue
                 try:
                     GLib.source_remove(tid)
                 except Exception:
                     pass
-                try:
-                    setattr(self, attr, 0)
-                except Exception:
-                    pass
+            self._timers.clear()
+        except AttributeError:
+            pass
 
     def _on_close_request(self, *_args) -> bool:
         """窗口关闭请求。

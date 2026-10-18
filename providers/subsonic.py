@@ -210,8 +210,26 @@ class SubsonicProvider(BaseMusicProvider):
     # Subsonic 标准端点
     # ============================================================
     def ping(self) -> dict:
-        """连通性 + 服务端信息。"""
-        return self._request("ping")
+        """连通性 + 服务端信息。
+
+        副作用：ping 成功后把服务端声明的 type 记录为「当前后端类型」，
+        供 is_private_backend() 判定是否启用音质档位。
+
+        为什么放在这里：此前 set_backend_type() 全项目零调用，导致
+        is_private_backend() 恒为 False——私有后端的音质档位完全失效
+        （所有在线歌都按 maxBitRate=0 直传）。把记录动作收进 ping 自身，
+        任何调用方（设置页测试连接、主窗口加载账号、启动探测）ping 一次
+        即可保证全局状态正确，不依赖调用方记得单独设置。
+
+        无 type 字段（部分标准服务端不返回）时记录空串，
+        即「非私有」，与白名单判定语义一致。
+        """
+        body = self._request("ping")
+        try:
+            set_backend_type(str(body.get("type", "") or ""))
+        except Exception:
+            pass
+        return body
 
     def get_song(self, song_id: str) -> dict:
         """单曲信息。"""
@@ -565,14 +583,18 @@ class SubsonicProvider(BaseMusicProvider):
         max_bit_rate>0：指定码率。
         fmt 可指定转码格式（如 mp3），留空=不转码。
         """
+        # 显式 0（不限制/原文件直传）必须作为 maxBitRate=0 传给服务端：
+        # 协议规定 0 = 不限制，而「不传该参数」可能触发服务端默认转码。
+        # 仅当「未指定且档位映射不到」时省略参数（保持既有兜底行为）。
+        explicit_zero = max_bit_rate == 0
         if max_bit_rate is None:
             try:
                 max_bit_rate = self._configured_quality_br()
             except Exception:
                 max_bit_rate = 0
         extra = [("id", song_id)]
-        if max_bit_rate:
-            extra.append(("maxBitRate", str(max_bit_rate)))
+        if max_bit_rate or explicit_zero:
+            extra.append(("maxBitRate", str(max_bit_rate or 0)))
         if fmt:
             extra.append(("format", fmt))
         return self._url("stream", extra)
@@ -740,12 +762,8 @@ class SubsonicProvider(BaseMusicProvider):
         # 真实音频格式：Navidrome/OpenSubsonic 返回 suffix（flac/dsf/dff/mp3…）。
         # 在线流的 stream_url 扩展名是 `view`，无法判格式，故用 suffix。
         suffix = str(song.get("suffix", "") or "").strip().lower()
-        # 私有协议后端才按音质档位请求；标准 Subsonic 不按档位转码
-        # ——有什么歌播什么歌（maxBitRate=0 直传）。
-        # 注意：判据用「全局后端类型标志」（连接时 ping 探测），
-        # 不能只看本曲的 qualityLevels——私有后端未必逐曲返回该字段。
-        _surl = (self.stream_url(sid) if is_private_backend()
-                 else self.stream_url(sid, max_bit_rate=0))
+        # 流地址统一走 playable_url（私有按档位 / 标准直传的单一入口）。
+        _surl = self.playable_url(sid)
         return TrackItem(
             title=str(song.get("title", "Unknown") or "Unknown"),
             artist=str(song.get("artist", "Unknown") or "Unknown"),
@@ -863,16 +881,45 @@ class SubsonicProvider(BaseMusicProvider):
             log.debug("获取在线曲库分页失败: %s", exc)
             return []
 
-    def fetch_stream_url(self, source_id: str, quality: str = "") -> str:
-        """按 song id 构造流 URL（通用档位）。空 id 返回空串。"""
-        if not source_id:
+    def playable_url(self, song_id: str, quality: str = "") -> str:
+        """构造「可播放 / 可下载」的音频流 URL——私有/标准差异的单一入口。
+
+        规则（此前在 ui/window.py::_subsonic_stream_url、_play_url_for、
+        ui/download_dialog.py 与本模块 _song_to_track 里各写了一遍，
+        现统一到此处）：
+          - 私有协议后端：**必须带 quality 参数**驱动档位
+              · quality 为空 → 用当前配置/运行时档位（播放场景）；
+              · quality 指定 → 用该档位（下载场景，用户显式选择）；
+          - 标准 Subsonic：不按档位转码，原文件直传（maxBitRate=0），
+            避免被服务端降码率。
+
+        ⚠️ 私有后端实测：只传 maxBitRate 会被忽略（各档位均返回原文件），
+        必须同时带 quality 参数才会按档位转码。故私有分支统一走
+        download_url（它拼 quality + maxBitRate），而非裸 stream_url。
+
+        空 id / 出错返回空串。
+        """
+        if not song_id:
             return ""
         try:
-            if quality:
-                return self.download_url(source_id, quality=quality)
-            return self.stream_url(source_id)
+            if is_private_backend():
+                if quality:
+                    return self.download_url(song_id, quality=quality)
+                # 播放：用当前生效档位（运行时优先，回落配置）。
+                from providers.subsonic import _RUNTIME_QUALITY
+                from core.quality import DEFAULT_ONLINE_QUALITY
+                q = _RUNTIME_QUALITY
+                if not q:
+                    try:
+                        from config.settings import get_config
+                        q = get_config().get_str(
+                            "online_quality", DEFAULT_ONLINE_QUALITY)
+                    except Exception:
+                        q = DEFAULT_ONLINE_QUALITY
+                return self.download_url(song_id, quality=q)
+            return self.stream_url(song_id, max_bit_rate=0)
         except Exception as exc:
-            log.debug("构造在线流 URL 失败: %s", exc)
+            log.debug("构造可播放流 URL 失败: %s", exc)
             return ""
 
     def fetch_recommendations(self, source: str = "", rec_type: str = "daily"):
