@@ -156,7 +156,15 @@ def _popup_track_menu(parent, x, y, ctx) -> None:
     box.set_margin_bottom(6)
     box.set_margin_start(6)
     box.set_margin_end(6)
+    # 本地文件专属的菜单项：在线曲目（filepath 为空）没有本地文件，
+    # 显示「复制文件路径」「在文件管理器中显示」只会弹提示，属于噪声，直接隐藏。
+    _track = ctx.get("track")
+    _is_local = bool(getattr(_track, "filepath", "") or "") if _track is not None else True
+    _LOCAL_ONLY = ("copy_path", "reveal")
+
     for label, key in entries:
+        if not _is_local and key in _LOCAL_ONLY:
+            continue
         btn = Gtk.Button()
         btn.add_css_class("flat")
         btn.set_halign(Gtk.Align.FILL)
@@ -510,7 +518,7 @@ def build_track_columnview(model, on_activate=None,
             _append_text_column(title, prop, expand, sort_key, sortable=False)
     else:
         _append_text_column(_("歌名"), "title", True, "title", sortable=_sort_on)
-        _append_text_column(_("歌手"), "artist", False, "artist", sortable=_sort_on)
+        _append_text_column(_("歌手"), "artist", False, "artist", width=220, sortable=_sort_on)
         _append_text_column(_("格式"), "format_ext", False, "format_ext", width=90, sortable=_sort_on)
         _append_text_column(_("采样率"), "sample_rate_label", False, "sample_rate", numeric=True, width=100, sortable=_sort_on)
 

@@ -16,6 +16,9 @@ from core.tasks import run_cover_async
 
 #: 卡片封面尺寸
 CARD_COVER_PX = 150
+#: 封面纹理的最大边长。超过此值的图先缩放再建纹理，
+#: 防止大封面（如 3000px）按原尺寸常驻内存。
+MAX_COVER_DIM = 512
 #: 容器四周阴影留白
 _PAD = 14
 #: 封面到容器边缘的距离
@@ -27,16 +30,21 @@ _ROW_H = 230
 
 
 def _load_url_cover_async(url: str, on_done) -> None:
-    """后台下载封面图，回主线程回调 pixbuf 或 None。"""
+    """后台下载封面图，原始字节交给 GTK 解码建纹理。"""
     import urllib.request
 
     def _work():
         try:
             req = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(req, timeout=15) as resp:
-                return resp.read()
+                raw = resp.read()
         except Exception:
             return None
+        if not raw:
+            return None
+        # 解码/缩放/裁剪/建纹理都在后台线程完成：
+        # 若留到 on_done（主线程 idle），首屏几十张封面同时回来会堵死主循环。
+        return _raw_to_texture(raw)
 
     # 缓存键：与 song_list / player_panel 保持一致（"url::" 前缀，进同一个 LRU）。
     ckey = "url::" + url
@@ -51,8 +59,8 @@ def _load_url_cover_async(url: str, on_done) -> None:
             on_done(cached)   # 命中：直接回填（Gdk.Texture 或 None）
             return
 
-    def _done(raw):
-        if not raw:
+    def _done(tex):
+        if not tex:
             try:
                 cache_put(ckey, None)
             except Exception:
@@ -60,60 +68,44 @@ def _load_url_cover_async(url: str, on_done) -> None:
             on_done(None)
             return
         try:
-            from gi.repository import GdkPixbuf
-            loader = GdkPixbuf.PixbufLoader.new()
-            loader.write(raw)
-            loader.close()
-            pb = loader.get_pixbuf()
-            if pb is None:
-                on_done(None)
-                return
-            w, h = pb.get_width(), pb.get_height()
-            side = min(w, h)
-            if w != h:
-                pb = pb.new_subpixbuf((w - side) // 2, (h - side) // 2, side, side)
-            pb = pb.scale_simple(CARD_COVER_PX, CARD_COVER_PX,
-                                 GdkPixbuf.InterpType.BILINEAR)
-            # 转成 Gdk.Texture 再交付/缓存：Picture 用 set_paintable 即可，
-            # 避免每个卡片各持一份 GdkPixbuf（那是 216MB 泄漏的来源）。
-            tex = _pixbuf_to_texture(pb)
-            try:
-                cache_put(ckey, tex)
-            except Exception:
-                pass
-            on_done(tex)
+            cache_put(ckey, tex)
         except Exception:
-            on_done(None)
+            pass
+        on_done(tex)
 
     run_cover_async(work=_work, on_done=_done)
 
 
-def _pixbuf_to_texture(pixbuf):
-    """GdkPixbuf -> Gdk.Texture（不经过 PNG 编解码）。
+def _raw_to_texture(raw: bytes):
+    """原始图片字节 -> 正方形 Gdk.Texture。
 
-    与 models/coverart._pixbuf_to_texture 同样的做法：紧凑 RGBA 后建
-    MemoryTexture。失败回退 set_pixbuf 路径（返回 None，由调用方兜底）。
+    居中裁剪成正方形（避免长图/宽图撑坏卡片布局），大于 MAX_COVER_DIM 的
+    先缩放再裁剪（避免大封面常驻内存）。
     """
-    try:
-        from gi.repository import Gdk, GLib
-        if not pixbuf.get_has_alpha():
-            pixbuf = pixbuf.add_alpha(True, 255, 255, 255)
-        w, h = pixbuf.get_width(), pixbuf.get_height()
-        stride = pixbuf.get_rowstride()
-        n_ch = pixbuf.get_n_channels()
-        if n_ch == 4 and stride >= w * 4:
-            data = bytes(pixbuf.get_pixels())
-            if stride != w * 4:
-                rows = bytearray()
-                for y in range(h):
-                    rows += data[y * stride: y * stride + w * 4]
-                data = bytes(rows)
-                stride = w * 4
-            return Gdk.MemoryTexture.new(
-                w, h, Gdk.MemoryFormat.R8G8B8A8, GLib.Bytes.new(data), stride)
-    except Exception:
-        pass
-    return None
+    from gi.repository import Gdk, GdkPixbuf, GLib, Gio
+
+    stream = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(raw))
+    pb = GdkPixbuf.Pixbuf.new_from_stream(stream, None)
+    w, h = pb.get_width(), pb.get_height()
+    if w <= 0 or h <= 0:
+        return None
+
+    # 先按最大边缩放（如果需要）
+    if max(w, h) > MAX_COVER_DIM:
+        scale = MAX_COVER_DIM / max(w, h)
+        nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+        pb = pb.scale_simple(nw, nh, GdkPixbuf.InterpType.BILINEAR)
+        w, h = pb.get_width(), pb.get_height()
+
+    # 居中裁剪成正方形
+    side = min(w, h)
+    if w != h:
+        pb = pb.new_subpixbuf((w - side) // 2, (h - side) // 2, side, side)
+
+    ok, png = pb.save_to_bufferv("png", [], [])
+    if not ok:
+        return None
+    return Gdk.Texture.new_from_bytes(GLib.Bytes.new(bytes(png)))
 
 
 def _make_card(card: dict) -> Gtk.Widget:
@@ -178,8 +170,12 @@ def _make_card(card: dict) -> Gtk.Widget:
                     pic.set_paintable(tex)
                     pic.set_content_fit(Gtk.ContentFit.COVER)
                     pic.set_size_request(CARD_COVER_PX, CARD_COVER_PX)
-                    pic.set_hexpand(True)
-                    pic.set_vexpand(True)
+                    # 锁死尺寸：不随容器拉伸，也不被纹理固有尺寸带偏。
+                    # 之前 hexpand/vexpand=True 会让宽图把卡片撑成长方形。
+                    pic.set_hexpand(False)
+                    pic.set_vexpand(False)
+                    pic.set_halign(Gtk.Align.CENTER)
+                    pic.set_valign(Gtk.Align.CENTER)
                     child = holder.get_first_child()
                     while child is not None:
                         nxt = child.get_next_sibling()

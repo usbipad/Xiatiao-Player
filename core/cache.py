@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 CACHE_FILENAME = "cache.json"
 
 #: 允许缓存的块名（防止误写大对象）
-CACHE_KEYS = ("home", "explore", "collection", "local", "user", "queue")
+CACHE_KEYS = ("home", "explore", "collection", "local", "user", "queue", "last_page")
 
 
 def _default_cache_path() -> Path:

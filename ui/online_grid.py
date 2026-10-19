@@ -13,7 +13,7 @@ from __future__ import annotations
 import urllib.request
 from typing import Callable, List, Optional
 
-from gi.repository import Gdk, GdkPixbuf, Gio, GLib, GObject, Gtk
+from gi.repository import Gdk, Gio, GLib, GObject, Gtk
 
 from core.tasks import run_cover_async
 
@@ -56,24 +56,9 @@ def _load_url_cover_async(url: str, on_done: Callable) -> None:
             return None
         if not raw:
             return None
-        try:
-            loader = GdkPixbuf.PixbufLoader.new()
-            loader.write(raw)
-            loader.close()
-            pb = loader.get_pixbuf()
-            if pb is None:
-                return None
-            w, h = pb.get_width(), pb.get_height()
-            side = min(w, h)
-            if w != h:
-                pb = pb.new_subpixbuf((w - side) // 2, (h - side) // 2, side, side)
-            # 原图已小于目标则不放大（省一次无谓缩放）
-            if side > CARD_COVER_PX:
-                pb = pb.scale_simple(CARD_COVER_PX, CARD_COVER_PX,
-                                     GdkPixbuf.InterpType.BILINEAR)
-            return pb
-        except Exception:
-            return None
+        # 纹理构建放后台线程，避免 on_done（主线程）批量做重活。
+        from .online_section import _raw_to_texture
+        return _raw_to_texture(raw)
 
     # 缓存键：与 song_list / player_panel 一致（"url::" 前缀，同一 LRU）。
     ckey = "url::" + url
@@ -88,19 +73,14 @@ def _load_url_cover_async(url: str, on_done: Callable) -> None:
             on_done(cached)
             return
 
-    def _done(pb):
-        if pb is None:
+    def _done(tex):
+        if not tex:
             try:
                 cache_put(ckey, None)
             except Exception:
                 pass
             on_done(None)
             return
-        try:
-            from .online_section import _pixbuf_to_texture
-            tex = _pixbuf_to_texture(pb)
-        except Exception:
-            tex = None
         try:
             cache_put(ckey, tex)
         except Exception:

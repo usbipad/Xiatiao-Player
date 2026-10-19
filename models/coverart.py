@@ -22,15 +22,63 @@ except Exception:  # pragma: no cover - 环境相关
     log.info("mutagen 不可用，无法读取内嵌封面")
 
 
-def extract_cover(path: str) -> bytes | None:
-    """从音频文件提取内嵌封面，返回图片字节；无则返回 None。"""
-    if not _HAS_MUTAGEN or not path or not os.path.isfile(path):
-        return None
+#: 同目录独立封面文件名（小写，按优先级）。
+#: 很多无损资源不内嵌封面，而是在专辑目录放一张 cover.jpg；
+#: Subsonic 等服务端会读它，本地播放器也应同样兜底，
+#: 否则「服务端有封面、本地没封面」会显得像 bug。
+_DIR_COVER_NAMES = (
+    "cover.jpg", "cover.jpeg", "cover.png", "cover.webp",
+    "folder.jpg", "folder.jpeg", "folder.png",
+    "front.jpg", "front.jpeg", "front.png",
+    "album.jpg", "album.jpeg", "album.png",
+)
+
+
+def _cover_from_dir(path: str) -> bytes | None:
+    """读取音频同目录下的独立封面文件（cover.jpg / folder.png 等）。"""
     try:
-        return _extract(path)
-    except Exception as exc:
-        log.debug("读取封面失败 %s: %s", path, exc)
+        folder = os.path.dirname(os.path.abspath(path))
+        if not folder or not os.path.isdir(folder):
+            return None
+        # 大小写不敏感匹配：先精确名，再扫描目录比对小写名。
+        for name in _DIR_COVER_NAMES:
+            fp = os.path.join(folder, name)
+            if os.path.isfile(fp):
+                with open(fp, "rb") as f:
+                    data = f.read()
+                if data and _find_image_in_bytes(data[:16]) is not None:
+                    return data
+        try:
+            wanted = set(_DIR_COVER_NAMES)
+            for entry in os.scandir(folder):
+                if entry.is_file() and entry.name.lower() in wanted:
+                    with open(entry.path, "rb") as f:
+                        data = f.read()
+                    if data and _find_image_in_bytes(data[:16]) is not None:
+                        return data
+        except OSError:
+            return None
+    except Exception:
         return None
+    return None
+
+
+def extract_cover(path: str) -> bytes | None:
+    """提取封面：优先文件内嵌封面，其次同目录独立封面图。
+
+    返回图片字节；都没有则返回 None。
+    """
+    if not path or not os.path.isfile(path):
+        return None
+    if _HAS_MUTAGEN:
+        try:
+            data = _extract(path)
+            if data:
+                return data
+        except Exception as exc:
+            log.debug("读取内嵌封面失败 %s: %s", path, exc)
+    # 内嵌没有（或 mutagen 不可用）→ 回退同目录封面图
+    return _cover_from_dir(path)
 
 
 def _cover_from_id3_tags(tags) -> bytes | None:
@@ -754,10 +802,7 @@ def make_cover_textures(image_bytes: bytes, sizes, want_color: bool = False):
 
 
 def _pixbuf_to_texture(pixbuf):
-    """把 GdkPixbuf 的像素直接建成 Gdk.MemoryTexture（不经过 PNG）。
-
-    要求 pixbuf 为 8bit RGBA；返回 GdkTexture。
-    """
+    """GdkPixbuf -> GdkTexture（经 PNG 中转，由 GTK 解码）。"""
     import gi
 
     gi.require_version("GdkPixbuf", "2.0")
@@ -766,26 +811,10 @@ def _pixbuf_to_texture(pixbuf):
 
     if not pixbuf.get_has_alpha():
         pixbuf = pixbuf.add_alpha(True, 255, 255, 255)
-    w, h = pixbuf.get_width(), pixbuf.get_height()
-    stride = pixbuf.get_rowstride()
-    n_ch = pixbuf.get_n_channels()
-    # 确保紧凑 RGBA 行距（MemoryTexture 要求 stride >= w*4）
-    if n_ch == 4 and stride >= w * 4:
-        data = bytes(pixbuf.get_pixels())
-        if stride != w * 4:
-            # 逐行去 padding
-            rows = bytearray()
-            for y in range(h):
-                rows += data[y * stride: y * stride + w * 4]
-            data = bytes(rows)
-            stride = w * 4
-        gb = GLib.Bytes.new(data)
-        return Gdk.MemoryTexture.new(w, h, Gdk.MemoryFormat.R8G8B8A8, gb, stride)
-    # 兜底：其它格式转 PNG
     ok, png = pixbuf.save_to_bufferv("png", [], [])
-    if ok:
-        return Gdk.Texture.new_from_bytes(GLib.Bytes.new(bytes(png)))
-    raise ValueError("unsupported pixbuf format")
+    if not ok:
+        raise ValueError("pixbuf -> png failed")
+    return Gdk.Texture.new_from_bytes(GLib.Bytes.new(bytes(png)))
 
 
 def make_square_covers_multi(image_bytes: bytes, specs, want_color: bool = False):

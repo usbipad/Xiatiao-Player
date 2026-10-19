@@ -388,7 +388,15 @@ class MainWindow(Adw.ApplicationWindow):
         self._apply_audio_output_settings()
 
         # ---- 首屏：窗口先显示，重活丢到主循环空闲时做（避免启动卡半拍）----
-        self._switch_page("home")
+        # 恢复上次退出时所在的页面（无效值回退 home）。
+        _start_page = "home"
+        try:
+            _p = get_cache().get("last_page")
+            if isinstance(_p, str) and _p in self._nav_buttons:
+                _start_page = _p
+        except Exception:
+            pass
+        self._switch_page(_start_page)
         # 在线音源：按开关初始化入口，并异步检测连通性
         GLib.idle_add(self._init_subsonic_entry)
         GLib.idle_add(self._apply_cache_async)
@@ -1435,6 +1443,8 @@ class MainWindow(Adw.ApplicationWindow):
         # 搜索结果强制切回在线主界面（切回来时已无法恢复）。
         # 先切页后清框：清空作用在目标页上，不影响源页的视图层级。
         self._active_source = key
+        # 记录当前页，退出时持久化，下次启动直接回到这一页。
+        self._last_page_key = key
         se = getattr(self, "_search_entry", None)
         if se is not None and se.get_text():
             se.set_text("")
@@ -4142,6 +4152,17 @@ class MainWindow(Adw.ApplicationWindow):
         provider = getattr(self, "_dynamic_css", None)
         if provider is None:
             return
+        # 去重：颜色与开关状态都没变时直接返回。
+        # 否则每切一首歌都会 load_from_data 重解析整段 CSS 并让整棵控件树
+        # 样式失效（GTK4 会重新匹配全部选择器），累积下来既卡又涨内存。
+        try:
+            _enabled_now = get_config().get_bool("main_bg_follow_cover", False)
+        except Exception:
+            _enabled_now = False
+        _sig = (_enabled_now, tuple(bg_rgb) if (_enabled_now and bg_rgb) else None)
+        if getattr(self, "_main_bg_sig", None) == _sig:
+            return
+        self._main_bg_sig = _sig
         try:
             enabled = get_config().get_bool("main_bg_follow_cover", False)
         except Exception:
@@ -5221,7 +5242,11 @@ class MainWindow(Adw.ApplicationWindow):
                     return True  # 阻止默认关闭 → 不退出
             except Exception:
                 log.debug("close_to_tray 判断失败", exc_info=True)
-        # 正常退出流程。
+        # 正常退出流程（幂等：与 _quit_app 共用 _shutdown_done，
+        # 避免「托盘退出 → app.quit() → 窗口 close-request」重复停服务）。
+        if getattr(self, "_shutdown_done", False):
+            return False
+        self._shutdown_done = True
         try:
             self._cancel_all_timers()
         except Exception:
@@ -5234,6 +5259,12 @@ class MainWindow(Adw.ApplicationWindow):
         """关闭前持久化：队列会话 + 缓存 + 音量/窗口尺寸偏好。"""
         try:
             self._save_queue()
+        except Exception:
+            pass
+        try:
+            _pk = getattr(self, "_last_page_key", "") or ""
+            if _pk:
+                get_cache().set("last_page", _pk)
         except Exception:
             pass
         try:
@@ -5304,9 +5335,35 @@ class MainWindow(Adw.ApplicationWindow):
     def _quit_app(self) -> None:
         """主动退出应用（Ctrl+Q / 菜单 / 托盘）。
 
-        设 _force_quit 标志，确保即使开启「关闭时最小化到后台」也能真正退出。
+        与窗口关闭按钮走同一套收尾：取消定时器 → 保存会话/页面 →
+        停服务 → 退出。区别是不经过 close_to_tray 判断——托盘退出
+        是「明确要退出」，不能被「关闭时最小化到后台」拦截成隐藏。
+
+        不要直接 app.quit()：那会销毁窗口而不触发 close-request，
+        导致 _persist_on_close 从未执行，页面/队列状态丢失。
+
+        幂等保护：_shutdown_done 保证收尾只执行一次（app.quit() 之后
+        窗口仍可能触发一次 close-request，重复 stop 播放内核会报错）。
         """
+        if getattr(self, "_shutdown_done", False):
+            app = self.get_application()
+            if app is not None:
+                app.quit()
+            return
+        self._shutdown_done = True
         self._force_quit = True
+        try:
+            self._cancel_all_timers()
+        except Exception:
+            log.debug("取消定时器失败", exc_info=True)
+        try:
+            self._persist_on_close()
+        except Exception:
+            log.debug("退出前保存会话失败", exc_info=True)
+        try:
+            self._shutdown_services()
+        except Exception:
+            log.debug("退出前停服务失败", exc_info=True)
         app = self.get_application()
         if app is not None:
             app.quit()
