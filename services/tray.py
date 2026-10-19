@@ -200,12 +200,30 @@ class Tray:
         return True
 
     def stop(self) -> None:
+        """注销 D-Bus 对象、释放总线名、断开连接（幂等）。
+
+        必须释放总线名：托盘用的名字是 `org.kde.StatusNotifierItem-{pid}-1`，
+        同一进程内固定不变。旧实现只 unregister_object 而不 bus_unown_name，
+        实测 stop 后名字仍被本连接占用（NameHasOwner 返回 True），
+        导致同进程内再次 start() 无法重新注册托盘（面板不显示图标）。
+        与 services/mpris.py::stop 的处理保持一致。
+        """
+        # 1) 注销导出的对象
         for rid in self._reg_ids:
             try:
-                self._conn.unregister_object(rid)
+                if self._conn is not None:
+                    self._conn.unregister_object(rid)
             except Exception:
                 pass
         self._reg_ids = []
+        # 2) 释放总线名（关键，见 docstring）
+        try:
+            if self._bus_id:
+                Gio.bus_unown_name(self._bus_id)
+        except Exception:
+            log.debug("托盘：释放总线名失败", exc_info=True)
+        self._bus_id = 0
+        # 3) 断开连接引用
         self._conn = None
 
     def set_playing(self, playing: bool) -> None:

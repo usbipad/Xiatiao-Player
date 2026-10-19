@@ -309,32 +309,60 @@ class _FileHandler(BaseHTTPRequestHandler):
                 self.send_error(404)
                 return
             qs = urllib.parse.parse_qs(parsed.query)
-            path = (qs.get("path") or [""])[0]
+            # 安全（关键）：只接受 token，**不接受任何路径参数**。
+            # 本服务监听 0.0.0.0（局域网可访问）；旧实现按 ?path=<任意路径>
+            # 直接读文件，导致局域网内任何人都能读取本机任意文件
+            # （实测 GET /file?path=/etc/passwd 返回 200 且内容可读）。
+            # 现在只查 DlnaPusher 的登记表，URL 里是随机 token、不含真实路径，
+            # 也不做任何路径拼接，因此不存在路径穿越。
+            token = (qs.get("token") or [""])[0]
+            pusher = getattr(self.server, "pusher", None)
+            path = pusher.resolve_share(token) if pusher is not None else ""
             if not path or not os.path.isfile(path):
-                log.warning("[DLNA-HTTP] 文件不存在: %s", path)
+                log.warning("[DLNA-HTTP] token 无效或文件不存在: %r", token[:8])
                 self.send_error(404)
                 return
             size = os.path.getsize(path)
             ctype = _guess_mime(path)
             # 标准 HTTP Range 支持：设备按需自行请求片段（标准 DLNA 播放器用）。
+            # Range 解析：旧实现只取起始值，`bytes=0-100` 会返回整个文件
+            # （不符合 RFC 7233，部分设备据此判断可 seek 范围时会出错）。
+            # 这里完整支持 bytes=start-end / start- / -suffix。
             start = 0
+            end = max(0, size - 1)
+            has_range = False
             range_hdr = self.headers.get("Range", "")
-            if range_hdr.startswith("bytes="):
+            if range_hdr.startswith("bytes=") and size > 0:
+                spec = range_hdr[len("bytes="):].split(",")[0].strip()
+                a, _, b = spec.partition("-")
                 try:
-                    rng = range_hdr[len("bytes="):].split("-")[0].strip()
-                    if rng:
-                        start = int(rng)
+                    if not a and b:
+                        # bytes=-N：最后 N 字节
+                        n = int(b)
+                        start = max(0, size - n)
+                        end = size - 1
+                    else:
+                        start = int(a) if a else 0
+                        end = int(b) if b else size - 1
+                    has_range = True
                 except (ValueError, TypeError):
-                    pass
-            start = max(0, min(start, size))
-            log.debug("[DLNA-HTTP] 请求 %s start=%s size=%s", path, start, size)
-            if start > 0:
+                    start, end, has_range = 0, size - 1, False
+            if size <= 0:
+                start = end = 0
+                length = 0
+            else:
+                start = max(0, min(start, size - 1))
+                end = max(start, min(end, size - 1))
+                length = end - start + 1
+            log.debug("[DLNA-HTTP] 请求 %s start=%s end=%s size=%s",
+                      path, start, end, size)
+            if has_range:
                 self.send_response(206)
-                self.send_header("Content-Range", f"bytes {start}-{size - 1}/{size}")
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             else:
                 self.send_response(200)
             self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(size - start))
+            self.send_header("Content-Length", str(length))
             self.send_header("Accept-Ranges", "bytes")
             # DLNA 专用头：部分设备（如小爱音箱）据此判断流类型与
             # 传输模式，缺失时可能不播或反复重连。
@@ -353,11 +381,14 @@ class _FileHandler(BaseHTTPRequestHandler):
                 return
             with open(path, "rb") as fp:
                 fp.seek(start)
-                while True:
-                    chunk = fp.read(65536)
+                # 按 length 截断：部分 Range 请求不能把剩余内容全发出去。
+                remaining = length
+                while remaining > 0:
+                    chunk = fp.read(min(65536, remaining))
                     if not chunk:
                         break
                     self.wfile.write(chunk)
+                    remaining -= len(chunk)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:
@@ -505,6 +536,13 @@ class DlnaPusher:
         self._ip = local_ip()
         self._device: Optional[Dict[str, str]] = None
         self._lock = threading.Lock()
+        #: 已登记共享的文件：token -> 绝对路径（上限 64，超出淘汰最旧）。
+        #: 安全（必须）：HTTP 服务监听 0.0.0.0；若按 ?path= 直接读文件，
+        #: 局域网内任何人都能读取本机任意文件（实测 /etc/passwd 返回 200）。
+        #: 改为只服务 push() 显式登记过的文件，URL 用不可猜的 token，
+        #: 登记时路径已 realpath 规范化，handler 端不做任何路径拼接。
+        self._shared: Dict[str, str] = {}
+        self._shared_lock = threading.Lock()
 
     # ---- HTTP 文件服务 ----
     def start_http(self, port: int = 8201) -> int:
@@ -514,6 +552,8 @@ class DlnaPusher:
         for p in range(port, port + 20):
             try:
                 srv = ThreadingHTTPServer(("0.0.0.0", p), _FileHandler)
+                # handler 通过 self.server.pusher 访问共享登记表
+                srv.pusher = self
                 self._http = srv
                 self._http_port = p
                 threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -534,6 +574,40 @@ class DlnaPusher:
             self._http = None
             self._http_port = 0
 
+    # ---- 共享文件登记（HTTP 服务只服务这里登记过的文件）----
+    def register_share(self, filepath: str) -> str:
+        """登记一个允许通过 HTTP 服务读取的文件，返回访问 token。
+
+        返回空串表示文件不可读（调用方应放弃投送）。
+        路径在此 realpath 规范化后只保存绝对路径；handler 端不接受任何
+        路径参数，因此不存在路径穿越风险。
+        """
+        if not filepath:
+            return ""
+        try:
+            real = os.path.realpath(filepath)
+        except Exception:
+            return ""
+        if not real or not os.path.isfile(real):
+            return ""
+        import secrets
+        token = secrets.token_urlsafe(24)
+        with self._shared_lock:
+            # 上限 64：长时间投送避免无限累积。淘汰最旧的一部分
+            # （设备通常只拉当前这一首，旧的已无用处）。
+            if len(self._shared) >= 64:
+                for k in list(self._shared)[:16]:
+                    self._shared.pop(k, None)
+            self._shared[token] = real
+        return token
+
+    def resolve_share(self, token: str) -> str:
+        """token → 已登记的绝对路径；无效返回空串。"""
+        if not token:
+            return ""
+        with self._shared_lock:
+            return self._shared.get(token, "")
+
     # ---- 设备 ----
     def set_device(self, device: Dict[str, str]) -> None:
         with self._lock:
@@ -546,8 +620,9 @@ class DlnaPusher:
     def _control(self) -> str:
         return (self._device or {}).get("control_url", "")
 
-    def _file_url(self, filepath: str) -> str:
-        q = urllib.parse.urlencode({"path": filepath})
+    def _file_url(self, token: str) -> str:
+        """构造共享文件 URL。参数是 register_share() 返回的 token，不是路径。"""
+        q = urllib.parse.urlencode({"token": token})
         return f"http://{self._ip}:{self._http_port}/file?{q}"
 
     def push(self, filepath: str, title: str = "", artist: str = "") -> bool:
@@ -571,7 +646,12 @@ class DlnaPusher:
                 self.start_http()
             if self._http is None:
                 return False
-            url = self._file_url(filepath)
+            # 必须先登记才生成 URL：URL 里只有不可猜的 token，不含真实路径。
+            _token = self.register_share(filepath)
+            if not _token:
+                log.warning("DLNA 推送：文件不可读，无法共享: %s", filepath)
+                return False
+            url = self._file_url(_token)
         meta = _didl_metadata(url, title or os.path.basename(filepath), artist,
                               _guess_mime(filepath))
         escaped_url = html.escape(url)

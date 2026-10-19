@@ -64,6 +64,26 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // 收紧 socket 权限为 0600（仅属主可读写）。
+    //
+    // 为什么必须显式设置：Unix domain socket 的「连接权限」由文件写权限决定，
+    // 而 bind 创建的权限受 umask 影响——实测 umask=002 时为 0775，
+    // 即**同组用户也能连接**。本后端不做对端身份校验（无 SO_PEERCRED 检查），
+    // 任何能连上的进程都能发 Play / SetDsp / Shutdown 等命令。
+    // 默认路径在 /tmp（全局可写、所有用户可见），多用户机器上若多个用户
+    // 同属一个组（如某些发行版的 users 组），他们就能控制本用户的音频后端。
+    // 收紧到 0600 后只有当前用户可连，与「音频后端仅服务本用户 GUI」的
+    // 语义一致。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(
+            &sock_path,
+            std::fs::Permissions::from_mode(0o600),
+        ) {
+            eprintln!("[warn] chmod 0600 {sock_path} failed: {e}");
+        }
+    }
     eprintln!("xiatiao-audio-backend listening on {sock_path}");
 
     let engine = Arc::new(Mutex::new(engine::Engine::new()));

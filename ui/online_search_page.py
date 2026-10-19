@@ -361,12 +361,23 @@ class OnlineSearchPage(Gtk.Box):
         """
         from .pages import LocalLibraryPage, VIEW_SONGS
         try:
+            # 【内存泄漏修复】旧 section 列表页即将被丢弃：先显式断环。
+            # LocalLibraryPage 有多处「C 层持有绑定方法 → self」的跨语言环，
+            # 且自带 rotate guard 定时器；不清理则每切一次 section 就永久
+            # 泄漏一整个列表页（实测 8 次切换存活 8 个，get_referrers 指向
+            # selection-changed / toggled / clicked / _row_click_cb）。
+            _old = getattr(self, "_section_list_page", None)
+            if _old is not None:
+                try:
+                    _old.disconnect_global_refs()
+                except Exception:
+                    pass
             # 重建即换 section，清空行点击映射
             self._section_click_map = {}
             if name == "artists":
                 cols = [(_("艺术家"), "title", True, "title")]
             else:
-                cols = [(_("专辑"), "title", True, "title"),
+                cols = [(_("专辑（字段）"), "title", True, "title"),
                         (_("歌手"), "artist", False, "artist")]
             page = LocalLibraryPage(
                 on_track_activated=self._section_list_activated,

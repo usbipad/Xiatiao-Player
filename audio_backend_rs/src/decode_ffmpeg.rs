@@ -449,5 +449,23 @@ pub(crate) fn run_playback_ffmpeg(path: &str, shared: Arc<Shared>,
     drop(ff_out);
     let _ = ff.kill();
     let _ = ff.wait();
+    // 回收 pw-cat 子进程（仅 XIATIAO_AUDIO_BACKEND=pwcat 时存在）。
+    // 与 decode.rs 同一原因：Rust 的 `Child` 在 Drop 时不会 kill/wait，
+    // 不显式回收会留下僵尸进程（实测确认）。
+    if let Some(mut child) = pwcat.take() {
+        drop(child.stdin.take());
+        let mut reaped = false;
+        for _ in 0..20 {
+            match child.try_wait() {
+                Ok(Some(_)) => { reaped = true; break; }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Err(_) => break,
+            }
+        }
+        if !reaped {
+            let _ = child.kill();
+        }
+        let _ = child.wait();
+    }
     Ok(())
 }

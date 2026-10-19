@@ -210,15 +210,26 @@ class PlaylistsPage(Gtk.Box):
         c = self._flow.get_first_child()
         while c is not None:
             nxt = c.get_next_sibling()
+            # 【内存泄漏修复·关键】FlowBox 会把 append 进来的 card 包一层
+            # FlowBoxChild；_click_ctrl/_rclick_ctrl 存在真正的 card box
+            # （FlowBoxChild 的 child）上。此前直接对 FlowBoxChild 取属性，
+            # 永远取到 None → remove_controller 从未执行 → rclick 闭包捕获
+            # box 形成的跨 C/Python 环不破 → 卡片整棵树永不回收。
+            # 实测（tools 最小复现）：不剥存活 100/100，剥掉后 1/100。
+            try:
+                _inner = c.get_child()
+            except Exception:
+                _inner = None
+            _target = _inner if _inner is not None else c
             for _attr in ("_click_ctrl", "_rclick_ctrl"):
-                _ctrl = getattr(c, _attr, None)
+                _ctrl = getattr(_target, _attr, None)
                 if _ctrl is not None:
                     try:
-                        c.remove_controller(_ctrl)
+                        _target.remove_controller(_ctrl)
                     except Exception:
                         pass
                     try:
-                        setattr(c, _attr, None)
+                        setattr(_target, _attr, None)
                     except Exception:
                         pass
             self._flow.remove(c)

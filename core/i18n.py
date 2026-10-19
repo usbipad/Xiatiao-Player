@@ -60,9 +60,10 @@ _EN: dict[str, str] = {
         "No music folders yet. Add one in Settings.",
     # 在线音源（Subsonic）
     "在线音源": "Online Sources",
-    "该曲目无可投送地址": "No castable URL for this track",
     "下载": "Download",
-    "当前没有播放曲目": "Nothing is playing",
+    # 注："该曲目无可投送地址" / "当前没有播放曲目" 在文件后段
+    # 「收藏 / 列表」分组里已有定义（译文更自然），此处不再重复。
+    # 同一字典里重复的键会被后者覆盖，ruff F601 会报错。
     "本地曲目无需下载": "Local tracks don't need downloading",
     "该曲目无下载地址": "No download URL for this track",
     "开始下载：{name}": "Downloading: {name}",
@@ -169,6 +170,9 @@ _EN: dict[str, str] = {
     "查看歌手": "View artist",
     "历史播放": "Recently Played",
     "专辑": "Albums",
+    #: 字段名用（单数）。与上方的「区块标题」区分：
+    #: 中文都是「专辑」，但英文标题用复数 Albums、字段名用单数 Album。
+    "专辑（字段）": "Album",
     "艺术家": "Artists",
     "排行榜": "Top Charts",
     "每日推荐": "Daily Mix",
@@ -217,8 +221,9 @@ _EN: dict[str, str] = {
     "已加入下一首播放：{title}": "Added to play next: {title}",
     "已添加到播放列表：{title}": "Added to queue: {title}",
     "已复制：{text}": "Copied: {text}",
-    "已喜欢：{title}": "Liked: {title}",
-    "已取消喜欢：{title}": "Unliked: {title}",
+    # 注："已喜欢：{title}" / "已取消喜欢：{title}" 在文件后段
+    # 「收藏 / 列表」分组里已有定义（Added to / Removed from Favorites），
+    # 此处不再重复（重复键会被后者覆盖）。
     "已从歌单移除：{title}": "Removed from playlist: {title}",
     "已创建歌单：{name}": "Playlist created: {name}",
     "已删除歌单：{name}": "Playlist deleted: {name}",
@@ -626,11 +631,10 @@ _EN: dict[str, str] = {
     "管理员": "Administrator",
 
     # ---- 歌曲信息 / 字段 ----
-    "歌名": "Title",
-    "歌手": "Artist",
-    "专辑": "Album",
+    # 注："歌名" / "歌手" / "采样率" 已在文件前段「列表表头」分组定义
+    # （译文完全相同），此处不再重复——同一字典重复键会被后者覆盖，
+    # ruff F601 会报错。"专辑" 同理，字段名用 "专辑（字段）" 区分。
     "时长": "Duration",
-    "采样率": "Sample Rate",
     "位深": "Bit Depth",
     "声道": "Channels",
     "码率": "Bitrate",
@@ -643,7 +647,7 @@ _EN: dict[str, str] = {
     "未知专辑": "Unknown Album",
     "未知艺术家": "Unknown Artist",
     "未知错误": "Unknown error",
-    "未知": "Unknown",
+    # 注："未知" 已在上方「音效页」分组定义（Unknown），此处不再重复。
 
     # ---- 收藏 / 列表 ----
     "已加入我喜欢": "Added to Favorites",
@@ -660,8 +664,11 @@ _EN: dict[str, str] = {
     "移除失败: ": "Removal failed: ",
     "当前列表不支持移除": "Current list does not support removal",
     "仅移除": "Remove Only",
-    "确定要从列表移除「": "Remove from list: 「",
-    "」吗？": "」?",
+    # 完整句键（window.py 实际用的是这个）。
+    # 旧表里只有拆开的两段（"确定要从列表移除「" / "」吗？」"），
+    # 而代码从未使用它们 → 英文界面下该确认框正文一直是中文原文。
+    "确定要从列表移除「{title}」吗？":
+        "Remove \"{title}\" from the list?",
     "勾选下方将同时删除本地文件（移入回收站，可恢复）。":
         "Check below to also delete the local file (moved to trash, recoverable).",
     "该曲目没有本地文件": "This track has no local file",
@@ -679,7 +686,7 @@ _EN: dict[str, str] = {
     "重命名歌单": "Rename Playlist",
     "歌单为空": "Playlist is empty",
     "此歌单暂无歌曲": "This playlist has no songs yet",
-    "还没有播放记录": "No play history yet",
+    # 注："还没有播放记录" 已在文件前段定义，此处不再重复。
 
     # ---- 音效预设 ----
     "保存": "Save",
@@ -711,7 +718,7 @@ _EN: dict[str, str] = {
         "Audio backend disconnected, attempting to recover",
     "该服务端不支持全量曲库浏览，请使用搜索、歌单或推荐":
         "This server does not support full library browsing; use search, playlists, or recommendations",
-    "无结果": "No results",
+    # 注："无结果" 已在文件前段定义，此处不再重复。
 
     # ---- 投送 / IR ----
     "已进入投送模式：播放控制将发送到设备":
@@ -755,10 +762,8 @@ _EN: dict[str, str] = {
     "音箱空间": "Speaker Space",
     "现场感": "Live",
     "深夜聆听": "Late Night",
-    "内置音效": "Built-in Effects",
-    "我的预设": "My Presets",
-    "还没有自定义预设": "No custom presets yet",
-    "删除该预设": "Delete this preset",
+    # 注："内置音效" / "我的预设" / "还没有自定义预设" / "删除该预设"
+    # 均已在文件前段「音效预设」分组定义（译文完全相同），此处不再重复。
 
     # ---- 语言切换 ----
     "语言已切换": "Language Changed",

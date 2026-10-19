@@ -5,11 +5,14 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Callable, Optional
 
 from gi.repository import Adw, Gtk
 
 from core.i18n import _
+
+log = logging.getLogger(__name__)
 
 
 class VizSettingsPage(Adw.PreferencesPage):
@@ -27,6 +30,11 @@ class VizSettingsPage(Adw.PreferencesPage):
         self.set_icon_name("utilities-system-monitor-symbolic")
         self._on_viz_changed = on_viz_changed
         self._on_open_viz_window = on_open_viz_window
+        #: 滑块防抖：拖动时 value-changed 每帧都触发，而 get_config().set_*()
+        #: 内部会 json.dump + os.replace 落盘——直接写会让拖动一次产生几十
+        #: 次磁盘 IO。这里合并为「停止拖动 200ms 后写一次」。
+        self._viz_write_timer = 0
+        self._viz_write_pending: dict = {}
 
         # 总开关
         from config.settings import get_config
@@ -156,9 +164,7 @@ class VizSettingsPage(Adw.PreferencesPage):
         return sc
 
     def _on_viz_sync_changed(self, scale, _pspec=None) -> None:
-        from config.settings import get_config
-        get_config().set("viz_sync_delay_ms", float(scale.get_value()))
-        self._notify_viz()
+        self._queue_viz_write("viz_sync_delay_ms", float(scale.get_value()))
 
     def _make_viz_db_scale(self):
         from config.settings import get_config
@@ -175,9 +181,7 @@ class VizSettingsPage(Adw.PreferencesPage):
         return sc
 
     def _on_viz_db_changed(self, scale, _pspec=None) -> None:
-        from config.settings import get_config
-        get_config().set("viz_db_floor", float(scale.get_value()))
-        self._notify_viz()
+        self._queue_viz_write("viz_db_floor", float(scale.get_value()))
 
     def _make_viz_speed_scale(self, key: str, default: float, handler):
         """通用 0..1 速度滑块（上升/下落共用）。"""
@@ -195,14 +199,10 @@ class VizSettingsPage(Adw.PreferencesPage):
         return sc
 
     def _on_viz_fall_changed(self, scale, _pspec=None, key: str = "viz_fall_speed") -> None:
-        from config.settings import get_config
-        get_config().set(key, float(scale.get_value()))
-        self._notify_viz()
+        self._queue_viz_write(key, float(scale.get_value()))
 
     def _on_viz_rise_changed(self, scale, _pspec=None, key: str = "viz_rise_speed") -> None:
-        from config.settings import get_config
-        get_config().set(key, float(scale.get_value()))
-        self._notify_viz()
+        self._queue_viz_write(key, float(scale.get_value()))
 
     def _make_viz_scale(self, lo: float, hi: float, step: float, key: str):
         from config.settings import get_config
@@ -245,10 +245,7 @@ class VizSettingsPage(Adw.PreferencesPage):
         return dd
 
     def _on_viz_scale_changed(self, scale, key: str) -> None:
-        from config.settings import get_config
         val = int(scale.get_value())
-        cfg = get_config()
-        cfg.set_int(key, val)
         # fps 变更：同步按新 fps 重算 hop（VIZ_RATE/fps 取 2 的幂），
         # 保证 FFT 产帧率 ≥ 渲染率，否则画面会一卡一卡。
         if key == "viz_fps" and val > 0:
@@ -256,10 +253,10 @@ class VizSettingsPage(Adw.PreferencesPage):
                 from core.viz import VIZ_RATE
                 target = max(64, min(4096, int(VIZ_RATE / max(1, val))))
                 hop = 1 << (target.bit_length() - 1)
-                cfg.set_int("viz_hop", hop)
+                self._queue_viz_write("viz_hop", hop, "int")
             except Exception:
                 pass
-        self._notify_viz()
+        self._queue_viz_write(key, val, "int")
 
     def _on_viz_window_changed(self, dd, _pspec, options) -> None:
         from config.settings import get_config
@@ -274,6 +271,75 @@ class VizSettingsPage(Adw.PreferencesPage):
         if 0 <= idx < len(values):
             get_config().set_str("viz_style", values[idx])
             self._notify_viz()
+
+    def _flush_viz_writes(self) -> bool:
+        """把挂起的配置写入一次性落盘（防抖定时器回调）。"""
+        self._viz_write_timer = 0
+        pending = self._viz_write_pending
+        self._viz_write_pending = {}
+        if not pending:
+            return False
+        from config.settings import get_config
+        cfg = get_config()
+        # 逐个 key 独立 try：某个 key 写入失败不影响其余 key。
+        # 旧实现把 for 包在一个 try 里，一旦某次 set 抛异常就中断循环，
+        # 而 _viz_write_pending 已清空 → 剩余 key 的改动永久丢失
+        # （如同时拖了「音画同步」和「动态范围」，前者失败则后者丢失）。
+        for key, (kind, val) in pending.items():
+            try:
+                if kind == "int":
+                    cfg.set_int(key, val)
+                elif kind == "str":
+                    cfg.set_str(key, val)
+                else:
+                    cfg.set(key, val)
+            except Exception:
+                log.debug("写入可视化配置 %s 失败", key, exc_info=True)
+        return False
+
+    def _queue_viz_write(self, key: str, val, kind: str = "raw") -> None:
+        """登记一次配置写入，200ms 内的多次调用合并为一次落盘。"""
+        self._viz_write_pending[key] = (kind, val)
+        if self._viz_write_timer:
+            try:
+                from gi.repository import GLib
+                GLib.source_remove(self._viz_write_timer)
+            except Exception:
+                pass
+        try:
+            from gi.repository import GLib
+            self._viz_write_timer = GLib.timeout_add(200, self._flush_viz_writes)
+        except Exception:
+            self._flush_viz_writes()
+        self._notify_viz()
+
+    def disconnect_global_refs(self) -> None:
+        """断开本页持有的引用，使页面可被回收（设置窗口关闭时调用）。
+
+        必须做的事：
+          1. 取消挂起的防抖定时器——否则 GLib 源会持有 self._flush_viz_writes
+             绑定方法，窗口关掉后仍会回调到已废弃的页面；
+          2. 取消前先把待写配置落盘一次，保证用户最后拖到的值不丢；
+          3. 置空外部回调（on_viz_changed / on_open_viz_window 是设置窗口的
+             绑定方法，不清空会让页钉住窗口）。
+        幂等。
+        """
+        # 先把挂起的写入落盘（此时 self 仍完整可用）
+        try:
+            if self._viz_write_timer:
+                from gi.repository import GLib
+                try:
+                    GLib.source_remove(self._viz_write_timer)
+                except Exception:
+                    pass
+                self._viz_write_timer = 0
+            if self._viz_write_pending:
+                self._flush_viz_writes()
+        except Exception:
+            pass
+        # 切断对设置窗口的回边
+        self._on_viz_changed = None
+        self._on_open_viz_window = None
 
     def _notify_viz(self) -> None:
         if self._on_viz_changed is not None:

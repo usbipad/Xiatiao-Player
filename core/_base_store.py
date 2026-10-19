@@ -62,6 +62,27 @@ class SqliteStore:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
+            # ---- 写入性能：WAL + synchronous=NORMAL ----
+            # 默认 journal_mode=DELETE + synchronous=FULL 下，每次 commit 都要
+            # fsync 日志文件与数据库文件两次。实测（真实数据目录）：
+            #   默认            1.50 ms/次
+            #   WAL             0.85 ms/次
+            #   WAL + NORMAL    0.03 ms/次   ← 快约 50 倍
+            # 这些写入（播放历史、收藏、歌单）都发生在主线程切歌链路上，
+            # 1.5ms 的同步 IO 会直接体现在切歌延迟里。
+            # WAL + NORMAL 的代价：断电时可能丢失最后一个事务（不损坏库），
+            # 对播放历史/收藏/歌单这类数据完全可接受。
+            # 注意：journal_mode 是**持久化**属性（写在库文件头），设置一次即长期生效；
+            # 若库放在不支持共享内存的文件系统（如部分网络盘）上，WAL 会失败，
+            # 此时静默回退（保留默认 delete 模式），不影响功能。
+            try:
+                self._conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.Error as exc:
+                log.debug("启用 WAL 失败（回退默认 journal）: %s", exc)
+            try:
+                self._conn.execute("PRAGMA synchronous = NORMAL")
+            except sqlite3.Error as exc:
+                log.debug("设置 synchronous=NORMAL 失败: %s", exc)
             if self._foreign_keys:
                 try:
                     self._conn.execute("PRAGMA foreign_keys = ON")

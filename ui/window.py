@@ -1837,6 +1837,8 @@ class MainWindow(Adw.ApplicationWindow):
         if not text:
             # 清空搜索：在线页回浏览视图；曲库页在线 tab 重拉在线曲库首屏
             # （原列表已被搜索结果覆盖，无法就地恢复，只能重拉）。
+            # 同时清空活跃搜索词：仍在路上的旧结果回调会据此被丢弃。
+            self._online_search_active_query = ""
             try:
                 if getattr(self, "_active_source", None) == "local":
                     self.library_page.reset_online()
@@ -1852,6 +1854,9 @@ class MainWindow(Adw.ApplicationWindow):
     def _online_search_fire(self, text: str) -> bool:
         log.info("[在线搜索fire] text=%r", text)
         self._online_search_timer = 0
+        # 记录本次活跃搜索词：结果回调据此丢弃「改词前发出的旧请求」的响应，
+        # 避免慢响应晚到把新词的结果覆盖成旧词结果。
+        self._online_search_active_query = text
         if not self._subsonic_usable():
             return False
         try:
@@ -1878,6 +1883,14 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_online_search_finished(self, _p, query: str, result) -> None:
         log.info("[在线搜索完成回调] query=%r 数=%d active=%r",
                  query, len(list(result or [])), getattr(self, "_active_source", None))
+        # 乱序保护：只接受「当前活跃搜索词」的结果。
+        # 快速改词（a → ab）时旧请求的响应可能晚到；若不校验，会把新词的
+        # 结果覆盖成旧词的（用户看到的是旧关键词的结果）。
+        _active_q = getattr(self, "_online_search_active_query", "")
+        if query != _active_q:
+            log.info("[在线搜索完成回调] 丢弃过期结果: query=%r 当前=%r",
+                     query, _active_q)
+            return
         # 结果显示在「用户当前所在的页」：
         # - 曲库页（在线 tab）搜 → 结果填曲库页的在线列表；
         # - 在线页搜 → 结果填在线页的结果视图。
@@ -1908,6 +1921,11 @@ class MainWindow(Adw.ApplicationWindow):
             return p.search_page(query, offset=offset, count=count)
 
         def _done(tracks):
+            # 乱序保护：用户已换词/清空搜索时，这批翻页结果属于旧搜索，
+            # 直接丢弃；且**不动** _result_loading（它现在归新搜索管，
+            # 误置 False 会让新搜索提前触发翻页）。
+            if getattr(self, "_online_search_active_query", "") != query:
+                return
             try:
                 self.online_page.append_results(tracks, done=(not tracks))
             except Exception as exc:
@@ -2042,10 +2060,29 @@ class MainWindow(Adw.ApplicationWindow):
                             log.debug("expect_position 失败: %s", exc)
                         if self.player.play_file(url):
                             if pos > 0.5:
-                                # 稍等新流就绪再 seek 到原位置
-                                self._add_timer(
-                                    300,
-                                    lambda _p=pos: (self.player.seek_seconds(_p), False)[1])
+                                # 稍等新流就绪再 seek 到原位置。
+                                # 竞态保护（与 _seek_resume 同模式）：若 300ms 内
+                                # 用户切了歌，_track_token 会变；旧定时器必须放弃
+                                # seek，否则会把**新歌** seek 到**旧歌**的位置。
+                                _q_tok = getattr(self, "_track_token", None)
+                                _q_track = cur
+
+                                def _seek_after_quality(_p=pos, _tok=_q_tok,
+                                                        _tr=_q_track):
+                                    if getattr(self, "_track_token", None) != _tok:
+                                        return False
+                                    try:
+                                        if self.playlist.current_track() is not _tr:
+                                            return False
+                                    except Exception:
+                                        pass
+                                    try:
+                                        self.player.seek_seconds(_p)
+                                    except Exception:
+                                        log.debug("音质切换 seek 失败", exc_info=True)
+                                    return False
+
+                                self._add_timer(300, _seek_after_quality)
         except Exception as exc:
             log.debug("音质无缝续播失败: %s", exc)
         self._toast(_("音质已切换为 {name}").format(name=name))
@@ -3062,7 +3099,20 @@ class MainWindow(Adw.ApplicationWindow):
             # 首次播放且有恢复位置：流加载后 seek 到恢复处。
             # 后端 play 后流就绪需短暂时间，故延迟一小段再 seek（此时 seek 有效）。
             if started and resume_pos > 0.5:
-                def _seek_resume(_p=resume_pos):
+                # 竞态保护：给这次 seek 打上「属于哪一首」的标记。
+                # 若 300ms 内用户又点了别的歌，_track_token 会变（或当前曲目
+                # 已换），旧定时器必须放弃 seek —— 否则会把**新歌** seek 到
+                # **旧歌**的恢复位置。与 _apply_track_assets 用同一套 token 机制。
+                _seek_token = id(track)
+
+                def _seek_resume(_p=resume_pos, _tok=_seek_token, _tr=track):
+                    if getattr(self, "_track_token", None) != _tok:
+                        return False
+                    try:
+                        if self.playlist.current_track() is not _tr:
+                            return False
+                    except Exception:
+                        pass
                     try:
                         self.player.seek_seconds(_p)
                         self.player_panel.set_position(_p)
@@ -3869,7 +3919,7 @@ class MainWindow(Adw.ApplicationWindow):
         rows = [
             (_("歌名"), track.title or ""),
             (_("歌手"), track.artist or ""),
-            (_("专辑"), track.album or ""),
+            (_("专辑（字段）"), track.album or ""),
             (_("时长"), track.duration or ""),
             (_("编码格式"), fmt or _("未知")),
             (_("采样率"), sr_txt),
@@ -4540,9 +4590,19 @@ class MainWindow(Adw.ApplicationWindow):
                 return False
             if self._last_pos_time <= 0:
                 return True
-            if _time.monotonic() - self._last_pos_time > 5.0:
+            # 阈值按来源区分：本地文件位置不推进基本就是坏了，5s 足够；
+            # 在线流可能只是网络缓冲（后端没有 buffering 信号可查），
+            # 给 25s 宽限，避免弱网时把「正在缓冲」误判成「播放失败」而跳歌。
+            _stuck_timeout = 5.0
+            try:
+                _cur = self.playlist.current_track()
+                if _cur is not None and getattr(_cur, "source_type", "") == "subsonic":
+                    _stuck_timeout = 25.0
+            except Exception:
+                pass
+            if _time.monotonic() - self._last_pos_time > _stuck_timeout:
                 self._stuck_checked = True
-                log.warning("播放失败（位置 5s 未推进），已跳过")
+                log.warning("播放失败（位置 %.0fs 未推进），已跳过", _stuck_timeout)
                 self._toast(_("播放失败，已跳过"))
                 self._on_end_of_stream(self.player)
                 return False

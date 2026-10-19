@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import re
+
 import logging
 from typing import Any, Dict, List
 
@@ -359,14 +361,48 @@ def _to_yaml_manual(obj: Any, indent: int = 0) -> str:
     return _scalar(obj)
 
 
+#: 可以「不加引号直接输出」的字符串形态。
+#: 只放行纯字母数字（含中文等非 ASCII 文字）与少量 YAML 安全符号；
+#: 其余一律加引号——加引号总是安全的，而漏加会导致配置被错误解析。
+#: 历史缺陷（实测）：旧实现只对含 `:#{}[],&*!|>'"%@` 的串加引号，导致
+#:   'line1\nline2' → 解析失败（换行被当成新键）
+#:   '  indented'  → 前导空格被吃掉，变成 'indented'
+#:   'trailing  '  → 尾随空格被吃掉
+#:   '123'         → 被解析成整数 123
+#:   'true'        → 被解析成布尔 True
+#:   'a\tb'        → 解析失败（制表符不能起 token）
+#: 这些值出现在 convolution_ir（用户选择的文件路径）等字段时，会让
+#: CamillaDSP 拿到错误配置 → DSP 整体失效。
+_YAML_PLAIN_OK = re.compile(r"^[A-Za-z0-9_\u0080-\U0010ffff][A-Za-z0-9_.\-\u0080-\U0010ffff]*$")
+#: 看起来像 YAML 标量（数字/布尔/null/科学计数）的字符串，必须加引号。
+_YAML_LOOKS_TYPED = re.compile(
+    r"^(?:[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+    r"|true|false|yes|no|on|off|null|~)$",
+    re.IGNORECASE,
+)
+
+
 def _scalar(v: Any) -> str:
     if isinstance(v, bool):
         return "true" if v else "false"
     if v is None:
         return "null"
     if isinstance(v, str):
-        # 需要引号的场景：空串、含特殊字符
-        if v == "" or any(c in v for c in ":#{}[],&*!|>'\"%@`"):
-            return '"' + v.replace('\\', '\\\\').replace('"', '\\"') + '"'
+        # 空串、纯空白、含控制字符、看起来像数字/布尔、或不符合 plain 形态
+        # → 一律用双引号包裹，并按 YAML 双引号规则转义。
+        need_quote = (
+            v == ""
+            or v != v.strip()
+            or any(c in v for c in "\n\r\t")
+            or _YAML_LOOKS_TYPED.match(v) is not None
+            or _YAML_PLAIN_OK.match(v) is None
+        )
+        if need_quote:
+            esc = (v.replace("\\", "\\\\")
+                    .replace('"', '\\"')
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t"))
+            return '"' + esc + '"'
         return v
     return str(v)

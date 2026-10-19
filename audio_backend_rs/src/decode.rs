@@ -350,6 +350,30 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
         }
     }
 
+    // 回收 pw-cat 子进程（仅 XIATIAO_AUDIO_BACKEND=pwcat 时存在）。
+    //
+    // 为什么必须显式回收：Rust 的 `Child` 在 Drop 时**不会** kill 也不会
+    // wait（std 的既有语义）。只靠 drop，pw-cat 退出后会变成僵尸进程
+    // （实测：3 次不 wait 的 spawn 产生 3 个 <defunct>），长期播放会累积
+    // 大量僵尸占用 PID 表。
+    // 顺序：先 drop(stdin) 让 pw-cat 读到 EOF 自然退出，再 wait 回收；
+    // 若它不退出（极少见），kill 兜底。
+    if let Some(mut child) = pwcat.take() {
+        drop(child.stdin.take());
+        let mut reaped = false;
+        for _ in 0..20 {
+            match child.try_wait() {
+                Ok(Some(_)) => { reaped = true; break; }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Err(_) => break,
+            }
+        }
+        if !reaped {
+            let _ = child.kill();
+        }
+        let _ = child.wait();
+    }
+
     Ok(())
 }
 

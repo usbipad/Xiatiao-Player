@@ -140,8 +140,11 @@ class RustBackend(AudioBackend):
             log.warning("启动 Rust 后端失败: %s", exc)
             return
 
-        # 等待新 socket 出现并连接（最多约 5 秒）
-        for _ in range(50):
+        # 等待新 socket 出现并连接（最多约 5 秒）。
+        # 循环变量用 attempt 而非 _：本模块从 i18n 导入了翻译函数 `_`，
+        # 用 `for _ in range(...)` 会把它遮蔽（ruff F402），虽然本循环体内
+        # 未调用 `_()`，但容易在后续维护中误用而报 UnboundLocalError。
+        for _attempt in range(50):
             if os.path.exists(self._socket_path):
                 try:
                     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

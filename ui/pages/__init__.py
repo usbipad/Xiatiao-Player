@@ -283,6 +283,82 @@ class LocalLibraryPage(Gtk.Box):
         btn.set_visible(bool(show_locate))
         return btn
 
+    # ----------------------------------------------------------------
+    # 生命周期清理
+    # ----------------------------------------------------------------
+    def disconnect_global_refs(self) -> None:
+        """断开本页所有「控件/模型 → 绑定方法 → self」的跨 C/Python 环。
+
+        内存泄漏修复（实测：反复创建 8 个 LocalLibraryPage，存活 8 个）：
+        本类多处把**绑定方法**连到 C 层持有的对象上，C 层不参与 Python gc，
+        环破不了 → 整页（含 ColumnView cell 复用池）永不回收。
+        `gc.get_referrers` 实测命中的持有点正是：
+          - self._selection.selection-changed → self._on_selection_changed
+          - self._multi_btn.toggled        → self._on_multi_toggled
+          - self._add_pl_btn.clicked       → self._on_add_pl_clicked
+          - column_view._row_click_cb      → self._on_row_clicked
+
+        注意：不能靠 do_dispose 兜底——C 层持有 self，refcount 永不归零，
+        do_dispose 不会触发。必须由**持有者在丢弃本页前显式调用**
+        （如 online_search_page._rebuild_section_list 换 section 时）。
+        幂等。
+        """
+        # 0) 先停本页自己的定时器：guard 轮询与卡片轮播的回调都是绑定方法
+        #    （_tick → self），不停会持续在已废弃的页上跑。
+        try:
+            self._clear_grid_rotate_timers()
+        except Exception:
+            pass
+        # 1) 选择模型（Gtk.SingleSelection 是 GObject，不在控件树内，
+        #    disconnect_widget_tree 扫不到，必须显式断）。
+        try:
+            self._selection.disconnect_by_func(self._on_selection_changed)
+        except Exception:
+            pass
+        # 2) 列视图上的行点击回调。
+        #    注意：self._column_view 是 build_track_columnview 返回的
+        #    **ScrolledWindow**，真正的 ColumnView 挂在其 `_column_view`
+        #    属性上；回调存在 ColumnView 上（见 song_list.build_track_columnview
+        #    里的 `column_view._row_click_cb = on_row_click`）。
+        #    设错对象则环不破——实测断开后 get_referrers 仍命中
+        #    `<bound method LocalLibraryPage._on_row_clicked>`。
+        try:
+            scroll = getattr(self, "_column_view", None)
+            real_cv = getattr(scroll, "_column_view", None) if scroll is not None else None
+            if real_cv is not None:
+                real_cv._row_click_cb = None
+            if scroll is not None:
+                scroll._row_click_cb = None
+        except Exception:
+            pass
+        # 2b) 滚动 adjustment 上的 value-changed：adjustment 是 GObject，
+        #     不在控件树内，disconnect_widget_tree 扫不到，需显式断。
+        try:
+            vadj = self._column_view.get_vadjustment()
+            if vadj is not None:
+                vadj.disconnect_by_func(self._on_online_scroll)
+        except Exception:
+            pass
+        # 3) 整棵控件树：header 按钮的绑定方法、notify::*、clicked/toggled 等。
+        try:
+            from ui.gobject_cleanup import disconnect_widget_tree
+            disconnect_widget_tree(self, owner=self)
+        except Exception:
+            pass
+        # 4) 切断对外部回调的持有（页面 → 窗口的回边）。
+        # 只置空「回调」类属性：它们是主窗口的绑定方法，不清空会让页钉住窗口。
+        # 注意**不要**置空 _track_actions——它是右键菜单的动作字典（{key: callable}），
+        # 不是单一路回调；置空后若页面被复用，右键菜单会整体失效。
+        # 当前唯一的调用方（online_search_page._rebuild_section_list）确实会丢弃
+        # 旧页，但把「页面内部数据」也一并销毁属于越界，容易在将来复用场景踩坑。
+        for _attr in ("_on_activated", "_on_refresh", "_on_online_load_more",
+                      "_on_add_to_playlist"):
+            if hasattr(self, _attr):
+                try:
+                    setattr(self, _attr, None)
+                except Exception:
+                    pass
+
     # ------------------------------------------------------------
     # 数据入口
     # ------------------------------------------------------------
