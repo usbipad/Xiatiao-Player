@@ -109,7 +109,11 @@ def _raw_to_texture(raw: bytes):
 
 
 def _make_card(card: dict) -> Gtk.Widget:
-    """构建单张卡片（封面 + 名称 + 副标题）。"""
+    """构建单张卡片（封面 + 名称 + 副标题）。
+
+    若卡片带 play_on_hover=True（实时流歌单，如每日推荐），
+    封面中央叠一个常驻播放按钮，点击直接播放（等同点卡片）。
+    """
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
     box.set_size_request(_CARD_W, -1)
     box.add_css_class("media-card")
@@ -130,7 +134,27 @@ def _make_card(card: dict) -> Gtk.Widget:
     ph.set_valign(Gtk.Align.CENTER)
     ph.set_vexpand(True)
     holder.append(ph)
-    frame.set_child(holder)
+
+    # 播放按钮放在 frame 内部（Overlay 包住 holder）：
+    # frame 的 CSS transform:scale 会带着按钮一起缩放，视觉上「贴在封面上」。
+    # 按钮常驻显示，不依赖悬停。
+    click = card.get("click")
+    if card.get("play_on_hover") and callable(click):
+        cover_overlay = Gtk.Overlay()
+        cover_overlay.set_child(holder)
+        play_btn = Gtk.Button()
+        play_btn.add_css_class("card-play-btn")
+        play_btn.set_tooltip_text(_("播放"))
+        _play_img = Gtk.Image.new_from_icon_name("media-playback-start-symbolic")
+        _play_img.set_pixel_size(22)
+        play_btn.set_child(_play_img)
+        play_btn.set_halign(Gtk.Align.CENTER)
+        play_btn.set_valign(Gtk.Align.CENTER)
+        play_btn.connect("clicked", lambda *_a: click())
+        cover_overlay.add_overlay(play_btn)
+        frame.set_child(cover_overlay)
+    else:
+        frame.set_child(holder)
     box.append(frame)
 
     name_lbl = Gtk.Label(label=str(card.get("name", "")))
@@ -194,7 +218,6 @@ def _make_card(card: dict) -> Gtk.Widget:
                 pass
         _load_url_cover_async(url, _on_cover)
 
-    click = card.get("click")
     if callable(click):
         g = Gtk.GestureClick()
         g.connect("released", lambda *_a: click())

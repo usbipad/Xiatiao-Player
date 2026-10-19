@@ -39,8 +39,29 @@
 
 `GET /rest/ping.view`
 
-返回顶层附加字段：`type`（服务端类型，如 navidrome）、`serverVersion`、`version`（API 版本）、`openSubsonic`。
-播放器用它判断在线服务是否连通、显示服务端信息。
+返回顶层附加字段：`type`（服务端类型）、`serverVersion`、`version`（API 版本）、`openSubsonic`。
+
+#### ⚠️ `type` 字段是功能开关，不只是显示信息
+
+播放器用 `type` 判断后端是否为「私有协议后端」，**直接决定是否启用音质档位**。
+
+判定规则（代码 `is_private_backend()`）：
+
+- `type` 在私有白名单里 → 私有后端（支持 `quality` 参数、显示档位选择器）
+- `type` 为空 / 未知 → 标准后端（不转码、原文件直传、不显示档位）
+
+当前白名单：
+
+| `type` 值 | 含义 |
+|---|---|
+| `xiatiao-api` | 私有后端（启用音质档位） |
+| 其它任意值 | 标准后端（不启用档位） |
+
+> **用白名单而非黑名单**：只有明确认识的后端才启用私有增强，
+> 避免未知的标准服务端（如 Navidrome / Airsonic）被误判为私有。
+>
+> 若你的后端要实现音质档位，**必须让 `ping` 返回 `"type": "xiatiao-api"`**；
+> 否则播放器会当成标准后端，只传 `maxBitRate=0`，档位选择器也不会显示。
 
 ### search3 — 搜索
 
@@ -50,23 +71,51 @@
 
 返回 `searchResult3.song` 数组。歌曲字段映射见文末「歌曲字段映射」。
 
+播放器解析时按以下顺序尝试（兼容不同 API 版本的服务端）：
+
+1. `searchResult3.song`（Subsonic 1.16+，**推荐**）
+2. `searchResult2.song`（1.14+ 回退）
+3. `searchResult.song`（旧版回退）
+
+只要其中一级返回数组，就停止查找；返回空数组也视为「服务端明确返回空结果」，
+不会再往下一级找。
+
 > **非标准行为（重要）**：播放器的「在线曲库」用 `search3` **空查询**（`query=`）来分页列出全部歌曲，依赖服务端把空查询当作「列出」。Navidrome 支持此行为；若你的服务端返回空，则曲库浏览为空。
 
 ### stream — 音频流（播放核心）
 
 `GET /rest/stream.view`
 
-参数：`id`、`maxBitRate`（0 = 不限制）、`format`（可选，指定转码格式）。
+参数：`id`、`maxBitRate`（0 = 不限制）、`quality`（档位 key，见下）、`format`（可选，指定转码格式）。
 
 关键要求：
 
 1. **必须支持 HTTP Range**（返回 206 + Content-Range），否则拖动进度条异常。
-2. `maxBitRate=0` 表示不限制，原文件直传，支持无损。
+2. `maxBitRate=0` 表示不限制，原文件直传，支持无损。**注意：播放器会显式传 `maxBitRate=0`，不会省略该参数**——省略可能触发服务端默认转码。
 3. 返回头含 `Content-Type`（如 audio/flac）和 `Content-Length`。
 
-播放器提供音质档位选择，与 `maxBitRate` 取值一一对应：
+#### 音质档位：标准后端 vs 私有后端
 
-| 档位 key | 显示名 | `maxBitRate` |
+播放器按 `ping` 返回的 `type` 区分后端类型，**两种后端的请求参数不同**：
+
+标准 Subsonic 后端（`type` 不在私有白名单里）：
+
+    GET /rest/stream.view?id=xxx&maxBitRate=0
+
+不按档位转码，一律原文件直传。此时播放器不显示音质档位选择器。
+
+私有后端（`type` = `xiatiao-api`）：
+
+    GET /rest/stream.view?id=xxx&quality=lossless&maxBitRate=999
+
+**必须同时带 `quality` 和 `maxBitRate` 两个参数。**
+
+> ⚠️ **实测结论**：私有后端只传 `maxBitRate` 会被忽略（各档位均返回原文件），
+> 必须同时带 `quality` 参数才会按档位转码。播放器的 `playable_url()` 已按此规则构造 URL。
+
+档位 key 与 `maxBitRate` 对应关系：
+
+| 档位 key（`quality` 参数值） | 显示名 | `maxBitRate` |
 |----------|--------|--------------|
 | `standard` | 标准 | `128` |
 | `high` | 高品 | `320` |
@@ -74,10 +123,24 @@
 | `hires` | Hi-Res | `1400` |
 | `master` | 母带 | `2000` |
 
-例：`stream?id=xxx&maxBitRate=999` → 请求无损音质流。
+例：`stream?id=xxx&quality=lossless&maxBitRate=999` → 请求无损音质流。
 
 > 服务端按自身能力响应；实际音质可能与所选档位不同（如服务端只能提供较低档）。
 > 播放器以解码器实测参数判定并显示实际档位，无需服务端返回实际音质。
+
+#### 歌曲级档位（`qualityLevels`）
+
+歌曲对象可附加 `qualityLevels` 字段（数组），声明**该首歌实际支持的档位**。
+播放器优先用它渲染下拉选项；缺失时回退到默认五档。
+
+格式示例：
+
+    "qualityLevels": [
+      {"key": "lossless", "name": "无损", "br": 999},
+      {"key": "hires", "name": "Hi-Res", "br": 1400}
+    ]
+
+字段：`key`（档位 key，与上表一致）、`name`（显示名）、`br`（对应 `maxBitRate`）。
 
 ### getCoverArt — 封面
 
@@ -107,7 +170,20 @@
 
 `GET /rest/getArtists.view`
 
-返回 `artists.index[].artist[]`，每个 artist 字段：`id`、`name`、`albumCount`，**可选** `coverArt`（见「扩展字段」）。
+返回 `artists.index[].artist[]`，每个 artist 字段：`id`、`name`、`albumCount`，以及可选的封面字段。
+
+#### 艺术家封面：播放器的三级兜底
+
+播放器取艺术家封面时按以下优先级（代码 `all_artists()`）：
+
+1. **`artistImageUrl`** —— 完整图片 URL（Navidrome 提供，可含 token）。有则直接用。
+2. **`coverArt`** —— 封面 id，播放器用它拼 `getCoverArt` URL。
+3. **第一首歌的封面** —— 前两者都无时，播放器发 `getArtist` → 首张 `getAlbum` → 首曲 `coverArt` 兜底。
+
+> **性能提示**：第 3 级兜底每个艺术家要发 2 次请求，播放器**最多补前 30 个**
+> （`_ARTIST_FALLBACK_MAX`），避免艺术家多时拖慢加载。
+>
+> 建议后端优先返回 `artistImageUrl` 或 `coverArt`，让艺术家列表能一次加载完。
 
 ### getAlbumList2 — 专辑列表
 
@@ -136,13 +212,27 @@
 
 `GET /rest/getPlaylists.view`
 
+**超时：60 秒**（比其它端点的 15 秒宽松）。
+
 返回 `playlists.playlist` 数组，每个歌单字段：`id`、`name`、`songCount`、`coverArt`、`comment`（描述）。
+
+> 播放器兼容两种结构：`playlists.playlist` 为数组（有歌单），或 `playlists` 为空对象（无歌单）。
+>
+> **封面兜底**：歌单无 `coverArt` 时，播放器会退而用歌单 `id` 拼 `getCoverArt` URL。
+> 标准 Subsonic 里歌单 id 与 coverArt id 命名空间不同，这个兜底可能 404（前端有占位图兜底，不影响功能）。
+> 建议后端为歌单返回可用的 `coverArt`。
 
 ### getPlaylist — 歌单详情
 
 `GET /rest/getPlaylist.view`
 
 参数：`id`，返回 `playlist.entry` 数组（歌曲）。
+
+**超时：60 秒**。大歌单（数千首）服务端需一次性序列化全部条目，耗时可能十几秒；
+播放器为此单独放宽超时，避免超大歌单被误判为空。
+
+> 若你的服务端歌单可能非常大，建议支持分页或在合理时间内返回，
+> 否则仍可能触发超时。
 
 ### 歌词
 
@@ -281,8 +371,18 @@
 
 后端可在标准端点的返回里**附加字段**，供播放器增强显示；播放器遇缺失时降级。
 
-- **`getArtists` 的 artist 节点**可附加 `coverArt`（艺术家封面 id）。标准 Subsonic 无此字段；支持的实现可返回，让艺术家列表显示头像/封面。
-- **歌曲节点**可附加 OpenSubsonic 技术参数：`samplingRate`、`bitDepth`、`channelCount`（见下）。
+- **`getArtists` 的 artist 节点**可附加 `artistImageUrl`（完整图片 URL）或 `coverArt`（封面 id）。标准 Subsonic 无此字段；支持的实现可返回，让艺术家列表显示头像/封面。
+- **歌曲节点**可附加 OpenSubsonic 技术参数：`samplingRate`、`bitDepth`、`channelCount`、`suffix`（见「歌曲字段映射」）。
+- **歌曲节点**可附加 `qualityLevels`（数组），声明该首歌支持的音质档位：
+
+      "qualityLevels": [
+        {"key": "lossless", "name": "无损", "br": 999},
+        {"key": "hires", "name": "Hi-Res", "br": 1400},
+        {"key": "master", "name": "母带", "br": 2000}
+      ]
+
+  字段：`key`（档位 key）、`name`（显示名）、`br`（对应 `maxBitRate`）。
+  播放器优先用它渲染档位下拉框；缺失时回退默认五档。仅私有后端需要提供。
 
 ---
 
@@ -302,6 +402,11 @@
 | `samplingRate` | `sample_rate` | OpenSubsonic，可选 |
 | `bitDepth` | `bit_depth` | OpenSubsonic，可选 |
 | `channelCount` | `channels` | OpenSubsonic，可选 |
+| `suffix` | `format_hint` | **推荐返回**。真实音频格式（`flac`/`dsf`/`dff`/`mp3` 等，小写无点）。 |
+
+> **关于 `suffix`**：`stream` 的 URL 扩展名是 `view`，播放器无法从 URL 判断真实格式。
+> 在线歌的 DSD / DXD / Hi-Res / CD 徽章判定**依赖 `suffix`**；缺失时徽章可能不显示或误判。
+> 后端应返回文件真实格式（如 FLAC 文件返回 `"suffix": "flac"`）。
 
 ---
 

@@ -71,16 +71,18 @@ class OnlineSearchPage(Gtk.Box):
         browse = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         browse.set_margin_top(4)
 
+        # 每日推荐：私有扩展 getRecommendations(type=daily)，未实现的后端自动隐藏。
+        # 置于「我的歌单」上方——它是每日最常点的入口，优先展示。
+        # （该区块同时承载「每日推荐」与「每日30首」等 daily 分组卡片。）
+        self.daily_section = CardSection(_("每日推荐"))
+        browse.append(self.daily_section)
+
         self.playlist_section = OnlinePlaylistSection(on_playlist_click=on_playlist_click)
         browse.append(self.playlist_section)
 
-        # 排行榜：标准 getAlbumList2("frequent")，标准后端支持则显示
-        self.rank_section = CardSection(_("排行榜"))
-        browse.append(self.rank_section)
-
-        # 每日推荐：私有扩展 getDailySongs，未实现的后端自动隐藏
-        self.daily_section = CardSection(_("每日推荐"))
-        browse.append(self.daily_section)
+        # 推荐歌曲：随机抽取的单曲卡片（点击直接播放）。
+        self.random_songs_section = CardSection(_("推荐歌曲"))
+        browse.append(self.random_songs_section)
 
         self.random_section = CardSection(_("专辑"), on_more=lambda: self._open_section("random"))
         browse.append(self.random_section)
@@ -88,8 +90,9 @@ class OnlineSearchPage(Gtk.Box):
         self.artists_section = CardSection(_("艺术家"), on_more=lambda: self._open_section("artists"))
         browse.append(self.artists_section)
 
-        self.random_songs_section = CardSection(_("随机歌曲"))
-        browse.append(self.random_songs_section)
+        # 排行榜：标准 getAlbumList2("frequent")，标准后端支持则显示
+        self.rank_section = CardSection(_("排行榜"))
+        browse.append(self.rank_section)
 
         self.newest_section = CardSection(_("最新添加"))
         browse.append(self.newest_section)

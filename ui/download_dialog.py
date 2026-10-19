@@ -95,7 +95,7 @@ class DownloadController:
 
     def _show_dialog(self, track) -> None:
         """下载对话框：音质（默认跟当前播放档位）/ 目录 / 文件名。"""
-        from core.downloader import QUALITY_LABELS
+        from core.quality import ONLINE_QUALITY_VISIBLE_LABELS
 
         cur_q = _current_quality()
         default_dir = _default_download_dir()
@@ -108,14 +108,23 @@ class DownloadController:
 
         # 音质档位：仅私有协议后端可选。
         # 标准 Subsonic 不按档位转码——下载原文件，故不显示音质选项。
+        #
+        # 换用标准后端后 Hi-Res / 母带两档基本用不上，暂从下拉里隐藏；
+        # 数据层（core.quality）保留，将来要恢复从 HIDDEN_QUALITY_KEYS 删掉即可。
         _is_private = bool(getattr(track, "is_private_backend", False))
-        keys = [k for k, _ in QUALITY_LABELS]
+        _visible_labels = list(ONLINE_QUALITY_VISIBLE_LABELS)
+        keys = [k for k, _ in _visible_labels]
+        # 当前配置档位若已被隐藏（用户以前选过母带/Hi-Res），回落到默认档位，
+        # 否则下拉显示与实际下载档位不一致（下拉显示「标准」，实际下「母带」）。
+        if cur_q not in keys:
+            from core.quality import DEFAULT_ONLINE_QUALITY
+            cur_q = DEFAULT_ONLINE_QUALITY if DEFAULT_ONLINE_QUALITY in keys else (keys[0] if keys else cur_q)
         q_dropdown = None
         if _is_private:
             qrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             qrow.append(Gtk.Label(label=_("音质"), xalign=0))
             q_dropdown = Gtk.DropDown.new_from_strings(
-                [_(label) for _k, label in QUALITY_LABELS])
+                [_(label) for _k, label in _visible_labels])
             q_dropdown.set_hexpand(True)
             if cur_q in keys:
                 q_dropdown.set_selected(keys.index(cur_q))

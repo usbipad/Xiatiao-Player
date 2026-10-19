@@ -82,6 +82,7 @@ _EN: dict[str, str] = {
     "没有更多了": "No more",
     "随机专辑": "Random Albums",
     "随机歌曲": "Random Songs",
+    "推荐歌曲": "Recommended Songs",
     "张专辑": "albums",
     "连接任意兼容 Subsonic 协议的音乐服务（Navidrome / Airsonic / 自建服务）":
         "Connect any Subsonic-compatible music server (Navidrome / Airsonic / custom)",

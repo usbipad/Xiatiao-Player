@@ -275,8 +275,9 @@ class PlayerPanel(Gtk.Box):
         _pop_box.set_margin_bottom(6)
         _pop_box.set_margin_start(6)
         _pop_box.set_margin_end(6)
+        # 档位清单统一来自 core.quality（已剔除 hires/master），单一真相。
         self._quality_pop_btns = {}
-        for _k, _label in self._QUALITY_LABELS:
+        for _k, _label in self._QUALITY_VISIBLE_LABELS:
             _b = Gtk.Button(label=_(_label))
             _b.add_css_class("flat")
             _b.set_halign(Gtk.Align.FILL)
@@ -850,9 +851,9 @@ class PlayerPanel(Gtk.Box):
         self.user_avatar.set_visible(bool(url))
 
     #: 在线音质档位（key → 显示名）；单一数据源见 core.quality。
-    #: 下拉框用带码率的 ONLINE_QUALITY_LABELS；按钮用短名 ONLINE_QUALITY_SHORT。
+    #: 下拉框用带码率的可见档位；按钮用短名 ONLINE_QUALITY_SHORT。
     from core.quality import (
-        ONLINE_QUALITY_LABELS as _QUALITY_LABELS,
+        ONLINE_QUALITY_VISIBLE_LABELS as _QUALITY_VISIBLE_LABELS,
         ONLINE_QUALITY_SHORT as _QUALITY_SHORT,
     )
 
@@ -949,10 +950,19 @@ class PlayerPanel(Gtk.Box):
             pass
         self._set_quality(key)
 
+    def _normalize_quality_key(self, key: str) -> str:
+        """把隐藏档位回落到默认档位；其余原样返回。"""
+        from core.quality import DEFAULT_ONLINE_QUALITY, HIDDEN_QUALITY_KEYS
+        k = str(key or "")
+        if k in HIDDEN_QUALITY_KEYS:
+            return DEFAULT_ONLINE_QUALITY
+        return k
+
     def set_quality_dropdown(self, key: str) -> None:
         """同步按钮显示到当前所选档位（宽度随文字自适应）。"""
         try:
             if hasattr(self, "_quality_btn_label"):
+                key = self._normalize_quality_key(key)
                 self._quality_btn_label.set_text(
                     _(self._QUALITY_SHORT.get(key, key or "无损")))
         except Exception as exc:
@@ -963,7 +973,14 @@ class PlayerPanel(Gtk.Box):
 
         所有档位（含母带 / Hi-Res）都写配置 + 设运行时档位：
         用户选什么，重启后就用什么，不擅自回落。
+
+        例外：已被隐藏的档位（hires/master）不再写入——UI 里已无入口，
+        若旧配置/外部调用传入，直接忽略，避免配置与 UI 脱节。
         """
+        from core.quality import HIDDEN_QUALITY_KEYS
+        if str(key or "") in HIDDEN_QUALITY_KEYS:
+            log.info("[音质选择] 忽略隐藏档位: %s", key)
+            return
         try:
             from providers.subsonic import set_runtime_quality
             set_runtime_quality(key)

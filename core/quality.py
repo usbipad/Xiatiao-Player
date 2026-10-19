@@ -64,6 +64,20 @@ ONLINE_QUALITY_LABELS: list[tuple[str, str]] = [
 #: 默认档位（配置缺省）。
 DEFAULT_ONLINE_QUALITY = "lossless"
 
+#: UI 暂不展示的档位（hires/master）。
+#:
+#: 换用标准 Subsonic 后端后这两档基本用不上。它们仍保留在
+#: ONLINE_QUALITY_BITRATE / ONLINE_QUALITY_EXPECT_SPEC 等数据映射里
+#: （内部逻辑仍可识别），只是不给用户选。
+#: 将来要恢复：把下面集合清空即可，面板/下载/配置回落自动跟随。
+HIDDEN_QUALITY_KEYS: frozenset[str] = frozenset({"hires", "master"})
+
+#: UI 可选档位（已剔除 HIDDEN_QUALITY_KEYS），供面板下拉与下载下拉使用。
+ONLINE_QUALITY_VISIBLE_LABELS: list[tuple[str, str]] = [
+    (key, label) for key, label in ONLINE_QUALITY_LABELS
+    if key not in HIDDEN_QUALITY_KEYS
+]
+
 #: 档位持久化说明：
 #: 所有档位（含母带 / Hi-Res）均写入配置，用户选什么重启后就用什么。
 #: （此前限制母带/Hi-Res 仅当前会话生效，因担心重启后不知情地用高码率；

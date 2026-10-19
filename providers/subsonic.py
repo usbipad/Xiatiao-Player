@@ -310,15 +310,21 @@ class SubsonicProvider(BaseMusicProvider):
     # 标准 Subsonic 服务端（Navidrome 等）此请求通常很快，不受影响。
     PLAYLIST_TIMEOUT = 60.0
 
-    def get_playlist(self, playlist_id: str) -> dict:
+    def get_playlist(self, playlist_id: str, exclude: str = "") -> dict:
         """单个歌单详情（含歌曲）。
 
         使用放宽后的超时（见 PLAYLIST_TIMEOUT），避免超大歌单超时失败。
+
+        exclude：逗号分隔的已播歌曲 id。仅「每日推荐」等实时流虚拟歌单使用，
+        服务端据此过滤已播内容，实现「续拉不重复」；普通歌单传空即可。
         """
-        return self._request("getPlaylist", [("id", playlist_id)],
+        extra = [("id", playlist_id)]
+        if exclude:
+            extra.append(("exclude", exclude))
+        return self._request("getPlaylist", extra,
                              timeout=self.PLAYLIST_TIMEOUT)
 
-    def playlist_tracks(self, playlist_id: str) -> List[TrackItem]:
+    def playlist_tracks(self, playlist_id: str, exclude: str = "") -> List[TrackItem]:
         """歌单详情 → TrackItem 列表（带音质信息）。失败抛异常（不吞）。
 
         注意：不用 get_playlist_tracks 之名——基类已有同名的无参方法
@@ -327,7 +333,7 @@ class SubsonicProvider(BaseMusicProvider):
         异常语义：加载失败（网络/超时/服务端错误）会**向上抛**，
         由调用方决定提示；避免"失败即当空歌单"导致用户误以为歌单为空。
         """
-        body = self.get_playlist(playlist_id)
+        body = self.get_playlist(playlist_id, exclude=exclude)
         node = body.get("playlist")
         if not isinstance(node, dict):
             return []
@@ -338,15 +344,17 @@ class SubsonicProvider(BaseMusicProvider):
             return []
         return [self._song_to_track(s) for s in entries if isinstance(s, dict)]
 
-    def playlist_tracks_safe(self, playlist_id: str) -> tuple:
+    def playlist_tracks_safe(self, playlist_id: str, exclude: str = "") -> tuple:
         """歌单详情，返回 (tracks, error)。
 
         error 为 None 表示成功（tracks 可能为空 = 真空歌单）；
         error 为 str 表示加载失败（网络/超时/服务端错误）。
         调用方据此区分「空歌单」与「加载失败」，给出正确提示。
+
+        exclude：仅「每日推荐」续拉时传已播 id 列表（逗号分隔）。
         """
         try:
-            return (self.playlist_tracks(playlist_id), None)
+            return (self.playlist_tracks(playlist_id, exclude=exclude), None)
         except Exception as exc:
             return ([], str(exc) or exc.__class__.__name__)
 

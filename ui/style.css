@@ -807,6 +807,43 @@ headerbar menubutton.app-menu-btn > button:hover {
     transform: scale(1.02);
 }
 
+/* 实时流卡片（每日推荐/雷达模式）封面正中常驻播放按钮。
+   完全覆盖 Adwaita 默认按钮外观：半透明黑底 + 白图标 + 圆角。 */
+.card-play-btn {
+    min-width: 48px;
+    min-height: 48px;
+    padding: 0;
+    margin: 0;
+    border-radius: 9999px;
+    background-color: rgba(0, 0, 0, 0.55);
+    background-image: none;
+    color: #ffffff;
+    border: none;
+    outline: none;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+    transition: background-color 160ms ease;
+}
+
+/* 悬停反馈按「整个卡片容器」触发：鼠标进入封面、标题、副标题任一区域，
+   播放按钮即变色，而不是必须精确指到按钮上。
+   两个选择器并列：前者是卡片容器，后者保留按钮自身 hover（键盘聚焦等场景）。 */
+.media-card:hover .card-play-btn,
+.card-play-btn:hover {
+    background-color: rgba(0, 0, 0, 0.72);
+    background-image: none;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+}
+
+.card-play-btn:active {
+    background-color: rgba(0, 0, 0, 0.85);
+    background-image: none;
+}
+
+/* 图标继承按钮的白色，避免 symbolic 图标走主题色 */
+.card-play-btn image {
+    color: #ffffff;
+}
+
 /* 卡片标题：加粗、精致间距 */
 .media-card-title {
     font-size: 14.5px;

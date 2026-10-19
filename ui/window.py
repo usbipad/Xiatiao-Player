@@ -2145,6 +2145,8 @@ class MainWindow(Adw.ApplicationWindow):
             if (getattr(t, "source_id", "") or getattr(t, "title", "")) == key:
                 index = i
                 break
+        # 切到普通队列 → 关闭每日推荐续拉（否则普通队列播完会被误续拉）。
+        self._daily_radio_active = False
         self.playlist.set_tracks(lib, autoplay_index=index)
 
     def _play_online_single(self, track) -> None:
@@ -2712,6 +2714,7 @@ class MainWindow(Adw.ApplicationWindow):
             name = str(c.get("name", "") or "")
             if not pid and not name:
                 continue
+            is_stream = self._is_stream_playlist(pid)
             out.append({
                 "name": name,
                 "subtitle": str(c.get("subtitle", "") or ""),
@@ -2719,11 +2722,223 @@ class MainWindow(Adw.ApplicationWindow):
                 "click": (lambda _pid=pid, _nm=name:
                           self._open_recommendation_playlist(_pid, _nm))
                          if pid else None,
+                # 实时流卡片（每日推荐）：封面中央常驻播放按钮。
+                "play_on_hover": is_stream,
             })
         return out
 
+    #: 「每日推荐」虚拟歌单 id（保留作为默认值/兼容）。
+    DAILY_PLAYLIST_ID = "virtual:daily"
+
+    #: 实时流虚拟歌单白名单：每次 getPlaylist 返回内容会变，
+    #: 需要「点即播 + 动态续拉 + 封面播放按钮」。
+    #: 用精确 id 而非关键字匹配——「每日30首」等同区块的 id 也可能含
+    #: daily 字样，关键字匹配会误伤。新增实时流时在这里追加即可。
+    STREAM_PLAYLIST_IDS = frozenset({
+        "virtual:daily",   # 每日推荐
+    })
+
+    @classmethod
+    def _is_stream_playlist(cls, playlist_id: str) -> bool:
+        """是否为「实时流」虚拟歌单（见 STREAM_PLAYLIST_IDS）。
+
+        这类歌单每次 getPlaylist 返回内容会变，需要「点即播 + 动态续拉」；
+        普通虚拟歌单（榜单/分类/猜你喜欢/每日30首）保持静态列表。
+        """
+        return str(playlist_id or "") in cls.STREAM_PLAYLIST_IDS
+
+    #: 每日推荐「队列剩余 ≤ 该值」时预拉下一批（提前量，避免播完空窗）。
+    DAILY_REFILL_THRESHOLD = 2
+
+    #: exclude 只带最近这么多个已播 id。
+    #
+    # exclude 走 GET query string，无界增长会让 URL 越来越长，
+    # 最终撞上服务端/代理的 URL 长度限制（Nginx 默认 8KB）。
+    # 只需排除「近期」已播即可避免重复；窗口外更早的歌即便重复出现，
+    # 也已是几小时后的事，体验上可接受。
+    DAILY_EXCLUDE_MAX = 500
+
+    def _start_daily_radio(self, playlist_id: str, name: str) -> None:
+        """每日推荐：拉第一批后直接开始播放，并重置续拉状态。
+
+        与普通歌单（先进详情页再点歌）不同——每日推荐是「实时流」，
+        用户点卡片即播；后续由 _on_end_of_stream 在快播完时自动续拉。
+        """
+        from core.tasks import run_async
+
+        # 每次进入重置续拉状态（已播集合也重置）。
+        # 会话令牌自增：让上一次进入遗留的异步请求结果失效，避免串台
+        # （A 的续拉在用户已切到 B 之后才返回 → 数据被 append 进 B 的队列）。
+        self._daily_radio_session = getattr(self, "_daily_radio_session", 0) + 1
+        session = self._daily_radio_session
+        self._daily_radio_active = True
+        self._daily_radio_playlist_id = playlist_id
+        self._daily_radio_name = name or _("每日推荐")
+        # 有序 list（保序便于裁剪最近 N 个）+ 去重 set（判重 O(1)）。
+        self._daily_radio_played_ids = []
+        self._daily_radio_played_set = set()
+        self._daily_radio_refilling = False
+
+        def _work():
+            p = self._get_provider("subsonic")
+            if p is None:
+                return ([], _("在线音源未就绪"))
+            return p.playlist_tracks_safe(playlist_id)
+
+        def _done(result):
+            try:
+                # 会话已过期（用户切走或重新进入）→ 丢弃本次结果。
+                if session != getattr(self, "_daily_radio_session", 0):
+                    return
+                # 用户在加载期间已切走（点了别的歌/关掉）→ 放弃本次结果。
+                if not getattr(self, "_daily_radio_active", False):
+                    return
+                tracks, err = result
+                if err:
+                    self._toast(_("每日推荐加载失败：{err}").format(err=err))
+                    self._daily_radio_active = False
+                    return
+                tracks = list(tracks or [])
+                if not tracks:
+                    self._toast(_("每日推荐暂无内容"))
+                    self._daily_radio_active = False
+                    return
+                # 记录本批已播 id（续拉时作为 exclude）。
+                self._record_daily_played(self._daily_track_ids(tracks))
+                # 整个首批设为队列，从第一首开始播。
+                self.playlist.set_tracks(tracks, autoplay_index=0)
+            except Exception:
+                log.debug("启动每日推荐失败", exc_info=True)
+                self._daily_radio_active = False
+
+        run_async(work=_work, on_done=_done)
+
+    @staticmethod
+    def _daily_track_ids(tracks) -> list:
+        """取一批曲目的稳定 id（source_id 优先）用于 exclude。"""
+        ids = []
+        for t in (tracks or []):
+            sid = str(getattr(t, "source_id", "") or "")
+            if sid:
+                ids.append(sid)
+        return ids
+
+    def _record_daily_played(self, ids) -> None:
+        """记录已播 id：维护「有序 list + 去重 set」，并裁剪到最近 N 个。
+
+        裁剪目的：exclude 走 GET query string，无界增长会撞 URL 长度限制。
+        只保留最近 DAILY_EXCLUDE_MAX 个，既能避免近期重复，又不会让 URL 膨胀。
+        """
+        lst = getattr(self, "_daily_radio_played_ids", None)
+        seen = getattr(self, "_daily_radio_played_set", None)
+        if lst is None or seen is None:
+            return
+        for sid in (ids or []):
+            if sid and sid not in seen:
+                lst.append(sid)
+                seen.add(sid)
+        # 裁剪：超出上限时丢弃最早的（list 头部），set 同步移除。
+        limit = self.DAILY_EXCLUDE_MAX
+        if len(lst) > limit:
+            drop = len(lst) - limit
+            for sid in lst[:drop]:
+                seen.discard(sid)
+            del lst[:drop]
+
+    def _refill_daily_queue(self) -> None:
+        """每日推荐续拉：带已播 id 的 exclude 请求下一批，追加到队列末尾。
+
+        由 _on_end_of_stream 在队列剩余 ≤ DAILY_REFILL_THRESHOLD 时触发。
+        防重入：一次续拉未返回前不重复发起。
+        兜底：返回空 / 失败 → 停止续拉（队列自然播完结束）。
+        """
+        if not getattr(self, "_daily_radio_active", False):
+            return
+        if getattr(self, "_daily_radio_refilling", False):
+            return
+        self._daily_radio_refilling = True
+        playlist_id = getattr(self, "_daily_radio_playlist_id",
+                              self.DAILY_PLAYLIST_ID)
+        # 有序 list 已按 DAILY_EXCLUDE_MAX 裁剪，join 后 URL 长度有上界。
+        exclude = ",".join(getattr(self, "_daily_radio_played_ids", []) or [])
+        # 捕获当前会话：续拉返回时若已换会话（重进每日推荐）→ 丢弃。
+        session = getattr(self, "_daily_radio_session", 0)
+
+        from core.tasks import run_async
+
+        def _work():
+            p = self._get_provider("subsonic")
+            if p is None:
+                return ([], _("在线音源未就绪"))
+            return p.playlist_tracks_safe(playlist_id, exclude=exclude)
+
+        def _done(result):
+            # 会话已过期（用户重进每日推荐）→ 既不续、也不动当前会话状态。
+            if session != getattr(self, "_daily_radio_session", 0):
+                return
+            self._daily_radio_refilling = False
+            try:
+                # 期间用户退出每日推荐 → 丢弃。
+                if not getattr(self, "_daily_radio_active", False):
+                    return
+                tracks, err = result
+                if err or not tracks:
+                    # 兜底：续拉失败/为空 → 结束续拉，队列播完即停。
+                    if err:
+                        log.debug("每日推荐续拉失败: %s", err)
+                    self._daily_radio_active = False
+                    return
+                tracks = list(tracks or [])
+                # 去重（服务端已按 exclude 过滤，这里再兜一层防御）。
+                played = getattr(self, "_daily_radio_played_set", set())
+                fresh = [t for t in tracks
+                         if str(getattr(t, "source_id", "") or "") not in played]
+                if not fresh:
+                    # 没有新歌（极端情况）→ 结束续拉，避免死循环。
+                    self._daily_radio_active = False
+                    return
+                self._record_daily_played(self._daily_track_ids(fresh))
+                # 追加到队列末尾（简单、可回退；内存增长可接受）。
+                for t in fresh:
+                    self.playlist.append(t)
+            except Exception:
+                log.debug("每日推荐续拉处理失败", exc_info=True)
+                self._daily_radio_active = False
+
+        run_async(work=_work, on_done=_done)
+
+    def _maybe_refill_daily(self) -> None:
+        """EOS 时判断：每日推荐模式下队列剩余不足 → 续拉。
+
+        只在每日推荐激活时生效；普通队列无影响。
+        用户手动切歌不影响判定——只看队列尾部余量。
+        """
+        if not getattr(self, "_daily_radio_active", False):
+            return
+        try:
+            # 用 __len__ 而非 tracks()：后者返回 list(self._tracks) 全量复制，
+            # 追加式无限流下队列会越来越长，每次切歌复制一次是 O(n) 浪费。
+            total = len(self.playlist)
+            cur = self.playlist.current_index()
+        except Exception:
+            return
+        # 剩余（含当前）曲目数：total - cur - 1 是当前之后的曲目数。
+        remaining = total - cur - 1
+        if remaining <= self.DAILY_REFILL_THRESHOLD:
+            self._refill_daily_queue()
+
     def _open_recommendation_playlist(self, playlist_id: str, name: str) -> None:
-        """点推荐分组卡片：按 playlistId 拉歌（虚拟歌单），显示在歌单详情视图。"""
+        """点推荐分组卡片：按 playlistId 拉歌（虚拟歌单）。
+
+        实时流分组（每日推荐，见 _is_stream_playlist）→
+        特殊处理：拉一批后**直接开始播放**，并在队列快播完时自动续拉
+        （见 _start_daily_radio / _refill_daily_queue）。
+        普通推荐分组 → 显示在歌单详情视图（静态列表）。
+        """
+        if self._is_stream_playlist(playlist_id):
+            self._start_daily_radio(playlist_id, name)
+            return
+
         from core.tasks import run_async
 
         def _work():
@@ -2753,7 +2968,11 @@ class MainWindow(Adw.ApplicationWindow):
         run_async(work=_work, on_done=_done)
 
     def _song_nodes_to_cards(self, tracks) -> list:
-        """TrackItem 列表 → 卡片（点开播放该歌曲）。"""
+        """TrackItem 列表 → 卡片（点开播放该歌曲）。
+
+        单曲卡片也带封面播放按钮：用户看到按钮即知「这是歌，点了直接播」，
+        不会误以为是歌单。按钮与卡片点击是同一动作。
+        """
         out = []
         for t in (tracks or []):
             try:
@@ -2765,6 +2984,7 @@ class MainWindow(Adw.ApplicationWindow):
                     "subtitle": getattr(t, "artist", "") or "",
                     "cover_url": getattr(t, "cover_url", "") or "",
                     "click": (lambda _t=t: self._play_from_list(_t, tracks)),
+                    "play_on_hover": True,
                 })
             except Exception:
                 continue
@@ -2986,6 +3206,9 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._start_playback_if_needed(track, restoring)
         self._dispatch_track_assets(track, restoring)
+        # 每日推荐：手动切歌（点队列/上一首/下一首）也按余量续拉；
+        # 普通队列为空操作。自动切歌另有 _on_end_of_stream 钩子。
+        self._maybe_refill_daily()
 
     def _cast_track(self, track) -> None:
         """把指定曲目推送到当前选中的 DLNA 设备（委托 CastController）。"""
@@ -4531,6 +4754,8 @@ class MainWindow(Adw.ApplicationWindow):
         nxt = self.playlist.next(auto=True)
         if nxt is None:
             self.player.stop()
+        # 续拉判断已由 current-changed 钩子统一处理（见 _on_playlist_current_changed），
+        # 此处不再重复调用，避免一次切歌触发两遍检查。
 
     def _on_play_state_changed(self, _player, state: str) -> None:
         # 投送模式下，本机后端不是播放源（已 stop），其后端的 state 事件
@@ -4661,7 +4886,7 @@ class MainWindow(Adw.ApplicationWindow):
                  getattr(track, "source_type", ""), is_online)
         # 音质徽章：每步独立 try，确保一定执行（不因前面某步失败而跳过）
         if is_online:
-            # 当前所选档位（运行时优先，其次配置）——供下拉框选中与初始徽章。
+            # 当前所选档位（运行时优先，其次配置）——供下拉框选中。
             try:
                 q = self.player_panel._current_quality()
             except Exception:
@@ -4675,6 +4900,7 @@ class MainWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
             # 显示音质选择下拉框（仅私有协议后端），并同步选中到当前档位。
+            # 下拉里的 Hi-Res / 母带档位已在 player_panel 构建时隐藏。
             try:
                 self.player_panel.quality_dropdown.set_visible(is_private)
                 if is_private:
