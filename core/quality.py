@@ -64,13 +64,15 @@ ONLINE_QUALITY_LABELS: list[tuple[str, str]] = [
 #: 默认档位（配置缺省）。
 DEFAULT_ONLINE_QUALITY = "lossless"
 
-#: UI 暂不展示的档位（hires/master）。
+#: UI 暂不展示的档位。
 #:
-#: 换用标准 Subsonic 后端后这两档基本用不上。它们仍保留在
-#: ONLINE_QUALITY_BITRATE / ONLINE_QUALITY_EXPECT_SPEC 等数据映射里
-#: （内部逻辑仍可识别），只是不给用户选。
-#: 将来要恢复：把下面集合清空即可，面板/下载/配置回落自动跟随。
-HIDDEN_QUALITY_KEYS: frozenset[str] = frozenset({"hires", "master"})
+#: 现为空：音质下拉改为「按当前歌曲的 qualityLevels 动态渲染」，
+#: 服务端声明该歌支持 hires/master 时就应能选（见需求「不要写死五档」）。
+#: 标准 Subsonic 后端不返回 qualityLevels → 走默认兜底档位，自然看不到这两档。
+#:
+#: 保留此集合是为了留一个「一键屏蔽某档」的开关：把 key 加回集合，
+#: 面板下拉 / 下载下拉 / 配置回落会自动跟随（ONLINE_QUALITY_VISIBLE_LABELS 派生）。
+HIDDEN_QUALITY_KEYS: frozenset[str] = frozenset()
 
 #: UI 可选档位（已剔除 HIDDEN_QUALITY_KEYS），供面板下拉与下载下拉使用。
 ONLINE_QUALITY_VISIBLE_LABELS: list[tuple[str, str]] = [
@@ -253,3 +255,112 @@ def is_degraded(requested_spec: str, actual_spec: str) -> bool:
     r = spec_rank(requested_spec)
     a = spec_rank(actual_spec)
     return r > 0 and a > 0 and a < r
+
+
+# ============================================================
+# 歌曲级档位（qualityLevels）—— 服务端按歌声明「这首歌支持哪些档位」
+# ============================================================
+#
+# 语义：
+#   - 歌曲对象可带 qualityLevels（数组，项为 {key, name, br}）；
+#   - UI 下拉按它渲染（有几档显示几档，顺序跟数组）；
+#   - 字段缺失/异常 → 回退默认可见档位，绝不出现空白下拉；
+#   - 用户偏好档位若该歌不支持 → 本次播放回落到该歌最高档，
+#     但**不改写全局偏好**（换回支持的歌仍用偏好档）。
+
+
+#: 歌曲未声明 qualityLevels 时的兜底档位（基础三档）。
+#:
+#: 刻意不跟 HIDDEN_QUALITY_KEYS / ONLINE_QUALITY_VISIBLE_LABELS 走：
+#: 那两张表是「全量可选档位」，而兜底要表达的是「不知道这首歌支持什么，
+#: 给最保守的常规档位」。hires/master 只有服务端明确声明支持时才出现
+#: （见需求验收：普通歌 3 档、Hi-Res 歌 4 档、无字段回退默认档位）。
+DEFAULT_QUALITY_LEVEL_KEYS: tuple[str, ...] = ("standard", "high", "lossless")
+
+
+def default_quality_levels() -> list[dict]:
+    """字段缺失时的兜底档位列表（基础三档，不含 hires/master）。
+
+    返回新列表，调用方可随意改；name 沿用 ONLINE_QUALITY_LABELS 的带码率
+    文案，与改造前的下拉外观保持一致。
+    """
+    labels = dict(ONLINE_QUALITY_LABELS)
+    return [
+        {
+            "key": k,
+            "name": labels.get(k, ONLINE_QUALITY_SHORT.get(k, k)),
+            "br": ONLINE_QUALITY_BITRATE.get(k, 0),
+        }
+        for k in DEFAULT_QUALITY_LEVEL_KEYS
+    ]
+
+
+def normalize_quality_levels(raw) -> list[dict]:
+    """清洗服务端 qualityLevels → 规范化档位列表。
+
+    - 非数组 / 空数组 / 全部非法 → 返回 default_quality_levels()（兜底不空白）；
+    - 逐项校验：key 去空白小写、必须非空；同 key 去重（保留首次出现）；
+    - name 缺省 → 短显示名，再缺 → key；
+    - br 缺省/非法 → 查 ONLINE_QUALITY_BITRATE，仍取不到 → 0。
+
+    保持服务端数组顺序（需求要求「顺序按数组顺序」）。
+    """
+    if not isinstance(raw, list) or not raw:
+        return default_quality_levels()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key", "") or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        name = str(item.get("name", "") or "").strip()
+        if not name:
+            name = ONLINE_QUALITY_SHORT.get(key, "") or key
+        try:
+            br = int(item.get("br", 0) or 0)
+        except (TypeError, ValueError):
+            br = 0
+        if br <= 0:
+            br = ONLINE_QUALITY_BITRATE.get(key, 0)
+        out.append({"key": key, "name": name, "br": br})
+    return out or default_quality_levels()
+
+
+def highest_quality(levels: list[dict]) -> str:
+    """档位列表里的最高档 key（按 br 比，br 相同取靠后者）。
+
+    空列表/异常 → DEFAULT_ONLINE_QUALITY。
+    """
+    best_key = ""
+    best_br = -1
+    for lv in levels or []:
+        if not isinstance(lv, dict):
+            continue
+        try:
+            br = int(lv.get("br", 0) or 0)
+        except (TypeError, ValueError):
+            br = 0
+        if br >= best_br:
+            best_br = br
+            best_key = str(lv.get("key", "") or "")
+    return best_key or DEFAULT_ONLINE_QUALITY
+
+
+def effective_quality(preferred: str, levels: list[dict]) -> str:
+    """用户偏好档位在**这首歌**上的实际生效档位。
+
+    - 歌支持偏好档 → 直接用偏好档；
+    - 否则回落到该歌最高档（如偏好 hires 却播 3 档普通歌 → lossless）；
+    - 不修改全局偏好。
+    """
+    p = str(preferred or "").strip().lower()
+    keys = {
+        str(lv.get("key", "") or "")
+        for lv in levels or [] if isinstance(lv, dict)
+    }
+    if p and p in keys:
+        return p
+    return highest_quality(levels)

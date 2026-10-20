@@ -95,7 +95,6 @@ class DownloadController:
 
     def _show_dialog(self, track) -> None:
         """下载对话框：音质（默认跟当前播放档位）/ 目录 / 文件名。"""
-        from core.quality import ONLINE_QUALITY_VISIBLE_LABELS
 
         cur_q = _current_quality()
         default_dir = _default_download_dir()
@@ -109,16 +108,24 @@ class DownloadController:
         # 音质档位：仅私有协议后端可选。
         # 标准 Subsonic 不按档位转码——下载原文件，故不显示音质选项。
         #
-        # 换用标准后端后 Hi-Res / 母带两档基本用不上，暂从下拉里隐藏；
-        # 数据层（core.quality）保留，将来要恢复从 HIDDEN_QUALITY_KEYS 删掉即可。
+        # 档位清单按「这首歌实际支持的 qualityLevels」渲染（与播放面板同逻辑）：
+        # 普通歌 3 档、Hi-Res 歌 4 档；不支持的档位（如母带/Hi-Res）不出现。
+        # 字段缺失 → normalize 自动回退基础三档，不会空白。
+        from core.quality import (
+            normalize_quality_levels, effective_quality,
+        )
         _is_private = bool(getattr(track, "is_private_backend", False))
-        _visible_labels = list(ONLINE_QUALITY_VISIBLE_LABELS)
+        _levels = normalize_quality_levels(
+            getattr(track, "quality_levels", None))
+        _visible_labels = [
+            (str(lv.get("key", "")), str(lv.get("name", "") or lv.get("key", "")))
+            for lv in _levels if lv.get("key")
+        ]
         keys = [k for k, _ in _visible_labels]
-        # 当前配置档位若已被隐藏（用户以前选过母带/Hi-Res），回落到默认档位，
-        # 否则下拉显示与实际下载档位不一致（下拉显示「标准」，实际下「母带」）。
-        if cur_q not in keys:
-            from core.quality import DEFAULT_ONLINE_QUALITY
-            cur_q = DEFAULT_ONLINE_QUALITY if DEFAULT_ONLINE_QUALITY in keys else (keys[0] if keys else cur_q)
+        # 默认选中：偏好档位在该歌支持范围内生效；不支持则回落到该歌最高档。
+        # 否则下拉显示与实际下载档位不一致（下拉显示「无损」，实际按母带下）。
+        if keys:
+            cur_q = effective_quality(cur_q, _levels)
         q_dropdown = None
         if _is_private:
             qrow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)

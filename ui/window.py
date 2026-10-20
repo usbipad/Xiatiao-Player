@@ -3014,6 +3014,21 @@ class MainWindow(Adw.ApplicationWindow):
             pass
         run_async(work=_work, on_done=_done)
 
+    def _preferred_quality(self) -> str:
+        """用户偏好档位（持久化配置，不含按歌的临时降级）。
+
+        与 _RUNTIME_QUALITY 的区别：运行时档位可能是「当前歌不支持偏好档」
+        时的临时降级值；偏好档始终是用户在配置里选的那个，用于判断某首歌
+        是否支持、以及切回支持的歌时恢复。
+        """
+        try:
+            from config.settings import get_config
+            from core.quality import DEFAULT_ONLINE_QUALITY
+            return get_config().get_str("online_quality", DEFAULT_ONLINE_QUALITY)
+        except Exception:
+            from core.quality import DEFAULT_ONLINE_QUALITY
+            return DEFAULT_ONLINE_QUALITY
+
     def _subsonic_stream_url(self, sid: str) -> str:
         """按「后端类型」构造在线歌 stream_url（单一入口，避免各处漏判）。
 
@@ -4896,15 +4911,41 @@ class MainWindow(Adw.ApplicationWindow):
             qlevels = getattr(track, "quality_levels", None)
             is_private = bool(getattr(track, "is_private_backend", False))
             try:
+                # 按当前歌 qualityLevels 重建下拉（有几档显示几档）。
                 self.player_panel.set_available_qualities(qlevels)
             except Exception:
                 pass
             # 显示音质选择下拉框（仅私有协议后端），并同步选中到当前档位。
-            # 下拉里的 Hi-Res / 母带档位已在 player_panel 构建时隐藏。
+            #
+            # 档位回落语义（关键）：
+            #   - 用户偏好档位持久化在配置里，始终代表「用户想用的档位」；
+            #   - 当前歌不支持偏好档 → 仅对**这首歌**临时降级到该歌最高档，
+            #     用运行时档位（_RUNTIME_QUALITY）承载，不写配置；
+            #   - 换到支持偏好档的歌 → 清空临时运行时档位，自动回到用户偏好。
+            # 这样「Hi-Res 歌 → 普通歌（降无损）→ 再 Hi-Res 歌」能自动升回 Hi-Res。
             try:
                 self.player_panel.quality_dropdown.set_visible(is_private)
                 if is_private:
-                    self.player_panel.set_quality_dropdown(q)
+                    try:
+                        pref = self._preferred_quality()
+                    except Exception:
+                        pref = q
+                    try:
+                        eff = self.player_panel._effective_quality_for_current(pref)
+                    except Exception:
+                        eff = pref
+                    try:
+                        from providers.subsonic import set_runtime_quality
+                        if eff and pref and eff != pref:
+                            log.info("[音质回落] 偏好 %s 不被当前歌支持 → 临时 %s", pref, eff)
+                            set_runtime_quality(eff)
+                        else:
+                            # 当前歌支持偏好档（或无档位信息）：清掉临时降级，
+                            # 运行时为空 → playable_url 回落读配置 = 用户偏好。
+                            set_runtime_quality("")
+                    except Exception as exc:
+                        log.debug("[音质回落] 设置运行时档位失败: %s", exc)
+                    self.player_panel.set_quality_dropdown(eff or pref or q)
             except Exception as exc:
                 log.warning("[面板格式] 显示音质下拉框失败: %s", exc)
             # 规格徽章只表示「实际音质」：切歌瞬间尚未探测，先隐藏，

@@ -268,6 +268,9 @@ class PlayerPanel(Gtk.Box):
         _btn_box.append(_arrow)
         self.quality_dropdown.set_child(_btn_box)
         # 弹出档位列表（Popover）。
+        # 内容不在此写死：由 set_available_qualities() 按当前歌的
+        # qualityLevels 动态重建（普通歌 3 档 / Hi-Res 歌 4 档）。
+        # 初始为空，切歌/传入档位后填充。
         self._quality_popover = Gtk.Popover()
         self._quality_popover.set_parent(self.quality_dropdown)
         _pop_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
@@ -275,15 +278,13 @@ class PlayerPanel(Gtk.Box):
         _pop_box.set_margin_bottom(6)
         _pop_box.set_margin_start(6)
         _pop_box.set_margin_end(6)
-        # 档位清单统一来自 core.quality（已剔除 hires/master），单一真相。
+        self._quality_pop_box = _pop_box
+        #: 当前歌的档位列表（规范化后 [{key,name,br}]）；None = 未设置
+        self._quality_levels = None
+        #: 当前歌下拉里实际可选的档位 key → 按钮（供选中态标记）
         self._quality_pop_btns = {}
-        for _k, _label in self._QUALITY_VISIBLE_LABELS:
-            _b = Gtk.Button(label=_(_label))
-            _b.add_css_class("flat")
-            _b.set_halign(Gtk.Align.FILL)
-            _b.connect("clicked", self._on_quality_popover_choice, _k)
-            _pop_box.append(_b)
-            self._quality_pop_btns[_k] = _b
+        # 兜底填一次默认档位，保证任何路径下打开弹层都不空白。
+        self._rebuild_quality_popover(None)
         self._quality_popover.set_child(_pop_box)
         self.quality_dropdown.set_popover(self._quality_popover)
         self.label_format = Gtk.Label(label="")
@@ -938,8 +939,68 @@ class PlayerPanel(Gtk.Box):
         log.info("[音质徽章] clear_quality_info（已隐藏）")
 
     def set_available_qualities(self, levels) -> None:
-        """由 window 传入当前歌支持的档位列表（TrackItem.quality_levels）。"""
+        """由 window 传入当前歌支持的档位列表（TrackItem.quality_levels）。
+
+        这是「下拉按歌动态显示」的入口：传入即按该歌支持的档位重建弹层
+        （有几档显示几档，顺序跟服务端数组）；None/非法 → 回退默认档位，
+        保证下拉永不空白。
+        """
         self._quality_levels = levels if isinstance(levels, list) else None
+        self._rebuild_quality_popover(self._quality_levels)
+
+    def _rebuild_quality_popover(self, levels) -> None:
+        """按档位列表重建弹层按钮（清空旧按钮，避免档位随歌残留）。"""
+        from core.quality import normalize_quality_levels
+        try:
+            norm = normalize_quality_levels(levels)
+        except Exception as exc:
+            log.debug("规范化档位失败，回退默认: %s", exc)
+            from core.quality import default_quality_levels
+            norm = default_quality_levels()
+        self._quality_levels_norm = norm
+        btns = {}
+        try:
+            box = self._quality_pop_box
+            child = box.get_first_child()
+            while child is not None:
+                nxt = child.get_next_sibling()
+                box.remove(child)
+                child = nxt
+            for lv in norm:
+                key = str(lv.get("key", "") or "")
+                if not key:
+                    continue
+                label = str(lv.get("name", "") or "") or key
+                b = Gtk.Button(label=_(label))
+                b.add_css_class("flat")
+                b.set_halign(Gtk.Align.FILL)
+                b.connect("clicked", self._on_quality_popover_choice, key)
+                box.append(b)
+                btns[key] = b
+        except Exception as exc:
+            log.warning("重建音质下拉失败: %s", exc)
+        self._quality_pop_btns = btns
+
+    def _available_quality_keys(self) -> list:
+        """当前歌可选档位 key 列表（用于校验与回落）。"""
+        return [str(lv.get("key", "") or "")
+                for lv in (getattr(self, "_quality_levels_norm", None) or [])
+                if isinstance(lv, dict) and lv.get("key")]
+
+    def _effective_quality_for_current(self, preferred: str) -> str:
+        """偏好档位在**当前歌**上的实际生效档位。
+
+        歌不支持偏好档时回落到该歌最高档（不改全局偏好）。
+        无档位信息（未设置）时原样返回，交由上层兜底。
+        """
+        levels = getattr(self, "_quality_levels_norm", None)
+        if not levels:
+            return str(preferred or "")
+        from core.quality import effective_quality
+        try:
+            return effective_quality(preferred, levels)
+        except Exception:
+            return str(preferred or "")
 
     def _on_quality_popover_choice(self, _btn, key: str) -> None:
         """弹出列表选档 → 切换音质（复用 _set_quality）。"""
@@ -959,14 +1020,36 @@ class PlayerPanel(Gtk.Box):
         return k
 
     def set_quality_dropdown(self, key: str) -> None:
-        """同步按钮显示到当前所选档位（宽度随文字自适应）。"""
+        """同步按钮显示到当前所选档位（宽度随文字自适应）。
+
+        显示名优先用当前歌档位列表里的 name（服务端文案），再回退全局短名。
+        同时给弹层里对应按钮加选中态，让用户看清当前档。
+        """
         try:
             if hasattr(self, "_quality_btn_label"):
                 key = self._normalize_quality_key(key)
-                self._quality_btn_label.set_text(
-                    _(self._QUALITY_SHORT.get(key, key or "无损")))
+                label = ""
+                for lv in (getattr(self, "_quality_levels_norm", None) or []):
+                    if isinstance(lv, dict) and str(lv.get("key", "")) == key:
+                        label = str(lv.get("name", "") or "")
+                        break
+                if not label:
+                    label = self._QUALITY_SHORT.get(key, "") or key or "无损"
+                self._quality_btn_label.set_text(_(label))
+            self._mark_quality_choice(key)
         except Exception as exc:
             log.debug("同步音质按钮失败: %s", exc)
+
+    def _mark_quality_choice(self, key: str) -> None:
+        """弹层里高亮当前档位（加 suggested-action，其余清除）。"""
+        try:
+            for k, btn in (getattr(self, "_quality_pop_btns", None) or {}).items():
+                if k == str(key or ""):
+                    btn.add_css_class("suggested-action")
+                else:
+                    btn.remove_css_class("suggested-action")
+        except Exception as exc:
+            log.debug("标记音质选中态失败: %s", exc)
 
     def _set_quality(self, key: str) -> None:
         """切换音质档位。
