@@ -329,7 +329,8 @@ class _FileHandler(BaseHTTPRequestHandler):
             # （不符合 RFC 7233，部分设备据此判断可 seek 范围时会出错）。
             # 这里完整支持 bytes=start-end / start- / -suffix。
             start = 0
-            end = max(0, size - 1)
+            #: 客户端显式指定的结束位置（含）；-1 表示未指定（开放区间）。
+            req_end = -1
             has_range = False
             range_hdr = self.headers.get("Range", "")
             if range_hdr.startswith("bytes=") and size > 0:
@@ -340,23 +341,32 @@ class _FileHandler(BaseHTTPRequestHandler):
                         # bytes=-N：最后 N 字节
                         n = int(b)
                         start = max(0, size - n)
-                        end = size - 1
+                        req_end = size - 1
                     else:
                         start = int(a) if a else 0
-                        end = int(b) if b else size - 1
-                    has_range = True
+                        if b:
+                            # 显式 end：尊重客户端指定的范围，不做限长。
+                            req_end = int(b)
+                    has_range = (start > 0) or (req_end >= 0)
                 except (ValueError, TypeError):
-                    start, end, has_range = 0, size - 1, False
+                    start, req_end, has_range = 0, -1, False
             if size <= 0:
-                start = end = 0
+                start = 0
                 length = 0
+                end = 0
             else:
-                start = max(0, min(start, size - 1))
-                end = max(start, min(end, size - 1))
-                length = end - start + 1
+                start = max(0, min(start, size))
+                if req_end >= 0:
+                    # 显式 end：按客户端要求截取（clamp 到文件末尾）。
+                    end = max(start, min(req_end, size - 1))
+                    length = end - start + 1
+                else:
+                    # 开放区间：默认到文件尾（标准 HTTP 语义）。
+                    end = size - 1
+                    length = size - start
             log.debug("[DLNA-HTTP] 请求 %s start=%s end=%s size=%s",
                       path, start, end, size)
-            if has_range:
+            if has_range or length < size - start:
                 self.send_response(206)
                 self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             else:
