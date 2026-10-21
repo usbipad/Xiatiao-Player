@@ -151,6 +151,10 @@ class MainWindow(Adw.ApplicationWindow):
             toast=self._toast,
             playlist_next_auto=lambda: self.playlist.next(auto=True),
             notify_mpris=self._mpris_notify_cast,
+            # 投送地址必须实时按「当前档位」构造：切歌时音质档位可能已回落
+            # （如上一首无损、下一首仅支持高品），用 TrackItem.stream_url
+            # 的旧快照会请求不存在的档位，导致远端无声。
+            resolve_stream_url=self._play_url_for,
         )
         # ---- 下载控制器（在线歌下载，从本类抽出）----
         self._download = DownloadController(
@@ -1024,7 +1028,7 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         self.stack.add_named(self.online_page, "online")
-        # 收藏（原「我喜欢」）
+        # 收藏（单一列表，读本地 SQLite；在线同步只作用于小红心与账号收藏）
         self.liked_page = LocalLibraryPage(
             on_track_activated=self._on_liked_track_activated,
             title="收藏",
@@ -1261,6 +1265,10 @@ class MainWindow(Adw.ApplicationWindow):
                     self._refresh_home_online()
                 except Exception:
                     pass
+            # 后端类型已在 ping 内记录。若为私有后端，预拉在线收藏：
+            # 收藏页与小爱心状态都直接读这份缓存，无需各自再探测后端类型。
+            if result and self._is_private_online():
+                self._prefetch_online_liked()
             # 若正停在在线页，刷新提示
             try:
                 if getattr(self, "_active_source", "") == "online":
@@ -3061,7 +3069,173 @@ class MainWindow(Adw.ApplicationWindow):
             return self._subsonic_stream_url(sid)
         return ""
 
+    # ---- 私有后端「在线收藏」镜像 ----------------------------------
+    # 私有后端下「喜欢」的权威数据源是服务端 getStarred2，本地 SQLite 只是
+    # 镜像。这里缓存在线收藏的歌曲 id 集合：
+    #   - 小红心状态判定（避免每次切歌都发网络请求）
+    #   - 收藏页在拉取完成前/失败时有一个可用的近似集合
+    # 非私有后端不使用该集合（保持原有本地库语义）。
+
+    def _liked_targets_online(self, track) -> bool:
+        """该曲目的「喜欢」是否应落到在线账号（而非本地收藏页）。
+
+        私有后端 + 在线歌 → 在线「我喜欢」（不写本地收藏页）。
+        其余（本地歌 / 标准后端）→ 本地收藏页。
+        """
+        if getattr(track, "source_type", "") != "subsonic":
+            return False
+        if not (getattr(track, "source_id", "") or ""):
+            return False
+        return self._is_private_online()
+
+    def _is_track_liked(self, track) -> bool:
+        """当前曲目是否「喜欢」。
+
+        私有后端的在线歌：以在线收藏缓存为准（与 QQ「我喜欢」一致），
+        避免本地库与服务端不同步导致小红心状态错误。
+        其余情况沿用本地库。
+
+        若在线收藏缓存尚未初始化（首次播放、没进过收藏页），这里会
+        触发一次异步拉取，拉完回填当前小红心，避免「明明已收藏却显示空心」。
+        """
+        try:
+            is_online_track = (
+                getattr(track, "source_type", "") == "subsonic"
+                and bool(getattr(track, "source_id", ""))
+            )
+            if is_online_track:
+                cache = getattr(self, "_online_liked_ids_cache", None)
+                if isinstance(cache, set):
+                    if self._is_private_online():
+                        return str(track.source_id) in cache
+                else:
+                    # 缓存尚未预拉（极少见：ping 还没回来就播放了在线歌）。
+                    # 先按本地库给初值，同时补拉一次，拉完回填小红心。
+                    self._prefetch_online_liked()
+                    return get_liked_store().is_liked(track)
+        except Exception:
+            pass
+        try:
+            return get_liked_store().is_liked(track)
+        except Exception:
+            return False
+
+    def _prefetch_online_liked(self, on_done=None) -> None:
+        """预拉在线收藏（仅私有后端），供收藏页与小红心共用。
+
+        由 ping 成功回调触发，因此调用时后端类型已知，无需再探测。
+        用 _online_liked_loading 去重，避免并发触发多次请求。
+        """
+        if getattr(self, "_online_liked_loading", False):
+            return
+        if not self._is_private_online():
+            return
+        self._online_liked_loading = True
+
+        def _on_songs(songs) -> None:
+            self._online_liked_loading = False
+            if songs is None:
+                return
+            # 回填当前播放曲目的小红心
+            try:
+                cur = self.playlist.current_track()
+                if cur is not None and getattr(cur, "source_type", "") == "subsonic":
+                    self.player_panel.set_liked(self._is_track_liked(cur))
+            except Exception:
+                pass
+            if on_done is not None:
+                on_done(songs)
+
+        self._reload_online_liked_ids(on_done=_on_songs)
+
+    def _is_private_online(self) -> bool:
+        """当前是否「私有后端 + 在线音源可用」。
+
+        私有后端判定复用 models.track 的模块级判定函数（单一真相：全局
+        ping 探测的后端类型；TrackItem.is_private_backend 属性也走同一实现）。
+        UI 层不直接 import providers 的判定函数，符合项目约定。
+        """
+        try:
+            if not self._subsonic_usable():
+                return False
+            # 复用 models.track 的模块级判定（与 TrackItem.is_private_backend
+            # 同一实现），无需构造实例。
+            from models.track import is_private_backend as _ipb
+            return bool(_ipb())
+        except Exception:
+            return False
+
+    def _online_liked_ids(self) -> set:
+        """在线收藏 id 集合（首次访问返回已缓存值，可能为空）。"""
+        ids = getattr(self, "_online_liked_ids_cache", None)
+        return ids if isinstance(ids, set) else set()
+
+    def _set_online_liked_id(self, song_id: str, liked: bool) -> None:
+        """乐观更新在线收藏缓存（点喜欢/取消后立即生效，不等网络回包）。"""
+        if not song_id:
+            return
+        ids = getattr(self, "_online_liked_ids_cache", None)
+        if not isinstance(ids, set):
+            ids = set()
+        if liked:
+            ids.add(song_id)
+        else:
+            ids.discard(song_id)
+        self._online_liked_ids_cache = ids
+
+    def _reload_online_liked_ids(self, on_done=None) -> None:
+        """异步拉取在线收藏列表，刷新缓存并回调（主线程）。
+
+        失败静默（保留旧缓存），只记日志——在线不可用不应让收藏页报错。
+        """
+        provider = self._get_provider("subsonic")
+        if provider is None:
+            if on_done is not None:
+                on_done(None)
+            return
+        from core.tasks import run_net_async
+
+        def _work():
+            body = provider.get_starred()
+            # getStarred2 返回字段为 starred2；getStarred(旧) 为 starred。
+            # 这里两者都兼容，避免因字段名不一致导致收藏页永远为空。
+            node = None
+            if isinstance(body, dict):
+                node = body.get("starred2") or body.get("starred")
+            songs = []
+            if isinstance(node, dict):
+                raw = node.get("song")
+                if isinstance(raw, list):
+                    songs = [s for s in raw if isinstance(s, dict)]
+                elif isinstance(raw, dict):
+                    songs = [raw]
+            log.debug("在线收藏原始条目数: %d", len(songs))
+            return songs
+
+        def _done(songs) -> None:
+            if songs is not None:
+                self._online_liked_ids_cache = {
+                    str(s.get("id", "")) for s in songs if s.get("id")
+                }
+            if on_done is not None:
+                on_done(songs)
+
+        def _err(exc) -> None:
+            log.info("拉取在线收藏失败（保留旧缓存）: %s", exc)
+            if on_done is not None:
+                on_done(None)
+
+        run_net_async(_work, on_done=_done, on_error=_err)
+
     def _refresh_liked_page(self) -> None:
+        """刷新收藏页（单一列表，读本地 SQLite）。
+
+        私有后端下，收藏页仍展示本地库；在线「我喜欢」只在服务端维护，
+        由小红心状态与 star/unstar 同步体现，不在收藏页重复展示。
+        """
+        self._refresh_liked_page_local()
+
+    def _refresh_liked_page_local(self) -> None:
         try:
             rows = get_liked_store().all_rows()
         except Exception:
@@ -3157,11 +3331,74 @@ class MainWindow(Adw.ApplicationWindow):
         self.playlist.set_tracks(lib, autoplay_index=index)
         self._queue_source_fp = fp
 
+    def _sync_like_to_online(self, track, liked: bool) -> None:
+        """把「喜欢」同步到在线账号（仅私有后端 + 在线歌）。
+
+        规则：私有后端 + 在线歌 → 调 star/unstar；其余一律跳过。
+        本地 SQLite 由调用方同步写入；这里只负责在线侧，且异步执行、
+        失败不提示（本地已生效），只记日志。
+        """
+        if not isinstance(track, TrackItem):
+            return
+        if getattr(track, "source_type", "") != "subsonic":
+            return
+        song_id = getattr(track, "source_id", "") or ""
+        if not song_id:
+            return
+        # 私有后端判定统一走 _is_private_online（与小红心/分流同源）。
+        if not self._is_private_online():
+            return
+
+        # 复用窗口持有的共享 provider：新建实例会重复读配置、丢连接上下文，
+        # 且与主线程实例不一致。这里只在主线程取一次引用，后台线程只做请求。
+        provider = self._get_provider("subsonic")
+        if provider is None:
+            log.debug("在线音源未就绪，跳过喜欢同步")
+            return
+
+        import time as _time
+        from core.tasks import run_net_async
+        from providers.subsonic import SubsonicError
+
+        def _work() -> None:
+            # 失败重试一次：私有后端偶发超时/瞬时 5xx 时不至于丢同步。
+            # SubsonicError 属业务错误（歌曲不存在等），重试无意义。
+            last_exc = None
+            for attempt in (0, 1):
+                if attempt:
+                    _time.sleep(0.8)
+                try:
+                    if liked:
+                        provider.star(song_id)
+                    else:
+                        provider.unstar(song_id)
+                    return
+                except SubsonicError as exc:
+                    last_exc = exc
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+            log.info("在线喜欢同步失败（本地已生效）: %s", last_exc)
+
+        # 走网络专用池：与本地扫描/封面解码隔离，避免排队导致长期不生效。
+        # 失败已在 _work 内吞掉，不会抛到 UI。
+        run_net_async(_work)
+
     def _on_like_current(self) -> None:
         track = self.playlist.current_track()
         if track is None:
             self._toast(_("当前没有播放曲目"))
             return
+        if self._liked_targets_online(track):
+            # 私有后端在线歌：只进在线「我喜欢」，不写本地收藏页。
+            song_id = str(getattr(track, "source_id", "") or "")
+            liked = song_id not in self._online_liked_ids()
+            self._set_online_liked_id(song_id, liked)
+            self.player_panel.set_liked(liked)
+            self._sync_like_to_online(track, liked)
+            self._toast(_("已加入我喜欢") if liked else _("已取消喜欢"))
+            return
+        # 本地歌 / 标准后端：只进本地收藏页。
         liked = get_liked_store().toggle(track)
         self.player_panel.set_liked(liked)
         self._toast(_("已加入我喜欢") if liked else _("已取消喜欢"))
@@ -3236,7 +3473,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _update_now_playing_ui(self, track) -> None:
         """同步两侧 UI 的曲目信息（轻量、立即响应）。"""
         try:
-            self.player_panel.set_liked(get_liked_store().is_liked(track))
+            self.player_panel.set_liked(self._is_track_liked(track))
         except Exception:
             pass
         try:
@@ -3546,10 +3783,8 @@ class MainWindow(Adw.ApplicationWindow):
                 self.now_playing.set_lyric_fade_colors()
             except Exception:
                 pass
-            # 记录模糊图路径/明暗，供沉浸页音效气泡作背景
-            # 气泡用专用「超糊」图（比沉浸页背景更糊）。
-            self._immersive_bg_path = popover_bg_path or bg_png_path
-            self._immersive_bg_dark = bg_dark
+            # 音效气泡改用主题默认底色：不再记录/传递模糊封面图路径。
+            # （此前气泡会额外注入一张模糊封面图作背景，现统一移除。）
             # 主界面背景跟随封面（独立开关，用 main_bg_rgb，不受沉浸页模糊开关影响）
             self._current_bg_rgb = main_bg_rgb
             # 缓存封面主色：系统切明暗时据此重算背景（纯计算，不重新解码封面）
@@ -4093,6 +4328,18 @@ class MainWindow(Adw.ApplicationWindow):
     def _track_ctx_like(self, track) -> None:
         if not isinstance(track, TrackItem):
             return
+        if self._liked_targets_online(track):
+            # 私有后端在线歌：只进在线「我喜欢」，不写本地收藏页。
+            song_id = str(getattr(track, "source_id", "") or "")
+            liked = song_id not in self._online_liked_ids()
+            self._set_online_liked_id(song_id, liked)
+            self._sync_like_to_online(track, liked)
+            self._toast((_("已喜欢：{title}") if liked else _("已取消喜欢：{title}")).format(title=track.title))
+            cur = self.playlist.current_track()
+            if cur is not None and getattr(cur, "source_id", "") == song_id:
+                self.player_panel.set_liked(liked)
+            return
+        # 本地歌 / 标准后端：只进本地收藏页。
         liked = get_liked_store().toggle(track)
         self._toast((_("已喜欢：{title}") if liked else _("已取消喜欢：{title}")).format(title=track.title))
         cur = self.playlist.current_track()
@@ -4263,17 +4510,30 @@ class MainWindow(Adw.ApplicationWindow):
         """
         if not isinstance(track, TrackItem):
             return
+        # 收藏页：「移除」= 取消收藏：落本地库，并同步取消在线收藏。
+        if getattr(self, "_active_source", "") == "liked":
+            try:
+                get_liked_store().remove(track)
+                self._set_online_liked_id(getattr(track, "source_id", "") or "", False)
+                self._sync_like_to_online(track, False)
+                cur = self.playlist.current_track()
+                if (cur is not None
+                        and getattr(cur, "source_id", "") == getattr(track, "source_id", "")):
+                    try:
+                        self.player_panel.set_liked(False)
+                    except Exception:
+                        pass
+                self._refresh_liked_page()
+                self._toast(_("已取消收藏"))
+                return
+            except Exception as exc:
+                self._toast(f"{_('移除失败: ')}{exc}")
+                return
         page = self._active_page()
         if page is None or not hasattr(page, "remove_track"):
             self._toast(_("当前列表不支持移除"))
             return
         try:
-            if page is getattr(self, "liked_page", None):
-                # 收藏页：取消收藏并落库，然后重新拉取刷新。
-                get_liked_store().remove(track)
-                self._refresh_liked_page()
-                self._toast(_("已取消收藏"))
-                return
             ok = page.remove_track(track)
             self._toast(_("已从列表移除") if ok else _("移除失败"))
         except Exception as exc:
@@ -5104,14 +5364,8 @@ class MainWindow(Adw.ApplicationWindow):
         try:
             fn = getattr(self.player_panel, "_open_effect_dialog", None)
             if callable(fn):
-                # 沉浸页打开时，用沉浸页的模糊封面图作气泡背景
-                # （与沉浸页视觉一致；无模糊图时回退主界面背景色）。
-                path = getattr(self, "_immersive_bg_path", None)
-                dark = getattr(self, "_immersive_bg_dark", None)
-                if path and anchor is not None:
-                    fn(anchor=anchor, bg_image_path=path, bg_dark=dark)
-                else:
-                    fn(anchor=anchor)
+                # 气泡统一使用主题默认底色（不再注入封面模糊图背景）。
+                fn(anchor=anchor)
         except Exception:
             log.debug("打开音效弹窗失败", exc_info=True)
 

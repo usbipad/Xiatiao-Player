@@ -1207,6 +1207,21 @@ class PlayerPanel(Gtk.Box):
                 "popover.effect-popover list.boxed-list,"
                 "popover.effect-popover row:not(.effect-selected) {"
                 "background: transparent; box-shadow: none;}"
+                # 文字/图标改用 libadwaita 语义色 @popover_fg_color：
+                # 随主题明暗自动切换（浅色主题深字、深色主题浅字），
+                # 保证气泡无论底色明暗都清晰可读。此前无图片背景后
+                # 文字颜色未显式指定，浅底上会继承成白字而看不清。
+                # 用 :not(.effect-selected) 排除选中行，保留其强调色高亮。
+                "popover.effect-popover label,"
+                "popover.effect-popover image,"
+                "popover.effect-popover picture,"
+                "popover.effect-popover button,"
+                "popover.effect-popover row:not(.effect-selected) label {"
+                "color: @popover_fg_color;}"
+                # 分组标题（.heading/.h4）用次一级的弱化前景色，层次分明。
+                "popover.effect-popover preferencesgroup .heading,"
+                "popover.effect-popover preferencesgroup .h4 {"
+                "color: alpha(@popover_fg_color, 0.6);}"
             )
             prov = Gtk.CssProvider()
             prov.load_from_data(css.encode("utf-8"))
@@ -1217,72 +1232,11 @@ class PlayerPanel(Gtk.Box):
         except Exception:
             log.debug("注入音效气泡样式失败", exc_info=True)
 
-    def _inject_effect_popover_bg(self, path: str, dark) -> None:
-        """给本次气泡注入模糊封面图作背景（沉浸页场景）。
-
-        用 `.effect-popover.effect-popover-immersive`（两重类名）压过
-        window._apply_main_bg 的单类名规则，USER+1001 压过第三方主题。
-        文字色随模糊图明暗（dark）自适应，保证可读。
-        """
-        try:
-            sel = "popover.effect-popover.effect-popover-immersive"
-            # 深色背景→亮字；浅色→暗字。dark=None 时按暗色处理（沉浸页多为深）。
-            if dark is False:
-                fg = "rgba(0, 0, 0, 0.92)"
-                dim = "rgba(0, 0, 0, 0.55)"
-            else:
-                fg = "rgba(255, 255, 255, 0.95)"
-                dim = "rgba(255, 255, 255, 0.60)"
-            uri = Gio.File.new_for_path(path).get_uri()
-            css = (
-                f"{sel} > contents,{sel} > arrow {{"
-                f"background-image: url('{uri}');"
-                "background-size: cover; background-position: center;"
-                "border: none; box-shadow: none;}"
-                f"{sel} > contents {{"
-                "box-shadow: 0 2px 10px 2px alpha(black, 0.25);}"
-                # 分组卡片透明，露出模糊图底；排除选中行，保留其高亮与竖条。
-                f"{sel} scrolledwindow,{sel} preferencesgroup,"
-                f"{sel} list.boxed-list,{sel} row:not(.effect-selected) {{"
-                "background: transparent; background-image: none;"
-                "box-shadow: none;}"
-                # 普通行文字 + symbolic 图标 + 按钮 随背景明暗；
-                # 用 :not(.effect-selected) 排除选中行，避免其高权重
-                # （3 类 + 元素）盖过 style.css 的选中行强调色。
-                f"{sel} label,{sel} image,{sel} picture,{sel} button,"
-                f"{sel} row:not(.effect-selected) label {{ color: {fg}; }}"
-                f"{sel} preferencesgroup .heading,"
-                f"{sel} preferencesgroup .h4 {{ color: {dim}; }}"
-                # 选中行：背景 + 左侧竖条 + 文字用强调色高亮（明确指定，
-                # 不依赖 style.css，避免被上面的普通行规则覆盖）。
-                f"{sel} row.effect-selected {{"
-                "background-color: alpha(@accent_bg_color, 0.30);"
-                "box-shadow: inset 4px 0 0 0 @accent_bg_color;}"
-                f"{sel} row.effect-selected label {{"
-                "color: @accent_color; font-weight: 700;}"
-            )
-            prov = Gtk.CssProvider()
-            prov.load_from_data(css.encode("utf-8"))
-            display = Gdk.Display.get_default()
-            if display is not None:
-                Gtk.StyleContext.add_provider_for_display(
-                    display, prov, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1001)
-                # 返回 prov，由调用方绑定到本次 popover（不能用共享 self 引用：
-                # 上一个气泡的 closed 是异步 emit 的，晚到时会把新气泡的 prov 删掉）。
-                return prov
-        except Exception:
-            log.debug("注入气泡模糊背景失败", exc_info=True)
-        return None
-
-    def _open_effect_dialog(self, anchor: Gtk.Widget | None = None,
-                            bg_image_path: str | None = None,
-                            bg_dark=None) -> None:
+    def _open_effect_dialog(self, anchor: Gtk.Widget | None = None) -> None:
         """在音效按钮旁弹出音效列表气泡（Popover）。
 
         anchor: 气泡挂靠的按钮；None 时用主页音效按钮 self._effect_btn。
-        bg_image_path: 沉浸页模糊封面图路径；传入时气泡用它作背景
-                       （与沉浸页视觉一致）。None 时沿用默认背景色。
-        bg_dark: 模糊图是否偏暗（决定气泡文字颜色）。
+        气泡使用主题默认底色（不再注入封面模糊图背景）。
         """
         anchor = anchor if anchor is not None else self._effect_btn
         # 已开着则先关（避免叠加）
@@ -1314,8 +1268,6 @@ class PlayerPanel(Gtk.Box):
         popover.set_child(scroll)
         popover.set_has_arrow(True)
         popover.add_css_class("effect-popover")
-        if bg_image_path:
-            popover.add_css_class("effect-popover-immersive")
         popover.set_parent(anchor)
         self._effect_popover = popover
         # 气泡样式用独立高优先级 provider 注入：
@@ -1323,24 +1275,8 @@ class PlayerPanel(Gtk.Box):
         # 与 style.css 同为 USER 优先级且可能后加载，会覆盖 style.css 的规则。
         # 这里用 USER+10（高于主题）注入，确保气泡背景/圆角/边框由本项目决定。
         self._inject_effect_popover_css()
-        if bg_image_path:
-            # prov 绑定到本次 popover，closed 只删自己的（避免异步 closed
-            # 误删下一个气泡的样式 → 高亮不稳定）。
-            popover._bg_prov = self._inject_effect_popover_bg(bg_image_path, bg_dark)
         # 关闭即解父（GTK4 要求，避免悬空 popover 崩溃）
         def _on_closed(p):
-            # 移除「本次气泡自己」的临时背景 provider，避免累积。
-            # 关键：用 p 自己绑定的 prov，而非共享 self 引用——
-            # 上个气泡的 closed 是异步的，晚到时会把新气泡的 prov 误删。
-            prov = getattr(p, "_bg_prov", None)
-            if prov is not None:
-                try:
-                    d = Gdk.Display.get_default()
-                    if d is not None:
-                        Gtk.StyleContext.remove_provider_for_display(d, prov)
-                except Exception:
-                    pass
-                p._bg_prov = None
             self._effect_popover = None
             p.unparent()
 

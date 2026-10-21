@@ -9,6 +9,20 @@ from gi.repository import GObject
 SOURCE_LOCAL = "local"
 
 
+def is_private_backend() -> bool:
+    """当前后端是否为「私有协议后端」。
+
+    模块级函数，供不需要 TrackItem 实例的调用方使用（如 UI 判断收藏去向）。
+    判据的唯一真相仍是 providers.subsonic 的全局后端类型；此处只做转发。
+    TrackItem.is_private_backend 属性也走这里，避免两处各写一遍。
+    """
+    try:
+        from providers.subsonic import is_private_backend as _ipb
+        return bool(_ipb())
+    except Exception:
+        return False
+
+
 class TrackItem(GObject.Object):
     """统一曲目实体。
 
@@ -96,11 +110,8 @@ class TrackItem(GObject.Object):
         字段，白名单只认 xiatiao-api；其它（标准/未知/空）一律非私有。
         所有「私有 vs 标准」的分支都应走本属性。
         """
-        try:
-            from providers.subsonic import is_private_backend as _ipb
-            return bool(_ipb())
-        except Exception:
-            return False
+        # 复用模块级函数（单一真相；UI 也可直接调该函数，无需构造实例）
+        return is_private_backend()
 
     @property
     def is_local(self) -> bool:

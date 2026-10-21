@@ -179,16 +179,11 @@ def load_cover_assets(cover_raw: bytes | None,
                     with open(_p, "wb") as _fp:
                         _fp.write(png)
                     out["bg_png_path"] = _p
-                    # 气泡专用：最高模糊（seed_dim 很小 → 高度模糊的色块底）
-                    png_blur = make_blurred_bg(work_cover, 640, 480,
-                                               darken=0.0, blur_px=4,
-                                               lighten=0.25, min_seed=4)
-                    if png_blur:
-                        _pb = _os.path.join(_tf.gettempdir(),
-                                            "xiatiao-popover-bg.png")
-                        with open(_pb, "wb") as _fp:
-                            _fp.write(png_blur)
-                        out["popover_bg_path"] = _pb
+                    # 音效气泡不再使用专用模糊背景图（改用主题默认底色）：
+                    # 此前每首歌额外生成一张 640x480 高模糊图并写临时文件，
+                    # 既增加切歌开销又留下待回收的纹理/文件，收益仅是气泡
+                    # 底色略糊。现直接留 None，气泡走默认底色。
+                    out["popover_bg_path"] = None
                 except Exception:
                     out["bg_png_path"] = None
         except Exception:

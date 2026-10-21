@@ -57,6 +57,7 @@ class CastController:
         toast: Callable[[str], None],
         playlist_next_auto: Callable[[], object],
         notify_mpris: Optional[Callable[[], None]] = None,
+        resolve_stream_url: Optional[Callable[[object], str]] = None,
     ) -> None:
         self._get_current_track = get_current_track
         self._player_stop = player_stop
@@ -66,6 +67,11 @@ class CastController:
         self._toast = toast
         self._playlist_next_auto = playlist_next_auto
         self._notify_mpris = notify_mpris
+        #: 推流地址解析：投送必须用「当前档位」实时构造 URL。
+        #  TrackItem.stream_url 是创建时的档位快照，切歌后档位可能已回落
+        #  （上一首无损、下一首仅支持高品），沿用快照会请求该歌不存在的
+        #  档位 → 远端拿不到流 → 无声。
+        self._resolve_stream_url = resolve_stream_url
 
         # ---- 状态 ----
         self.casting = False
@@ -184,10 +190,25 @@ class CastController:
     # ------------------------------------------------------------
     # 曲目投送
     # ------------------------------------------------------------
+    def _stream_url_for(self, track) -> str:
+        """解析推流地址：在线歌实时按当前档位构造，本地歌用文件路径。
+
+        优先走注入的 resolve_stream_url；不可用时回退到 track 上的字段。
+        在线歌不直接使用 track.stream_url——那是创建时的档位快照。
+        """
+        if callable(self._resolve_stream_url):
+            try:
+                url = self._resolve_stream_url(track) or ""
+                if url:
+                    return url
+            except Exception:
+                log.debug("解析投送地址失败，回退字段", exc_info=True)
+        return (getattr(track, "filepath", "")
+                or getattr(track, "stream_url", "")) or ""
+
     def push_track(self, track) -> None:
         """把指定曲目推送到当前 DLNA 设备，保持切歌前的播放/暂停状态。"""
-        fp = (getattr(track, "filepath", "")
-              or getattr(track, "stream_url", "")) or ""
+        fp = self._stream_url_for(track)
         if not fp:
             return
         was_playing = bool(self.remote_playing)
@@ -217,8 +238,8 @@ class CastController:
         本机不出声（保持投送语义）。切音质 = 重新加载，直接从头播最简单
         可靠：SetAVTransportURI 本身即从 0 开始，push 后无需 seek。
         """
-        fp = (getattr(track, "stream_url", "")
-              or getattr(track, "filepath", "")) or ""
+        # 切音质：同样必须实时构造 URL（新档位可能刚写入运行时状态）。
+        fp = self._stream_url_for(track)
         if not fp:
             return
         try:
