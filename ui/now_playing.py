@@ -678,11 +678,25 @@ class NowPlayingPage(Gtk.Overlay):
         self._lyrics_dark = lyrics_dark
         # 显式断开旧纹理再设新：Gtk.Picture.set_paintable(new) 理论上会替换
         # 旧 paintable，但 GDK 对旧纹理的释放有延迟/可能被渲染缓存持有，
-        # 表现为「切歌越多内存越涨且不回落」。先置 None 促使旧纹理尽快释放。
+        # 表现为「切歌越多内存越涨且不回落」。
+        # 仅 set_paintable(None) 只是解除 Picture 的引用，GDK 侧纹理仍可能
+        # 被渲染缓存/帧快照持有，迟迟不回收（实测：开背景模糊后切歌 USS
+        # 持续累积约 1.2MB/首，即一张 640x480 RGBA）。
+        # 因此这里主动对旧纹理调 run_dispose()：强制释放其底层资源。
+        # 注意：必须在 set_paintable(None) 之后再 dispose（否则 Picture 仍
+        # 引用它，dispose 会报错/无效）；且 dispose 后不能再使用该纹理，
+        # 故先清空 self._bg_tex 引用再处置。
         try:
             self._bg_picture.set_paintable(None)
         except Exception:
             pass
+        _old_tex = getattr(self, "_bg_tex", None)
+        self._bg_tex = None
+        if _old_tex is not None and _old_tex is not texture:
+            try:
+                _old_tex.run_dispose()
+            except Exception:
+                pass
         self._bg_tex = texture
         try:
             self._bg_picture.set_paintable(texture)
@@ -710,8 +724,18 @@ class NowPlayingPage(Gtk.Overlay):
         self._bg_tex_dark = None
         if texture is not None:
             try:
-                # 显式断开旧封面纹理再设新（促使 GDK 释放旧纹理，见 set_bg_texture）
+                # 显式断开旧封面纹理再设新，并主动 dispose 旧纹理。
+                # 与 set_bg_texture 同理：只 set_paintable(None) 不足以让 GDK
+                # 及时回收旧纹理（渲染缓存仍可能持有），会随切歌累积。
                 self._cover.set_paintable(None)
+                _old_cover = getattr(self, "_cover_tex", None)
+                self._cover_tex = None
+                if _old_cover is not None and _old_cover is not texture:
+                    try:
+                        _old_cover.run_dispose()
+                    except Exception:
+                        pass
+                self._cover_tex = texture
                 self._cover.set_paintable(texture)
                 _px = getattr(self, "_current_cover_px", self._COVER_PX)
                 self._cover.set_size_request(_px, _px)
@@ -719,9 +743,17 @@ class NowPlayingPage(Gtk.Overlay):
             except Exception:
                 pass
         else:
-            # 无封面：切到占位页，避免沿用上一首封面
+            # 无封面：切到占位页，避免沿用上一首封面。
+            # 旧主封面纹理同样主动释放（见上方有封面分支的说明）。
             try:
                 self._cover.set_paintable(None)
+                _old_cover = getattr(self, "_cover_tex", None)
+                self._cover_tex = None
+                if _old_cover is not None:
+                    try:
+                        _old_cover.run_dispose()
+                    except Exception:
+                        pass
                 self._cover_stack.set_visible_child_name("placeholder")
             except Exception:
                 pass
