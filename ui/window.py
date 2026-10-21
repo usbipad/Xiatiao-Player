@@ -549,6 +549,17 @@ class MainWindow(Adw.ApplicationWindow):
                 display, self._dynamic_css,
                 Gtk.STYLE_PROVIDER_PRIORITY_USER + 1000,
             )
+            # 主界面背景「颜色变量」专用 provider（与规则 provider 分离）。
+            # 为什么分离：load_from_data 是**整体替换** provider 内容。
+            # 若变量与规则放同一个 provider，每次切歌只发变量就会把规则
+            # 整段覆盖掉 → 选择器失效 → 背景回退默认白（实测到的 bug）。
+            # 分开后：规则 provider 只在开启时装一次、内容永不变；变量
+            # provider 每次切歌整体替换，但只有一行 @define-color。
+            self._main_bg_color_css = Gtk.CssProvider()
+            Gtk.StyleContext.add_provider_for_display(
+                display, self._main_bg_color_css,
+                Gtk.STYLE_PROVIDER_PRIORITY_USER + 1001,
+            )
             # 侧栏描边/背景覆盖：libadwaita 给 overlay-split-view > border 画了
             # 1px 描边（浅色主题下成白线）、给 .sidebar-pane 设了 sidebar 底色。
             # 这些是库内置样式，style.css（USER 级）拼不过，故用 USER+1000 注入。
@@ -4692,17 +4703,115 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
 
+    #: 主界面背景跟随封面的规则（只注入一次，颜色走 CSS 变量）。
+    #: 之所以把规则与颜色分离：GTK4 每次 load_from_data 都会让整棵控件树
+    #: 的样式失效并重新匹配全部选择器。此前切歌时颜色每首都在变 → 每首都
+    #: 重发整段规则 → 整树 restyle。离树页面（惰性卸载但被 _stack_pages
+    #: 强引用）收不到失效通知，旧样式缓存滞留，随切歌次数累积。
+    #: 现在规则固定只发一次，切歌仅重发一条 @define-color，开销恒定。
+    _MAIN_BG_RULES = (
+        # 面板外的底（窗口根 + 侧栏容器）：原封面色。
+        "window.main-bg-follow,"
+        "window.main-bg-follow overlay-split-view .sidebar-pane {"
+        "background-color: @xt_main_bg;"
+        "}"
+        # 左侧面板：与底同色，层级靠圆角/阴影/边界区分。
+        # 同时清除 style.css 里 .player-panel 的 background-image 叠加层；
+        # 否则跟随封面时会「色 × 再叠一层」双重变暗。
+        "window.main-bg-follow .player-panel {"
+        "background-color: @xt_main_bg;"
+        "background-image: none;"
+        "}"
+        # 右侧内容区。必须显式覆盖 listview/columnview 等：libadwaita 默认给
+        # `listview, list` 设了不透明的 --view-bg-color，会盖住底层色。
+        "window.main-bg-follow .content-area,"
+        "window.main-bg-follow .content-area scrolledwindow,"
+        "window.main-bg-follow .content-area scrolledwindow > viewport,"
+        "window.main-bg-follow .content-area columnview,"
+        "window.main-bg-follow .content-area listview,"
+        "window.main-bg-follow .content-area gridview,"
+        "window.main-bg-follow .content-area flowbox {"
+        "background-color: @xt_main_bg;"
+        "}"
+        # headerbar 透明（去默认底边阴影/边框）
+        "window.main-bg-follow headerbar,"
+        "window.main-bg-follow headerbar:backdrop {"
+        "background-color: transparent; box-shadow: none; border: none;"
+        "}"
+        # 表头及其内部：彻底透明，覆盖 hover/active/checked 等所有状态。
+        "window.main-bg-follow .content-area columnview > header,"
+        "window.main-bg-follow .content-area columnview > header > button,"
+        "window.main-bg-follow .content-area columnview > header > button > box,"
+        "window.main-bg-follow .content-area columnview > header > button:hover,"
+        "window.main-bg-follow .content-area columnview > header > button:active,"
+        "window.main-bg-follow .content-area columnview > header > button:checked {"
+        "background: none; background-image: none;"
+        "box-shadow: none; border: none;"
+        "}"
+        # headerbar 扁平按钮（设置/侧栏/导航）hover/active 去白环
+        "window.main-bg-follow headerbar button.flat:hover,"
+        "window.main-bg-follow headerbar button.flat:active,"
+        "window.main-bg-follow headerbar button.flat:checked {"
+        "background-color: alpha(currentColor, 0.08); box-shadow: none;"
+        "}"
+        # 右键/媒体菜单：popover 是独立 CSS 根，不能用 window 祖先限定。
+        # .media-menu 仅本项目菜单使用，故全局选择器安全。
+        "popover.media-menu > contents,"
+        "popover.media-menu > arrow {"
+        "background-color: @xt_main_bg; border: none;"
+        "box-shadow: none;"
+        "}"
+        "popover.media-menu > contents {"
+        "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
+        "padding: 4px;"
+        "}"
+        # 菜单项更紧凑：减小最小宽度与左右内边距。
+        "popover.media-menu modelbutton {"
+        "min-width: 0; padding: 4px 8px;"
+        "}"
+        # 音效气泡：与菜单同色。箭头须一并覆盖，否则仍是主题白底。
+        "popover.effect-popover > contents,"
+        "popover.effect-popover > arrow {"
+        "background-color: @xt_main_bg; border: none;"
+        "box-shadow: none;"
+        "}"
+        "popover.effect-popover > contents {"
+        "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
+        "}"
+        # 左侧面板歌词区顶/底渐隐。
+        "window.main-bg-follow .np-lyrics-compact .np-fade-top {"
+        "background-image: linear-gradient(to bottom, @xt_main_bg, alpha(@xt_main_bg, 0));"
+        "background-color: transparent;"
+        "}"
+        "window.main-bg-follow .np-lyrics-compact .np-fade-bottom {"
+        "background-image: linear-gradient(to top, @xt_main_bg, alpha(@xt_main_bg, 0));"
+        "background-color: transparent;"
+        "}"
+        # 跑马灯左右渐隐。
+        "window.main-bg-follow .marquee-fade-left {"
+        "background-image: linear-gradient(to right, @xt_main_bg, alpha(@xt_main_bg, 0));"
+        "background-color: transparent;"
+        "}"
+        "window.main-bg-follow .marquee-fade-right {"
+        "background-image: linear-gradient(to left, @xt_main_bg, alpha(@xt_main_bg, 0));"
+        "background-color: transparent;"
+        "}"
+    )
+
     def _apply_main_bg(self, bg_rgb) -> None:
         """主界面「背景跟随封面」：把封面主色注入右侧内容区背景。
 
         开关关闭或无颜色时清空动态 CSS，回退主题色（@view_bg_color）。
+
+        实现要点（性能）：规则串固定不变，只注入一次；切歌时仅重发
+        一条 `@define-color xt_main_bg ...`。这样每次颜色变化的解析量
+        恒为一条变量定义，不会让整棵控件树重新匹配全部选择器。
         """
         provider = getattr(self, "_dynamic_css", None)
-        if provider is None:
+        color_prov = getattr(self, "_main_bg_color_css", None)
+        if provider is None or color_prov is None:
             return
         # 去重：颜色与开关状态都没变时直接返回。
-        # 否则每切一首歌都会 load_from_data 重解析整段 CSS 并让整棵控件树
-        # 样式失效（GTK4 会重新匹配全部选择器），累积下来既卡又涨内存。
         try:
             _enabled_now = get_config().get_bool("main_bg_follow_cover", False)
         except Exception:
@@ -4711,127 +4820,34 @@ class MainWindow(Adw.ApplicationWindow):
         if getattr(self, "_main_bg_sig", None) == _sig:
             return
         self._main_bg_sig = _sig
-        try:
-            enabled = get_config().get_bool("main_bg_follow_cover", False)
-        except Exception:
-            enabled = False
+        enabled = _enabled_now
         try:
             if enabled and bg_rgb:
                 r, g, b = bg_rgb
                 col = f"rgb({r}, {g}, {b})"
-                # 左侧面板与底同色（不暗一档），层级靠圆角/阴影/边界区分。
-                col_panel = col
                 # 给窗口加类，统一覆盖主界面所有背景层。
-                # 必须显式覆盖 listview/columnview 等：libadwaita 默认给
-                # `listview, list` 设了不透明的 --view-bg-color，会盖住底层色。
                 self.add_css_class("main-bg-follow")
-                # 精确限定在 .content-area 内。
-                # 关键：不覆盖 --view-bg-color/--window-bg-color 全局变量——
-                # 它们会被所有后代（含沉浸页、菜单、按钮）继承，导致
-                # 沉浸页歌词/右键菜单/设置按钮出现异常白边或染色。
-                # 沉浸页 .now-playing-root 是 _main_stack 的兄弟，不在
-                # .content-area 内，因此下列选择器天然不会命中它。
-                # 自定义属性：供 style.css 里的菜单等使用。
-                # 与 view-bg-color 不同，这个属性没有任何内置控件引用，
-                # 因此不会污染沉浸页/按钮等（仅显式引用它的规则受影响）。
-                css = (
-                    # 面板外的底（窗口根 + 侧栏容器）：原封面色。
-                    "window.main-bg-follow,"
-                    "window.main-bg-follow overlay-split-view .sidebar-pane {"
-                    f"background-color: {col};"
-                    "}"
-                    # 左侧面板：略暗色，与面板外的底拉开对比。
-                    # 同时清除 style.css 里 .player-panel 的 background-image 叠加层
-                    # （那是系统默认色模式下的暗一档实现）；否则跟随封面时
-                    # 会「col_panel × 再叠一层」双重变暗，与系统模式层级不一致。
-                    "window.main-bg-follow .player-panel {"
-                    f"background-color: {col_panel};"
-                    "background-image: none;"
-                    "}"
-                    # 右侧内容区：原封面色
-                    "window.main-bg-follow .content-area,"
-                    "window.main-bg-follow .content-area scrolledwindow,"
-                    "window.main-bg-follow .content-area scrolledwindow > viewport,"
-                    "window.main-bg-follow .content-area columnview,"
-                    "window.main-bg-follow .content-area listview,"
-                    "window.main-bg-follow .content-area gridview,"
-                    "window.main-bg-follow .content-area flowbox {"
-                    f"background-color: {col};"
-                    "}"
-                    # headerbar 透明（去默认底边阴影/边框）
-                    "window.main-bg-follow headerbar,"
-                    "window.main-bg-follow headerbar:backdrop {"
-                    "background-color: transparent; box-shadow: none; border: none;"
-                    "}"
-                    # 表头及其内部：彻底透明，覆盖 hover/active/checked 等所有状态，
-                    # 消除在彩色背景上出现的白色高亮块。
-                    "window.main-bg-follow .content-area columnview > header,"
-                    "window.main-bg-follow .content-area columnview > header > button,"
-                    "window.main-bg-follow .content-area columnview > header > button > box,"
-                    "window.main-bg-follow .content-area columnview > header > button:hover,"
-                    "window.main-bg-follow .content-area columnview > header > button:active,"
-                    "window.main-bg-follow .content-area columnview > header > button:checked {"
-                    "background: none; background-image: none;"
-                    "box-shadow: none; border: none;"
-                    "}"
-                    # headerbar 扁平按钮（设置/侧栏/导航）hover/active 去白环
-                    "window.main-bg-follow headerbar button.flat:hover,"
-                    "window.main-bg-follow headerbar button.flat:active,"
-                    "window.main-bg-follow headerbar button.flat:checked {"
-                    "background-color: alpha(currentColor, 0.08); box-shadow: none;"
-                    "}"
-                    # 右键/媒体菜单：popover 是独立 CSS 根，不能用 window 祖先限定。
-                    # .media-menu 仅本项目菜单使用，故全局选择器安全；
-                    # 且仅在功能开启时注入，关闭即清空。
-                    "popover.media-menu > contents,"
-                    "popover.media-menu > arrow {"
-                    f"background-color: {col}; border: none;"
-                    "box-shadow: none;"
-                    "}"
-                    "popover.media-menu > contents {"
-                    "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
-                    "padding: 4px;"
-                    "}"
-                    # 菜单项更紧凑：减小最小宽度与左右内边距（主题默认 88px/6px 偏宽）
-                    "popover.media-menu modelbutton {"
-                    "min-width: 0; padding: 4px 8px;"
-                    "}"
-                    # 音效气泡：与菜单同色，跟随主界面背景色自动变化。
-                    # 用 USER+1000 的 _dynamic_css 已能压过第三方主题。
-                    # 注意：箭头（> arrow）与内容同属主题的 `popover > arrow` 规则，
-                    # 必须一并覆盖，否则箭头仍是主题白底、与气泡背景不协调。
-                    "popover.effect-popover > contents,"
-                    "popover.effect-popover > arrow {"
-                    f"background-color: {col}; border: none;"
-                    "box-shadow: none;"
-                    "}"
-                    "popover.effect-popover > contents {"
-                    "box-shadow: 0 2px 10px 2px alpha(black, 0.18);"
-                    "}"
-                    # 左侧面板歌词区顶/底渐隐：用面板底色 col_panel（×0.90，暗一档），
-                    # 与加了阴影的浮起面板一致；用 col 会在面板上形成偏亮渐变块。
-                    "window.main-bg-follow .np-lyrics-compact .np-fade-top {"
-                    f"background-image: linear-gradient(to bottom, {col_panel}, alpha({col_panel}, 0));"
-                    "background-color: transparent;"
-                    "}"
-                    "window.main-bg-follow .np-lyrics-compact .np-fade-bottom {"
-                    f"background-image: linear-gradient(to top, {col_panel}, alpha({col_panel}, 0));"
-                    "background-color: transparent;"
-                    "}"
-                    # 跑马灯左右渐隐：跟随封面时用面板底色 col_panel。
-                    "window.main-bg-follow .marquee-fade-left {"
-                    f"background-image: linear-gradient(to right, {col_panel}, alpha({col_panel}, 0));"
-                    "background-color: transparent;"
-                    "}"
-                    "window.main-bg-follow .marquee-fade-right {"
-                    f"background-image: linear-gradient(to left, {col_panel}, alpha({col_panel}, 0));"
-                    "background-color: transparent;"
-                    "}"
-                )
+                # 1) 规则 provider：只在首次（或重新开启时）装一次，之后内容不动。
+                #    注意：不覆盖 --view-bg-color/--window-bg-color 全局变量——
+                #    它们会被所有后代（含沉浸页、菜单、按钮）继承，导致沉浸页
+                #    歌词/右键菜单/设置按钮出现异常白边或染色。这里只定义项目
+                #    自有的 @xt_main_bg，仅规则串里的选择器显式引用它。
+                if not getattr(self, "_main_bg_rules_installed", False):
+                    provider.load_from_data(self._MAIN_BG_RULES.encode("utf-8"))
+                    self._main_bg_rules_installed = True
+                # 2) 颜色变量 provider：每次切歌整体替换，内容只有一行。
+                #    与规则分离，故替换不会影响规则（这就是之前背景变白的 bug 根因）。
+                color_prov.load_from_data(
+                    ("@define-color xt_main_bg " + col + ";").encode("utf-8"))
             else:
                 self.remove_css_class("main-bg-follow")
-                css = ""
-            provider.load_from_data(css.encode("utf-8"))
+                if getattr(self, "_main_bg_rules_installed", False):
+                    provider.load_from_data(b"")
+                    self._main_bg_rules_installed = False
+                try:
+                    color_prov.load_from_data(b"")
+                except Exception:
+                    pass
         except Exception:
             log.debug("应用主界面背景色失败", exc_info=True)
 
