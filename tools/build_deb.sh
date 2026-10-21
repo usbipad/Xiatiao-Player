@@ -26,6 +26,29 @@ VER="$(head -1 "$PROJ/debian/changelog" | sed -E 's/^[^(]+\(([^)]+)\).*/\1/')"
 [ -n "$VER" ] || { echo "错误：无法从 debian/changelog 解析版本号" >&2; exit 1; }
 ARCH="$(dpkg --print-architecture)"
 
+# 0) 前置依赖检查：缺东西时提前报错并给出安装命令，
+#    避免 dpkg-buildpackage 跑到一半才失败、日志难读。
+MISSING=()
+for cmd in dpkg-buildpackage dh cargo rustc pkg-config; do
+    command -v "$cmd" >/dev/null 2>&1 || MISSING+=("$cmd")
+done
+if [ "${#MISSING[@]}" -gt 0 ]; then
+    echo "错误：缺少构建命令：${MISSING[*]}" >&2
+    echo "请先安装：" >&2
+    echo "  sudo apt install debhelper-compat cargo rustc pkg-config \\" >&2
+    echo "      libasound2-dev libpipewire-0.3-dev libclang-dev" >&2
+    exit 1
+fi
+# dpkg-checkbuilddeps 按 debian/control 的 Build-Depends 校验包依赖
+# （覆盖命令行找不到、但实际缺失的 -dev 库等）。
+# 注意：它按 dpkg 包名判定，若 Rust 是用 rustup 装的（而非 apt 的 rustc 包），
+# 这里会误报「缺 rustc」。故失败只降级为警告——上面的命令行检查已保证能跑。
+if ! dpkg-checkbuilddeps 2>/dev/null; then
+    echo "警告：dpkg-checkbuilddeps 报告以下依赖未满足（若 rust 用 rustup 安装属正常）：" >&2
+    dpkg-checkbuilddeps >&2 || true
+    echo "如确有问题，可运行：sudo apt-get build-dep ." >&2
+fi
+
 cd "$PROJ"
 
 # 1) 确保 vendor 目录存在（离线构建依赖）。
@@ -36,12 +59,13 @@ if [ ! -d audio_backend_rs/vendor ]; then
 fi
 
 # 2) 本机直接构建二进制包。
-#    -b   仅构建二进制包（不打源码包）
+#    -B   仅构建 arch 相关二进制包（build-arch + binary-arch；
+#         debian/rules 已声明 binary-arch: build-arch，确保先编译再打包）。
+#         注意：-B 已隐含「只出二进制」，不能再叠加 -b（二者互斥，dpkg 会报错）。
 #    -us  不签名源码包
 #    -uc  不签名 .changes
-#    -B   build-arch + binary-arch（debian/rules 已声明 binary-arch: build-arch）
 echo "==> dpkg-buildpackage 本机构建（$VER, $ARCH）"
-dpkg-buildpackage -b -us -uc -B
+dpkg-buildpackage -us -uc -B
 
 # 3) 产物收拢到 release/，并清理构建中间产物。
 mkdir -p "$RELEASE"
