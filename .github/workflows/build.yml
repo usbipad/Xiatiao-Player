@@ -70,11 +70,18 @@ jobs:
 
       - name: Build .rpm
         run: |
+          # 版本号从 debian/changelog 首行动态解析（唯一真相，避免硬编码漂移；
+          # rpm spec 的 Version 也据此保持同步）。
+          VER="$(head -1 debian/changelog | sed -E 's/^[^(]+\(([^)]+)\).*/\1/')"
+          [ -n "$VER" ] || { echo "无法解析版本号" >&2; exit 1; }
+          SRC="Xiatiao-Player-${VER}"
+          echo "==> 构建版本: $SRC"
           mkdir -p ~/rpmbuild/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
-          tar czf ~/rpmbuild/SOURCES/Xiatiao-Player-1.0.5.tar.gz \
-            --transform 's,^,Xiatiao-Player-1.0.5/,' \
+          tar czf "$HOME/rpmbuild/SOURCES/${SRC}.tar.gz" \
+            --transform "s,^,${SRC}/," \
             --exclude='.git' --exclude='audio_backend_rs/target' \
-            --exclude='audio_backend_rs/vendor' .
+            --exclude='audio_backend_rs/vendor' --exclude='__pycache__' \
+            --exclude='*.pyc' .
           cp rpm/xiatiao-player.spec ~/rpmbuild/SPECS/
           rpmbuild -ba ~/rpmbuild/SPECS/xiatiao-player.spec
 
