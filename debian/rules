@@ -46,6 +46,12 @@ override_dh_auto_install:
 	install -d debian/xiatiao-player/usr/lib/xiatiao-player
 	cp -r main.py config core models providers services ui \
 		debian/xiatiao-player/usr/lib/xiatiao-player/
+	# 清理 Python 字节码缓存：本地运行时生成的 __pycache__/*.pyc
+	# 不应进入发行包（架构/解释器版本相关，且属构建垃圾）。
+	find debian/xiatiao-player/usr/lib/xiatiao-player \
+		-type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+	find debian/xiatiao-player/usr/lib/xiatiao-player \
+		-type f -name '*.pyc' -delete 2>/dev/null || true
 	# data/：图标（hrtf 已随旧功能移除）
 	install -d debian/xiatiao-player/usr/lib/xiatiao-player/data
 	cp -r data/icons debian/xiatiao-player/usr/lib/xiatiao-player/data/
