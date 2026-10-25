@@ -1123,21 +1123,19 @@ mod tests {
             Ok(p) => p,
             Err(_) => { println!("[分析] 未设置 XIATIAO_TEST_FLAC，跳过"); return; }
         };
-        use symphonia::core::audio::SampleBuffer;
-        use symphonia::core::codecs::DecoderOptions;
-        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::formats::probe::Hint;
+        use symphonia::core::formats::{FormatOptions, TrackType};
         use symphonia::core::io::MediaSourceStream;
         use symphonia::core::meta::MetadataOptions;
-        use symphonia::core::probe::Hint;
         let file = match std::fs::File::open(&path) { Ok(f) => f, Err(e) => { println!("打开失败: {e}"); return; } };
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
         let mut hint = Hint::new(); hint.with_extension("flac");
-        let probed = match symphonia::default::get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default()) { Ok(p) => p, Err(e) => { println!("probe 失败: {e}"); return; } };
-        let mut format = probed.format;
-        let track = match format.default_track() { Some(t) => t, None => { println!("无音轨"); return; } };
+        let mut format = match symphonia::default::get_probe().probe(&hint, mss, FormatOptions::default(), MetadataOptions::default()) { Ok(p) => p, Err(e) => { println!("probe 失败: {e}"); return; } };
+        let track = match format.default_track(TrackType::Audio) { Some(t) => t, None => { println!("无音轨"); return; } };
         let track_id = track.id;
-        let sr = track.codec_params.sample_rate.unwrap_or(44100);
-        let mut decoder = match symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()) { Ok(d) => d, Err(e) => { println!("解码器失败: {e}"); return; } };
+        let audio_params = match track.codec_params.as_ref().and_then(|p| p.audio()) { Some(a) => a, None => { println!("无音频参数"); return; } };
+        let sr = audio_params.sample_rate.unwrap_or(44100);
+        let mut decoder = match symphonia::default::get_codecs().make_audio_decoder(audio_params, &Default::default()) { Ok(d) => d, Err(e) => { println!("解码器失败: {e}"); return; } };
 
         let mut chain = DspChain::new(sr);
         let mut p1 = DspParams::default();
@@ -1152,22 +1150,16 @@ mod tests {
         p2.bass_gain_db = 6.0;
 
         let switch_block = 40usize;
-        let mut sample_buf: Option<SampleBuffer<f32>> = None;
         let mut block = 0usize;
         // 记录全流程输出（用于跳变扫描）
         let mut all_out: Vec<f32> = Vec::new();
         let mut switch_pos = 0usize;
         loop {
-            let packet = match format.next_packet() { Ok(p) => p, Err(_) => break };
-            if packet.track_id() != track_id { continue; }
+            let packet = match format.next_packet() { Ok(Some(p)) => p, Ok(None) => break, Err(_) => break };
+            if packet.track_id != track_id { continue; }
             let ab = match decoder.decode(&packet) { Ok(b) => b, Err(_) => continue };
-            if sample_buf.is_none() {
-                let spec = *ab.spec();
-                sample_buf = Some(SampleBuffer::<f32>::new(ab.capacity() as u64, spec));
-            }
-            let buf = sample_buf.as_mut().unwrap();
-            buf.copy_interleaved_ref(ab);
-            let mut pcm: Vec<f32> = buf.samples().to_vec();
+            let mut pcm: Vec<f32> = Vec::new();
+            ab.copy_to_vec_interleaved::<f32>(&mut pcm);
             if block == switch_block {
                 switch_pos = all_out.len();
                 chain.set_params(p2.clone());

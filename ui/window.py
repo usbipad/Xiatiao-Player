@@ -2124,7 +2124,7 @@ class MainWindow(Adw.ApplicationWindow):
                 return ([], _("在线音源未就绪"))
             _ta = _t.monotonic()
             result = p.playlist_tracks_safe(pl.id)
-            log.info("[歌单计时] 网络拉取+转换 %.0fms（%d 首）",
+            log.debug("[歌单计时] 网络拉取+转换 %.0fms（%d 首）",
                      (_t.monotonic() - _ta) * 1000, len(result[0] or []))
             return result
 
@@ -2136,7 +2136,7 @@ class MainWindow(Adw.ApplicationWindow):
                     self._toast(_("歌单加载失败：{err}").format(err=err))
                 self._online_detail_tracks = list(tracks or [])
                 self.online_page.show_playlist_detail(getattr(pl, "name", ""), tracks or [])
-                log.info("[歌单计时] 渲染+切换 %.0fms | 端到端 %.0fms（%d 首）",
+                log.debug("[歌单计时] 渲染+切换 %.0fms | 端到端 %.0fms（%d 首）",
                          (_t.monotonic() - _tb) * 1000,
                          (_t.monotonic() - _t0) * 1000, len(tracks or []))
             except Exception:
@@ -2236,7 +2236,7 @@ class MainWindow(Adw.ApplicationWindow):
         from core.tasks import run_net_async
         import time as _tr
         self._online_refresh_t = _tr.monotonic()
-        log.info("[在线loading] _refresh_home_online 入口 @%.3f", self._online_refresh_t)
+        log.debug("[在线loading] _refresh_home_online 入口 @%.3f", self._online_refresh_t)
 
         def _work():
             p = self._get_provider("subsonic")
@@ -2250,10 +2250,10 @@ class MainWindow(Adw.ApplicationWindow):
                 _t0 = _ti.monotonic()
                 try:
                     r = fn()
-                    log.info("[在线loading] 子请求 %s 耗时 %.2fs", _name, _ti.monotonic() - _t0)
+                    log.debug("[在线loading] 子请求 %s 耗时 %.2fs", _name, _ti.monotonic() - _t0)
                     return r
                 except Exception as exc:
-                    log.info("[在线loading] 子请求 %s 失败(%.2fs): %s", _name, _ti.monotonic() - _t0, exc)
+                    log.warning("[在线loading] 子请求 %s 失败(%.2fs): %s", _name, _ti.monotonic() - _t0, exc)
                     return default
 
             tasks = {
@@ -2293,7 +2293,7 @@ class MainWindow(Adw.ApplicationWindow):
                 # 数据真正拉完 → 标记已加载（供切页时判断是否需 loading）
                 import time as _td
                 self._online_data_done_t = _td.monotonic()
-                log.info("[在线loading] 数据拉完（run_async _done）@%.3f",
+                log.debug("[在线loading] 数据拉完（run_async _done）@%.3f",
                          self._online_data_done_t)
                 self._online_loaded = True
                 import time as _tk
@@ -2301,7 +2301,7 @@ class MainWindow(Adw.ApplicationWindow):
                     _tk.t0 = _tk.monotonic()
                     _tk.name = name
                 def _tk2():
-                    log.info("[在线loading] %s 耗时 %.3fs", _tk.name, _tk.monotonic() - _tk.t0)
+                    log.debug("[在线loading] %s 耗时 %.3fs", _tk.name, _tk.monotonic() - _tk.t0)
                 _tk1("set_playlists")
                 self.online_page.set_playlists(playlists or [])
                 _tk2()
@@ -2409,7 +2409,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         try:
             import time as _t1
-            log.info("[在线loading] 进入 show_when_idle @%.3f, busy=%s（数据拉完→进入耗时 %.2fs）",
+            log.debug("[在线loading] 进入 show_when_idle @%.3f, busy=%s（数据拉完→进入耗时 %.2fs）",
                      _t1.monotonic(), cover_activity.busy,
                      _t1.monotonic() - getattr(self, "_online_data_done_t", _t1.monotonic()))
             # 若已空闲 → 立即显示
@@ -3625,6 +3625,61 @@ class MainWindow(Adw.ApplicationWindow):
                 self.now_playing.set_playing(True)
             except Exception:
                 pass
+            # 预取下一首直链：后台对下一首的 stream URL 发一次 Range 请求，
+            # 让 adapter 换链并缓存。切歌时命中缓存（~0.1s 而非 ~1.3s）。
+            self._prefetch_next_stream(track)
+
+    def _prefetch_next_stream(self, current_track) -> None:
+        """后台预取下一首在线曲目的直链（只探测首字节，不下载整首）。
+
+        仅对在线曲目生效；本地文件无需预取。失败静默——预取是优化，
+        不能影响正常播放。
+        """
+        try:
+            if getattr(current_track, "source_type", "") != "subsonic":
+                return
+            tracks = self.playlist.tracks() or []
+            idx = self.playlist.current_index()
+            if not tracks or idx < 0:
+                return
+            # 取下一首（循环模式绕回，不循环且到末尾则跳过）。
+            nxt_idx = idx + 1
+            if nxt_idx >= len(tracks):
+                if self.playlist.repeat_mode() == 0:  # REPEAT_OFF
+                    return
+                nxt_idx = 0
+            nxt = tracks[nxt_idx]
+            if getattr(nxt, "source_type", "") != "subsonic":
+                return
+            sid = getattr(nxt, "source_id", "") or ""
+            if not sid:
+                return
+            url = self._subsonic_stream_url(sid)
+            if not url:
+                return
+            log.debug("[预取] 调度下一首直链: id=%s title=%s", sid, getattr(nxt, "title", ""))
+
+            def _work() -> None:
+                # 只请求首 64KB：触发 adapter 换链并缓存直链，同时不浪费带宽。
+                import urllib.request
+                import time as _time
+                t0 = _time.time()
+                req = urllib.request.Request(url, headers={"Range": "bytes=0-65535"})
+                try:
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        resp.read(4096)
+                    log.debug("[预取] 完成 id=%s 耗时 %.0fms", sid, (_time.time() - t0) * 1000)
+                except Exception as exc:
+                    log.debug("[预取] 失败 id=%s: %s", sid, exc)
+
+            try:
+                from core.tasks import run_net_async
+                run_net_async(work=_work)
+            except Exception:
+                import threading
+                threading.Thread(target=_work, daemon=True).start()
+        except Exception as exc:
+            log.debug("预取下一首调度失败: %s", exc)
 
     def _play_url_for(self, track) -> str:
         """返回曲目的播放地址。
@@ -5172,7 +5227,7 @@ class MainWindow(Adw.ApplicationWindow):
           格式/采样率/码率（能拿到多少显示多少；这些字段由后端提供）。
         """
         is_online = getattr(track, "source_type", "") == "subsonic"
-        log.info("[面板格式] title=%s source_type=%r is_online=%s",
+        log.debug("[面板格式] title=%s source_type=%r is_online=%s",
                  getattr(track, "title", ""),
                  getattr(track, "source_type", ""), is_online)
         # 音质徽章：每步独立 try，确保一定执行（不因前面某步失败而跳过）
@@ -5286,15 +5341,21 @@ class MainWindow(Adw.ApplicationWindow):
                 mc = multichannel_label(info)
             except Exception:
                 mc = ""
-            log.info("[实际音质] info=%s → spec=%s mc=%s", info, spec, mc)
+            log.debug("[实际音质] info=%s → spec=%s mc=%s", info, spec, mc)
             # 徽章：规格 + 多声道（有损/未知则隐藏）。
             self.player_panel.set_quality_info(spec, actual=True, multichannel=mc)
         except Exception as exc:
             log.debug("校正实际音质徽章失败: %s", exc)
-        # 降级提示：仅私有协议后端 + 在线歌，且实际低于所选时。
+        # 降级提示：仅私有协议后端 + **在线歌**，且实际低于所选时。
         # 标准 Subsonic 不按档位转码，无「所选档位」概念，故不提示。
+        # 本地文件（含 DSD）不走在线档位体系，绝不应触发该提示：
+        # is_private_backend 是全局后端标志，与具体曲目无关，必须
+        # 额外校验 source_type，否则连着在线后端时播本地 DSD 会误报
+        # 「所选无损不可用，实际为 DSD」。
         try:
-            if (getattr(track, "is_private_backend", False)
+            _is_online_track = getattr(track, "source_type", "") == "subsonic"
+            if (_is_online_track
+                    and getattr(track, "is_private_backend", False)
                     and spec and mc == ""):
                 chosen = ""
                 try:

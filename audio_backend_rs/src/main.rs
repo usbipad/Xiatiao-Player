@@ -24,6 +24,7 @@ mod decode;
 mod decode_ffmpeg;
 mod deps;
 mod output;
+mod http_source;
 mod output_alsa;
 mod dsd;
 mod reverb;
@@ -192,12 +193,12 @@ fn handle_client(stream: UnixStream, engine: Arc<Mutex<engine::Engine>>) {
                 continue;
             }
         };
-        eprintln!("[IPC] recv: {}", line.trim());
+        crate::logts_dbg!("[IPC] recv: {}", line.trim());
         let resp = engine
             .lock()
             .map(|mut e| e.handle(req))
             .unwrap_or_else(|_| protocol::Event::error("engine lock poisoned"));
-        eprintln!("[IPC] resp: {}", serde_json::to_string(&resp).unwrap_or_default());
+        crate::logts_dbg!("[IPC] resp: {}", serde_json::to_string(&resp).unwrap_or_default());
         let _ = send_event(&writer, &resp);
     }
 

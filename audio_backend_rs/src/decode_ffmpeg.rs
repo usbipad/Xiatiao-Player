@@ -76,7 +76,9 @@ pub(crate) fn prefer_ffmpeg(path: &str) -> bool {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    matches!(ext.as_str(), "ape" | "wv" | "dsf" | "dff" | "mpc" | "tta")
+    // opus：symphonia 0.6 无 opus 解码器（容器能 probe，解码器缺失），
+    // 必须交给 ffmpeg。
+    matches!(ext.as_str(), "ape" | "wv" | "dsf" | "dff" | "mpc" | "tta" | "opus")
 }
 
 /// 用 ffprobe 读取 (采样率, 声道, 时长秒, 位深, 码率bps, 编码格式, 是否有音频流)。

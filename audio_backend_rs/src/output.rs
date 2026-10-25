@@ -316,14 +316,14 @@ impl PipewireOutput {
             (*g != Some((rate, channels)), *g)
         };
         if need_rebuild {
-            eprintln!(
+            crate::logts_dbg!(
                 "[output][rate] 格式变化：当前={:?} → 新=({},{})，触发 rebuild",
                 cur_fmt, rate, channels
             );
             self.shared.channels.store(channels as usize, Ordering::Relaxed);
             self.rebuild(rate, channels);
         } else if cur_fmt.is_none() {
-            eprintln!("[output][rate] 初始格式：rate={rate} ch={channels}");
+            crate::logts_dbg!("[output][rate] 初始格式：rate={rate} ch={channels}");
         }
 
         // 阻塞式写入：缓冲满时小睡等待，让解码跟随播放速度。
@@ -374,12 +374,12 @@ impl PipewireOutput {
     }
 
     pub fn pause(&self) {
-        eprintln!("[output] pause (played={})", self.played_frames());
+        crate::logts!("[output] pause (played={})", self.played_frames());
         self.shared.paused.store(true, Ordering::SeqCst);
     }
 
     pub fn resume(&self) {
-        eprintln!("[output] resume (played={})", self.played_frames());
+        crate::logts!("[output] resume (played={})", self.played_frames());
         self.shared.paused.store(false, Ordering::SeqCst);
     }
 
@@ -419,7 +419,7 @@ impl PipewireOutput {
             if let Ok(mut g) = self.shared.ring.lock() {
                 *g = Ring::new(frames_cap, ch);
             }
-            eprintln!("[output][rate] 环形缓冲按 rate={rate} 重建：{} 帧（约 {:.0} ms）",
+            crate::logts_dbg!("[output][rate] 环形缓冲按 rate={rate} 重建：{} 帧（约 {:.0} ms）",
                 frames_cap, 1000.0 * frames_cap as f64 / rate.max(1) as f64);
         }
         let shared = Arc::clone(&self.shared);

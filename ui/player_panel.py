@@ -913,7 +913,7 @@ class PlayerPanel(Gtk.Box):
             self.quality_badge.set_text(name)
             self.quality_badge.set_visible(True)
             self.quality_badge.set_tooltip_text(_("当前实际播放音质"))
-            log.info("[音质徽章] set_quality_info key=%s name=%s actual=%s",
+            log.debug("[音质徽章] set_quality_info key=%s name=%s actual=%s",
                      key, name, actual)
         except Exception as exc:
             log.warning("[音质徽章] 显示失败: %s", exc)
@@ -936,7 +936,7 @@ class PlayerPanel(Gtk.Box):
             self.quality_dropdown.set_visible(False)
         except Exception:
             pass
-        log.info("[音质徽章] clear_quality_info（已隐藏）")
+        log.debug("[音质徽章] clear_quality_info（已隐藏）")
 
     def set_available_qualities(self, levels) -> None:
         """由 window 传入当前歌支持的档位列表（TrackItem.quality_levels）。

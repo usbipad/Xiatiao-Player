@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 # 解码：mp3/flac/aac/ogg/wav/alac 等（0.5 为稳定版）
-symphonia = { version = "0.5", features = ["mp3", "flac", "aac", "ogg", "wav", "isomp4", "alac"] }
+symphonia = { version = "0.6", features = ["mp3", "flac", "aac", "ogg", "wav", "isomp4", "alac"] }
 # IPC 序列化
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -39,3 +39,5 @@ alsa = "0.9"
 
 # seek 双缓冲：原子 Arc 交换（RT 无锁读取，切换「active ring」）
 arc-swap = "1"
+# HTTP Range MediaSource（在线音频直解验证）
+ureq = { version = "2", features = ["tls"] }

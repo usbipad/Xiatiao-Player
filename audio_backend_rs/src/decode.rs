@@ -9,12 +9,11 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::codecs::audio::{AudioCodecId, AudioCodecParameters};
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 
 use crate::decode_ffmpeg::{prefer_ffmpeg, run_playback_ffmpeg, spawn_pwcat};
 use crate::shared::{viz_fifo_path, Shared};
@@ -26,22 +25,82 @@ fn do_seek(
 ) -> Result<(), String> {
     use symphonia::core::formats::SeekMode;
     use symphonia::core::formats::SeekTo;
-    let time = symphonia::core::units::Time::from(ms as f64 / 1000.0);
+    use symphonia::core::units::Time;
+    let secs = (ms / 1000) as i64;
+    let nanos = ((ms % 1000) * 1_000_000) as u32;
+    let time = Time::try_new(secs, nanos).ok_or_else(|| "invalid seek time".to_string())?;
     format
         .seek(SeekMode::Accurate, SeekTo::Time { time, track_id: None })
         .map_err(|e| format!("{e}"))?;
     Ok(())
 }
 
+/// 网络流：用 symphonia + HTTP Range 解码。
+///
+/// 与本地文件共用同一套主循环：`run_playback_impl` 接受一个已经打开的
+/// FormatReader，seek 走 `do_seek`。这里只负责建立 HttpMediaSource 并
+/// 探测格式；任何一步失败都返回 Err，由调用方回退 ffmpeg。
+fn try_network_symphonia(
+    url: &str,
+    shared: Arc<Shared>,
+    output: Arc<crate::output::AudioOut>,
+) -> Result<(), String> {
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+
+    // 独立的停止标志：解码线程退出时随 HttpMediaSource 一起释放，
+    // 不依赖 Shared.stop（那是内嵌 AtomicBool，无法共享为 Arc）。
+    let http_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let source = crate::http_source::HttpMediaSource::open(url, Arc::clone(&http_stop))
+        .map_err(|e| format!("http source: {e}"))?;
+    let source_len = source.len();
+    let mss = MediaSourceStream::new(Box::new(source), Default::default());
+    let mut hint = Hint::new();
+    // 扩展名提示对无 MIME 的流有帮助；Subsonic 的 stream.view 无扩展名，
+    // 交给探测自动识别即可。
+    if let Some(ext) = path_ext_hint(url) {
+        hint.with_extension(ext);
+    }
+    let fmt_reader = symphonia::default::get_probe()
+        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+        .map_err(|e| format!("probe: {e}"))?;
+    // 总字节数：用于码率估算（前端音质徽章需要）。
+    let byte_len = Some(source_len);
+    crate::logts!("[engine] network symphonia 就绪: {url}");
+    run_playback_with_format(fmt_reader, byte_len, url, shared, output)
+}
+
+/// 从 URL 猜测扩展名提示（仅用于探测提示，不影响正确性）。
+fn path_ext_hint(url: &str) -> Option<&'static str> {
+    let lower = url.to_ascii_lowercase();
+    if lower.contains(".flac") {
+        Some("flac")
+    } else if lower.contains(".mp3") {
+        Some("mp3")
+    } else if lower.contains(".m4a") || lower.contains(".mp4") {
+        Some("m4a")
+    } else {
+        None
+    }
+}
+
 /// 解码线程：用 symphonia 解码并写入输出层。
 pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
                 output: Arc<crate::output::AudioOut>) -> Result<(), String> {
     // ---- 网络流分流 ----
-    // http/https 是网络流：symphonia 不处理网络，直接交给 ffmpeg 拉流解码。
-    // ffmpeg/ffprobe 原生支持 URL（-i http://...）。
+    // 优先走 symphonia + HTTP Range：无子进程、seek 按 Range 直接跳读。
+    // 失败（不支持 Range / 格式不受支持 / 探测失败）时回退 ffmpeg。
     if path.starts_with("http://") || path.starts_with("https://") {
-        crate::logts!("[engine] network stream → ffmpeg: {path}");
-        return run_playback_ffmpeg(path, shared, output);
+        match try_network_symphonia(path, Arc::clone(&shared), Arc::clone(&output)) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                // 失败可能来自探测阶段；此时尚未写出任何输出，回退安全。
+                crate::logts!("[engine] network symphonia 失败（{e}），回退 ffmpeg: {path}");
+                return run_playback_ffmpeg(path, shared, output);
+            }
+        }
     }
 
     // ---- DSD 分流 ----
@@ -104,8 +163,8 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
     if let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) {
         hint.with_extension(ext);
     }
-    let probed = match symphonia::default::get_probe()
-        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+    let fmt_reader = match symphonia::default::get_probe()
+        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
     {
         Ok(p) => p,
         Err(e) => {
@@ -113,39 +172,99 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
             return run_playback_ffmpeg(path, shared, output);
         }
     };
-    let mut format = probed.format;
+    let byte_len = std::fs::metadata(path).ok().map(|m| m.len());
+    match run_playback_with_format(fmt_reader, byte_len, path, Arc::clone(&shared), Arc::clone(&output)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // 解码器缺失（如容器能 probe 但 codec 不受支持）时回退 ffmpeg。
+            // 注意：此时可能已写出少量输出；ffmpeg 回退会重新开始，
+            // 对本地文件可接受（用户感知为重新播放）。
+            eprintln!("[engine] symphonia 解码失败（{e}），回退 ffmpeg: {path}");
+            run_playback_ffmpeg(path, shared, output)
+        }
+    }
+}
+
+/// 从 MediaInfo 取总时长（毫秒）；0 表示未知。
+fn media_duration_ms(format: &dyn symphonia::core::formats::FormatReader) -> u64 {
+    let info = format.media_info();
+    match (info.time_base, info.duration) {
+        (Some(tb), Some(dur)) => tb
+            .calc_duration(dur)
+            .map(|t| t.as_millis().max(0) as u64)
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// 把 symphonia 的 CodecType 映射为可读格式名（供前端展示）。
+fn codec_name_of(codec: AudioCodecId) -> &'static str {
+    use symphonia::core::codecs::audio::well_known::*;
+    match codec {
+        CODEC_ID_FLAC => "flac",
+        CODEC_ID_MP3 => "mp3",
+        CODEC_ID_AAC => "aac",
+        CODEC_ID_VORBIS => "vorbis",
+        CODEC_ID_ALAC => "alac",
+        _ => "",
+    }
+}
+
+/// 用已探测的 FormatReader 执行解码主循环（本地文件与网络流共用）。
+///
+/// `format` 必须是已经 probe 成功、且可 seek 的 FormatReader。
+fn run_playback_with_format(
+    format: Box<dyn symphonia::core::formats::FormatReader>,
+    byte_len: Option<u64>,
+    codec_hint: &str,
+    shared: Arc<Shared>,
+    output: Arc<crate::output::AudioOut>,
+) -> Result<(), String> {
+    let mut format = format;
     let track = format
-        .default_track()
+        .default_track(TrackType::Audio)
         .ok_or_else(|| "no default track".to_string())?;
     let track_id = track.id;
+    let codec_params = track
+        .codec_params
+        .as_ref()
+        .ok_or_else(|| "no codec params".to_string())?;
+    let audio_params: &AudioCodecParameters = codec_params
+        .audio()
+        .ok_or_else(|| "not an audio track".to_string())?;
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(audio_params, &Default::default())
         .map_err(|e| format!("decoder: {e}"))?;
 
-    let in_rate = track.codec_params.sample_rate.unwrap_or(44100);
-    let in_channels = track
-        .codec_params
+    let in_rate = audio_params.sample_rate.unwrap_or(44100);
+    let in_channels = audio_params
         .channels
+        .as_ref()
         .map(|c| c.count())
         .unwrap_or(2)
         .max(1) as u32;
     shared.in_rate.store(in_rate as u64, Ordering::SeqCst);
     shared.in_channels.store(in_channels as u64, Ordering::SeqCst);
-    let dur_ms = if let Some(nf) = track.codec_params.n_frames {
-        (nf as f64 / in_rate as f64 * 1000.0) as u64
-    } else {
-        0
-    };
+    let dur_ms = media_duration_ms(&*format);
     shared.duration_ms.store(dur_ms as u64, Ordering::SeqCst);
-    let in_bits = track.codec_params.bits_per_sample.unwrap_or(0) as u32;
+    let in_bits = audio_params.bits_per_sample.unwrap_or(0) as u32;
     // 编码格式名（供前端判定音质规格）。
     // symphonia 的 Codec 是类型 ID（如 CodecType(8192)），无字符串名，
     // 故本地文件改用「扩展名」作为格式名（flac / wav / alac …）。
-    let codec_name = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase())
-        .unwrap_or_default();
+    // 格式名：优先从 symphonia 的 codec 参数推断（网络流没有扩展名）；
+    // 推断失败时回退到 codec_hint 的扩展名（本地文件）。
+    let codec_name = {
+        let from_codec = codec_name_of(audio_params.codec);
+        if !from_codec.is_empty() {
+            from_codec.to_string()
+        } else {
+            std::path::Path::new(codec_hint)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default()
+        }
+    };
     eprintln!("[engine] symphonia: {in_rate}Hz {in_channels}ch {in_bits}bit codec={codec_name}");
     // 上报音频技术信息（前端显示格式/采样率/位深/码率）
     {
@@ -159,11 +278,11 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
             info.insert("codec".into(), serde_json::json!(codec_name));
         }
         // 码率：由总时长估算（若有）
-        if let Some(nf) = track.codec_params.n_frames {
-            let secs = nf as f64 / in_rate as f64;
+        {
+            let secs = dur_ms as f64 / 1000.0;
             if secs > 0.0 {
-                if let Ok(meta) = std::fs::metadata(path) {
-                    let bps = (meta.len() as f64 * 8.0 / secs) as u64;
+                if let Some(len) = byte_len {
+                    let bps = (len as f64 * 8.0 / secs) as u64;
                     if bps > 0 {
                         info.insert("bitrate".into(), serde_json::json!(bps));
                     }
@@ -193,7 +312,6 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
     // 可视化旁路
     let mut viz = crate::viz::VizTap::open(&viz_fifo_path(), in_rate);
 
-    let mut sample_buf: Option<SampleBuffer<f32>> = None;
     let mut frames_written: u64 = 0;
     let mut dsp = crate::dsp::DspChain::new(in_rate);
     // 始终创建嵌入式 Camilla 引擎（运行时按开关决定是否参与）
@@ -258,8 +376,8 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
         }
 
         let packet = match format.next_packet() {
-            Ok(p) => p,
-            Err(_) => {
+            Ok(Some(p)) => p,
+            Ok(None) | Err(_) => {
                 shared.eof.store(true, Ordering::SeqCst);
                 // 结束 seek 过渡：EOF 后不再有新数据写输出，若正处于 seek
                 // 过渡（seeking=true）且 pending 未填够切换，write() 兜底不会
@@ -268,24 +386,21 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
                 break;
             }
         };
-        if packet.track_id() != track_id {
+        if packet.track_id != track_id {
             continue;
         }
         match decoder.decode(&packet) {
             Ok(audio_buf) => {
-                if frames_written == 0 {
+                let vol = *shared.volume.lock().unwrap_or_else(|e| e.into_inner());
+                let ch = in_channels as usize;
+                // 0.6：GenericAudioBufferRef 直接拷成交错 f32，再应用音量。
+                let mut pcm: Vec<f32> = Vec::new();
+                audio_buf.copy_to_vec_interleaved::<f32>(&mut pcm);
+                if vol != 1.0 {
+                    for s in pcm.iter_mut() {
+                        *s *= vol;
+                    }
                 }
-                if sample_buf.is_none() {
-                    let spec = *audio_buf.spec();
-                    let cap = audio_buf.capacity() as u64;
-                    sample_buf = Some(SampleBuffer::<f32>::new(cap, spec));
-                }
-                if let Some(buf) = &mut sample_buf {
-                    buf.copy_interleaved_ref(audio_buf);
-                    let vol = *shared.volume.lock().unwrap_or_else(|e| e.into_inner());
-                    let ch = in_channels as usize;
-                    // 先应用音量，再过 DSP
-                    let mut pcm: Vec<f32> = buf.samples().iter().map(|s| s * vol).collect();
                     // Rust 侧参数与染色（每块同步一次）
                     let dsp_json = shared.dsp_params.lock().map(|p| p.clone()).unwrap_or(serde_json::Value::Null);
                     dsp.set_params_json(&dsp_json);
@@ -344,7 +459,6 @@ pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
                         output.mark_playing();
                         just_seeked = false;
                     }
-                }
             }
             Err(_) => continue,
         }

@@ -684,20 +684,18 @@ mod tests {
         let path = match std::env::var("XIATIAO_TEST_FLAC") {
             Ok(p) => p, Err(_) => { println!("[Cam分析] 未设 XIATIAO_TEST_FLAC，跳过"); return; }
         };
-        use symphonia::core::audio::SampleBuffer;
-        use symphonia::core::codecs::DecoderOptions;
-        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::formats::probe::Hint;
+        use symphonia::core::formats::{FormatOptions, TrackType};
         use symphonia::core::io::MediaSourceStream;
         use symphonia::core::meta::MetadataOptions;
-        use symphonia::core::probe::Hint;
         let file = match std::fs::File::open(&path) { Ok(f) => f, Err(e) => { println!("打开失败: {e}"); return; } };
         let mss = MediaSourceStream::new(Box::new(file), Default::default());
         let mut hint = Hint::new(); hint.with_extension("flac");
-        let probed = match symphonia::default::get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default()) { Ok(p) => p, Err(e) => { println!("probe: {e}"); return; } };
-        let mut format = probed.format;
-        let track = match format.default_track() { Some(t) => t, None => { println!("无音轨"); return; } };
+        let mut format = match symphonia::default::get_probe().probe(&hint, mss, FormatOptions::default(), MetadataOptions::default()) { Ok(p) => p, Err(e) => { println!("probe: {e}"); return; } };
+        let track = match format.default_track(TrackType::Audio) { Some(t) => t, None => { println!("无音轨"); return; } };
         let tid = track.id;
-        let mut decoder = match symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()) { Ok(d) => d, Err(e) => { println!("解码器: {e}"); return; } };
+        let audio_params = match track.codec_params.as_ref().and_then(|p| p.audio()) { Some(a) => a, None => { println!("无音频参数"); return; } };
+        let mut decoder = match symphonia::default::get_codecs().make_audio_decoder(audio_params, &Default::default()) { Ok(d) => d, Err(e) => { println!("解码器: {e}"); return; } };
 
         let pass = "devices:\n  samplerate: 44100\n  chunksize: 1024\n  capture:\n    type: Stdin\n    channels: 2\n    format: F32_LE\n  playback:\n    type: Stdout\n    channels: 2\n    format: F32_LE\nfilters:\n  pass:\n    type: Gain\n    parameters:\n      gain: 0.0\n      scale: dB\nprocessors: {}\nmixers: {}\npipeline:\n- type: Filter\n  channels:\n  - 0\n  - 1\n  names:\n  - pass\n";
         // 结构变化：加 EQ 段（触发重建）
@@ -705,22 +703,16 @@ mod tests {
 
         let mut eng = CamillaEngine::new(44100);
         eng.set_yaml(pass).ok();
-        let mut sample_buf: Option<SampleBuffer<f32>> = None;
         let mut block = 0usize;
         let switch_block = 40usize;
         let mut all_out: Vec<f32> = Vec::new();
         let mut switch_pos = 0usize;
         loop {
-            let packet = match format.next_packet() { Ok(p) => p, Err(_) => break };
-            if packet.track_id() != tid { continue; }
+            let packet = match format.next_packet() { Ok(Some(p)) => p, Ok(None) => break, Err(_) => break };
+            if packet.track_id != tid { continue; }
             let ab = match decoder.decode(&packet) { Ok(b) => b, Err(_) => continue };
-            if sample_buf.is_none() {
-                let spec = *ab.spec();
-                sample_buf = Some(SampleBuffer::<f32>::new(ab.capacity() as u64, spec));
-            }
-            let buf = sample_buf.as_mut().unwrap();
-            buf.copy_interleaved_ref(ab);
-            let mut pcm: Vec<f32> = buf.samples().to_vec();
+            let mut pcm: Vec<f32> = Vec::new();
+            ab.copy_to_vec_interleaved::<f32>(&mut pcm);
             if block == switch_block {
                 switch_pos = all_out.len();
                 eng.set_yaml(eqy).ok();
