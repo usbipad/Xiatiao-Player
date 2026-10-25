@@ -102,3 +102,15 @@ release/*.buildinfo
 release/*.changes
 release/*.dsc
 release/*.build
+
+# 本地代码快照备份目录（src.bak.<时间戳>/ 与 Cargo.*.bak.*）
+audio_backend_rs/src.bak.*/
+audio_backend_rs/Cargo.toml.bak.*
+audio_backend_rs/Cargo.lock.bak.*
+
+# 本地一次性验证用示例（非产品功能，不入库）
+audio_backend_rs/examples/http_probe.rs
+audio_backend_rs/examples/local_probe.rs
+
+# 外部 API 服务端项目（独立仓库，不入库）
+Xiatiao-SubsonicAPI/
