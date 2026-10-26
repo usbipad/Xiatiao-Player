@@ -521,6 +521,30 @@ impl AlsaOutput {
     /// - ALSA 设备采样率 = `pcm_rate`（= DSD 率 / 16）。
     pub fn write_dop_group(&self, ch_bytes: &[Vec<u8>], pcm_rate: u32, marker_phase: &mut usize) {
         let ch = ch_bytes.len().max(1);
+        // DoP 起始预热：DoP v1.0 要求接收端看到连续 ≥8 个交替 marker 才进入
+        // DoP 模式。刚切到 DoP（或首次）时，先写 32 帧静音 DoP（payload=0，
+        // marker 交替），给 DAC 足够的锁定时间，避免开头被判为普通 PCM。
+        let entering_dop = {
+            let prev = *self.last_dsd.lock().unwrap_or_else(|e| e.into_inner());
+            prev != Some(DsdOutputMode::Dop)
+        };
+        if entering_dop {
+            const PREWARM_FRAMES: usize = 32;
+            let mut pre: Vec<u32> = Vec::with_capacity(PREWARM_FRAMES * ch);
+            let mut phase = *marker_phase;
+            for _ in 0..PREWARM_FRAMES {
+                let marker: u32 = if phase == 0 { 0x05 } else { 0xFA };
+                let sample24 = marker; // payload=0
+                let word = (sample24 & 0x00FF_FFFF) << 8;
+                for _ in 0..ch {
+                    pre.push(word);
+                }
+                phase ^= 1;
+            }
+            *marker_phase = phase;
+            let pre_pcm: Vec<f32> = pre.into_iter().map(f32::from_bits).collect();
+            self.write_inner(&pre_pcm, pcm_rate, ch as u32, Some(DsdOutputMode::Dop));
+        }
         // 复用 dsd.rs 中经单测的纯打包逻辑（位精确 + marker 交替）。
         let samples = crate::dsd::pack_dop_group(ch_bytes, marker_phase);
         let pcm: Vec<f32> = samples.into_iter().map(f32::from_bits).collect();
@@ -705,8 +729,15 @@ fn run_alsa(
             }
             chosen = Format::DSDU32LE;
         } else if matches!(dsd, Some(DsdOutputMode::Dop)) {
-            // DoP 承载：优先 S32_LE（24-bit 样本放高 24 位），
-            // 回退 S24_3LE（紧凑 3 字节容器，部分 DoP DAC 只支持它）。
+            // DoP 承载格式选择。
+            //
+            // 规范（DoP v1.0）推荐 24-bit 紧凑容器 S24_3LE，但实测大量
+            // USB DAC（含 Cirrus Logic CS43131 系列）只在 **S32_LE 32-bit
+            // 容器**下识别 DoP marker；若用 S24_3LE，DAC 会把 marker 当普通
+            // PCM 低字节，输出白噪音。故这里按「S32_LE 优先、S24_3LE 回退」
+            // 选择，兼容性最好。
+            //
+            // 若某设备只在 S24_3LE 下识别 DoP，可后续加用户级开关覆盖。
             if hwp.set_format(Format::S32LE).is_ok() {
                 chosen = Format::S32LE;
             } else if hwp.set_format(Format::S243LE).is_ok() {
@@ -782,6 +813,8 @@ fn run_alsa(
     // 上一帧输出（淡出期间「延续」的最后一帧）。
     let mut last_l = 0.0f32;
     let mut last_r = 0.0f32;
+    // DSD/DoP 欠载/暂停时补静音帧用的 marker 相位（保持 DAC 锁定）。
+    let mut marker_phase_dsd: usize = 0;
 
     while !stop.load(Ordering::SeqCst) {
         let paused = shared.paused.load(Ordering::Relaxed);
@@ -797,7 +830,31 @@ fn run_alsa(
         if got == 0 {
             // 无数据（暂停 / seek 过渡 / 欠载）：保持时钟。
             let n = scratch.len();
-            if seek_transition || paused {
+            if is_dsd {
+                // DSD 路径：绝不能对位流做增益或 hold 旧帧（会破坏 marker /
+                // 位流语义）。补「DSD 静音」：payload 全 0，DoP 仍按帧输出交替
+                // marker，保持 DAC 锁定；Native 输出全 0 字即可。
+                if matches!(dsd, Some(DsdOutputMode::Dop)) {
+                    // 与 pack_dop_group 一致：marker 以「PCM 帧」为单位交替，
+                    // 同帧所有声道 marker 相同（否则 DAC 无法锁定 DoP）。
+                    for i in (0..n).step_by(ch) {
+                        let marker: u32 = if marker_phase_dsd == 0 { 0x05 } else { 0xFA };
+                        let sample24 = marker; // payload=0, marker 在低 8 位
+                        let word = (sample24 & 0x00FF_FFFF) << 8;
+                        let f = f32::from_bits(word);
+                        for c in 0..ch {
+                            if i + c < n {
+                                scratch[i + c] = f;
+                            }
+                        }
+                        marker_phase_dsd ^= 1;
+                    }
+                } else {
+                    for s in scratch.iter_mut() {
+                        *s = 0.0;
+                    }
+                }
+            } else if seek_transition || paused {
                 // seek / 暂停：**淡出**——从上一帧按递减增益衰减到 0
                 //（避免「旧音乐突变到静音」的生硬感），之后保持静音。
                 for i in (0..n).step_by(ch) {
@@ -819,7 +876,8 @@ fn run_alsa(
         }
 
         // 恢复播放：若在淡入中（fade_gain < 1），本块逐帧升到 1。
-        if fade_gain < 1.0 {
+        // DSD 路径跳过淡入：对位流乘增益会产生错误样本。
+        if !is_dsd && fade_gain < 1.0 {
             for i in (0..got * ch).step_by(ch) {
                 fade_gain = (fade_gain + fade_step).min(1.0);
                 scratch[i] *= fade_gain;
@@ -940,7 +998,13 @@ pub fn device_supports_format(device: &str, format: Format, rate: u32, channels:
     if hwp.set_channels(channels).is_err() {
         return false;
     }
-    hwp.test_format(format).is_ok() && hwp.test_rate(rate).is_ok()
+    if hwp.set_rate(rate, ValueOr::Nearest).is_err() {
+        return false;
+    }
+    // 部分驱动 HwParams::any 下 test_format 偏保守（返回 errno），
+    // 但实际 set_format 能成功。两者任一成功即认为支持，避免误判为不支持
+    // 导致 auto 模式静默降级软解。
+    hwp.test_format(format).is_ok() || hwp.set_format(format).is_ok()
 }
 
 /// 释放占用指定 ALSA 硬件的 PipeWire sink，使 ALSA 可以独占打开。

@@ -1,3 +1,14 @@
+xiatiao-player (1.0.6) unstable; urgency=medium
+
+  * 修复网络流被误判为播放结束导致「放着放着自动下一首」：
+    symphonia 解码路径此前把任何读取错误都当作 EOF，网络抖动或
+    CDN 瞬时失败会直接触发 end_of_stream。现改为：已播时长明显
+    不足总时长时视为可恢复错误，退避后重试；时长未知时最多重试
+    150 次（约 12 秒）后放弃，避免永久卡死。与 ffmpeg 路径的
+    既有保护逻辑保持一致。
+
+ -- usbipad <1495941192+usbipad@users.noreply.github.com>  Mon, 26 Oct 2026 16:30:00 +0800
+
 xiatiao-player (1.0.5) unstable; urgency=medium
 
   * 内存优化（缓解切歌/开关页面时的内存增长，未完全消除）：

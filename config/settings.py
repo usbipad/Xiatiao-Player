@@ -14,7 +14,7 @@ APP_DIR_NAME = "xiatiao"
 CONFIG_FILENAME = "config.json"
 
 #: 应用版本号（单一真相源）。发版时只改这里。
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 
 
 def xdg_config_dir() -> str:
