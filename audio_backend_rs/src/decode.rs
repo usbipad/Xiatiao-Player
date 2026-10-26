@@ -313,6 +313,9 @@ fn run_playback_with_format(
     let mut viz = crate::viz::VizTap::open(&viz_fifo_path(), in_rate);
 
     let mut frames_written: u64 = 0;
+    // 读取错误重试计数：成功读到包时清零。用于「断流续传 + 有上限」，
+    // 避免网络瞬时错误被当成 EOF 直接切歌，也避免无限重试永久卡死。
+    let mut read_err_retries: u32 = 0;
     let mut dsp = crate::dsp::DspChain::new(in_rate);
     // 始终创建嵌入式 Camilla 引擎（运行时按开关决定是否参与）
     let mut camilla_engine = crate::camilla_engine::CamillaEngine::new(in_rate);
@@ -376,14 +379,64 @@ fn run_playback_with_format(
         }
 
         let packet = match format.next_packet() {
-            Ok(Some(p)) => p,
-            Ok(None) | Err(_) => {
+            Ok(Some(p)) => {
+                read_err_retries = 0;
+                p
+            }
+            Ok(None) => {
+                // 格式层明确回报「没有更多包」= 真正播完。
                 shared.eof.store(true, Ordering::SeqCst);
-                // 结束 seek 过渡：EOF 后不再有新数据写输出，若正处于 seek
-                // 过渡（seeking=true）且 pending 未填够切换，write() 兜底不会
-                // 被触发 → RT 永久 hold。主动清 seeking，让 RT 恢复 pop。
                 output.end_seek();
                 break;
+            }
+            Err(e) => {
+                // 读取错误（网络断流 / Range 失败 / 瞬时超时）：不能当 EOF，
+                // 否则会「放着放着突然切歌」。退避后重试续传；有上限，避免
+                // 彻底断网时永久卡死。
+                if shared.stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                let played_secs = if in_rate > 0 {
+                    frames_written as f64 / in_rate as f64
+                } else {
+                    0.0
+                };
+                let total_secs = dur_ms as f64 / 1000.0;
+                // 已接近结尾（容差 2s）且时长已知：视为正常结束，避免尾部误判。
+                let near_end = dur_ms > 0
+                    && total_secs > 2.0
+                    && played_secs >= total_secs - 2.0;
+                if near_end {
+                    eprintln!("[engine] symphonia 读取错误（{e}），但已接近结尾，按正常结束处理");
+                    shared.eof.store(true, Ordering::SeqCst);
+                    output.end_seek();
+                    break;
+                }
+                read_err_retries += 1;
+                // 上限：累计重试过多（约 30 秒量级）则放弃，交由前端跳下一首。
+                if read_err_retries > 150 {
+                    eprintln!(
+                        "[engine] symphonia 读取错误（{e}），重试超过上限（{read_err_retries}），放弃并结束本曲"
+                    );
+                    shared.eof.store(true, Ordering::SeqCst);
+                    output.end_seek();
+                    break;
+                }
+                // 退避：第 1 次 0ms（瞬时断流几乎立刻可重连），之后阶梯递增。
+                let backoff_ms = match read_err_retries {
+                    1 => 0,
+                    2 => 20,
+                    3 => 50,
+                    4 => 100,
+                    _ => 200,
+                };
+                eprintln!(
+                    "[engine] symphonia 读取错误（{e}），已播 {played_secs:.1}s / 总 {total_secs:.1}s，重试读取（第 {read_err_retries} 次，退避 {backoff_ms}ms）"
+                );
+                if backoff_ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                }
+                continue;
             }
         };
         if packet.track_id != track_id {

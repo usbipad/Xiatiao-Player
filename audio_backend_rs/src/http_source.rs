@@ -30,7 +30,10 @@ impl HttpMediaSource {
     pub(crate) fn open(url: &str, stop: Arc<AtomicBool>) -> io::Result<Self> {
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(10))
-            .timeout_read(Duration::from_secs(20))
+            // 单次 read 超时：服务器「连接活着但不给数据」时（CDN 限速/挂起）
+            // 及时超时，交由 decode 重试逻辑重连（可能命中新的 CDN 节点），
+            // 避免解码线程无限阻塞在 socket 上导致声音停止。
+            .timeout_read(Duration::from_secs(8))
             .build();
         // 探测：Range: bytes=0-0 拿 Content-Range 总长。
         let resp = agent
@@ -103,8 +106,20 @@ impl Read for HttpMediaSource {
         }
         let mut guard = self.body.lock().unwrap_or_else(|e| e.into_inner());
         let n = match guard.as_mut().unwrap().read(buf) {
+            Ok(0) => {
+                // 读到 0 表示这条响应体已耗尽或被对端关闭。丢弃死连接：
+                // 下次 read 会按当前 pos 重新发起 Range 请求续传，而不是
+                // 一直对着已关闭的连接读到 0/错误、卡在重试循环里。
+                *guard = None;
+                return Ok(0);
+            }
             Ok(n) => n,
-            Err(e) => return Err(e),
+            Err(e) => {
+                // 连接失效（对端关闭、空闲超时、网络中断）：同样丢弃，
+                // 使下次 read 从当前 pos 重新请求续传。
+                *guard = None;
+                return Err(e);
+            }
         };
         drop(guard);
         self.pos += n as u64;

@@ -25,8 +25,10 @@ SHORTCUT_ACTIONS = (
     "open_settings",
 )
 
-#: 动作默认绑定（全空 = 未绑定，由用户在设置里录制）
+#: 动作默认绑定。play_pause 默认空格（与全屏播放页一致，主界面也可用）；
+#: 其余留空，由用户在设置里录制。
 _DEFAULT_SHORTCUTS = {name: "" for name in SHORTCUT_ACTIONS}
+_DEFAULT_SHORTCUTS["play_pause"] = "space"
 
 
 def parse_shortcut(spec: str):

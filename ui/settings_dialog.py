@@ -396,7 +396,7 @@ class SettingsWindow(Adw.PreferencesWindow):
     )
     #: 默认全部为空（未绑定），由用户自行录制
     _SHORTCUT_DEFAULTS = {
-        "play_pause": "", "prev": "", "next": "",
+        "play_pause": "space", "prev": "", "next": "",
         "seek_back": "", "seek_fwd": "",
         "vol_up": "", "vol_down": "",
         "open_settings": "",
