@@ -112,5 +112,12 @@ audio_backend_rs/Cargo.lock.bak.*
 audio_backend_rs/examples/http_probe.rs
 audio_backend_rs/examples/local_probe.rs
 
+# 本地调试工具（DoP 硬件验证脚本，非产品功能，不入库）
+tools/dop_probe.py
+
+# 属于独立 API 后端项目（Xiatiao-SubsonicAPI）的桌面入口文件，
+# 调试期暂放在主仓库 packaging/ 下，不属于本项目，不入库。
+packaging/subsonic-adapter.desktop
+
 # 外部 API 服务端项目（独立仓库，不入库）
 Xiatiao-SubsonicAPI/
