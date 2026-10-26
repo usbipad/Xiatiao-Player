@@ -258,7 +258,15 @@ fn run_playback_with_format(
         if !from_codec.is_empty() {
             from_codec.to_string()
         } else {
-            std::path::Path::new(codec_hint)
+            // 在线流 URL 形如 `.../stream.view?u=..&id=..`：直接对整串取
+            // extension 会把 `?` 后的 query（甚至 id 值）当成扩展名，
+            // 得到 `1&c=xiatiao...` 这类垃圾 codec 名，导致前端无法判无损
+            // → 不显示 DXD/HR 徽章。故先剥掉 query(#fragment) 再取扩展名。
+            let clean = codec_hint
+                .split(['?', '#'])
+                .next()
+                .unwrap_or(codec_hint);
+            std::path::Path::new(clean)
                 .extension()
                 .and_then(|e| e.to_str())
                 .map(|s| s.to_ascii_lowercase())

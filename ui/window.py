@@ -5346,7 +5346,18 @@ class MainWindow(Adw.ApplicationWindow):
         # 本地/在线统一：实测 codec / sample_rate / bit_depth 是对真实
         # 输出的观测（软解后可能降采样，故以此为准，而非文件元数据）。
         try:
-            spec = self._actual_quality_from_info(info)
+            # 实测 info 的 codec 对在线流常是 "view"（stream.view 端点）或
+            # URL query 垃圾，无法判无损。此时用曲目元数据里的真实格式
+            # （Subsonic suffix → track.format_hint，如 flac/wav/dsf）补齐，
+            # 否则采样率再高也判不出 DXD/HR 徽章。
+            _info_for_spec = dict(info)
+            _codec = str(_info_for_spec.get("codec", "") or "").strip().lower()
+            _known_bad = (not _codec) or _codec == "view" or "&" in _codec or _codec == "null"
+            if _known_bad:
+                _hint = str(getattr(track, "format_hint", "") or "").strip().lower()
+                if _hint:
+                    _info_for_spec["codec"] = _hint
+            spec = self._actual_quality_from_info(_info_for_spec)
             try:
                 from core.quality import multichannel_label
                 mc = multichannel_label(info)
