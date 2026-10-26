@@ -50,6 +50,7 @@
 - **内嵌 DSP**：内置 CamillaDSP，支持 EQ、PEQ、响度、限幅等音效调整
 - **沉浸式界面**：背景跟随封面着色、全屏播放页、频谱可视化
 - **音质**：支持 mp3 / flac / ape / wv / m4a / dsd 等格式；DSP 处理不改变音频数据采样率
+- **实验性 DSD 输出**：可选 DSD 直通（Native / DoP）或转 PCM 软解，尚未在全部硬件验证
 - MPRIS2 媒体控制，适配 Linux 桌面
 
 ### 📦 安装
@@ -58,7 +59,7 @@
 
 从 Releases 下载 .deb 后：
 
-    apt install ./xiatiao-player_1.0.5_amd64.deb
+    apt install ./xiatiao-player_1.0.6_amd64.deb
 
 （需要管理员权限；安装后程序在 /usr/lib/xiatiao-player/，启动器 /usr/bin/xiatiao-player，也可在应用菜单中找到「虾条播放器」。）
 
@@ -67,7 +68,7 @@
 需先启用 **RPM Fusion**（依赖完整 ffmpeg 以支持 DSD 解码）：
 
     sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
-    sudo dnf install ./xiatiao-player-1.0.5-1.fc44.x86_64.rpm
+    sudo dnf install ./xiatiao-player-1.0.6-1.fc44.x86_64.rpm
 
 #### 方式三：从源码运行
 
@@ -132,6 +133,7 @@ A modern player that is local-first yet also supports online sources:
 - **Embedded DSP**: built-in CamillaDSP with EQ, PEQ, loudness, limiter and more
 - **Immersive UI**: background tinted by the cover, full-screen now-playing, spectrum visualization
 - **Formats & quality**: supports mp3 / flac / ape / wv / m4a / dsd; DSP processing does not change the audio data's sample rate
+- **Experimental DSD output**: DSD passthrough (Native / DoP) or PCM conversion, not yet verified on all hardware
 - MPRIS2 media control, integrated with the Linux desktop
 
 ### 📦 Installation
@@ -140,7 +142,7 @@ A modern player that is local-first yet also supports online sources:
 
 Download the `.deb` from Releases, then:
 
-    sudo apt install ./xiatiao-player_1.0.5_amd64.deb
+    sudo apt install ./xiatiao-player_1.0.6_amd64.deb
 
 (Requires admin rights. Installed to /usr/lib/xiatiao-player/, launcher at /usr/bin/xiatiao-player, also available in the app menu as "Xiatiao Player".)
 
@@ -149,7 +151,7 @@ Download the `.deb` from Releases, then:
 Requires **RPM Fusion** (for the full ffmpeg with DSD decoding):
 
     sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
-    sudo dnf install ./xiatiao-player-1.0.5-1.fc44.x86_64.rpm
+    sudo dnf install ./xiatiao-player-1.0.6-1.fc44.x86_64.rpm
 
 #### Option 3: Run from source
 

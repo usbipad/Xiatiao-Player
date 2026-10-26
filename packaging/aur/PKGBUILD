@@ -4,10 +4,10 @@
 #    使用中如遇问题，欢迎到 https://github.com/usbipad/Xiatiao-Player/issues 反馈。
 #
 # 构建：makepkg -si
-# 依赖 v1.0.5 的 GitHub Release（源码 tarball）已发布。
+# 依赖 v1.0.6 的 GitHub Release（源码 tarball）已发布。
 
 pkgname=xiatiao-player
-pkgver=1.0.5
+pkgver=1.0.6
 pkgrel=1
 pkgdesc="A GTK4 local music player with a Rust audio backend"
 arch=('x86_64')
