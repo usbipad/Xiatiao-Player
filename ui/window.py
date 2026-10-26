@@ -5184,6 +5184,17 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_player_error(self, _player, message: str) -> None:
         self._toast(message)
+        # 明确的「曲目不可播」类错误（上游 404 / 地址失效 / 无法解析）：
+        # 立即跳到下一首，不等 25s 卡住检测。网络抖动等非确定性错误不走这里
+        # （它们没有这类错误消息），仍由卡住检测的 25s 宽限兜底，避免误跳。
+        if any(
+            k in (message or "")
+            for k in ("未返回有效音频流", "无法播放", "地址失效", "无法解析")
+        ):
+            try:
+                self._on_end_of_stream(self.player)
+            except Exception:
+                pass
 
     def _on_backend_lost(self, _player, message: str) -> None:
         """后端连接丢失：提示用户（RustBackend 会在后台尝试自愈重启）。"""
