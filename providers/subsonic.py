@@ -358,8 +358,53 @@ class SubsonicProvider(BaseMusicProvider):
         except Exception as exc:
             return ([], str(exc) or exc.__class__.__name__)
 
+    @staticmethod
+    def _absolute_image_url(raw: str) -> str:
+        """把服务端给的封面 URL 规范化为可下载的绝对地址；不可用返回空串。
+
+        - 空串 / 含空白 → 不可用；
+        - 以 `/` 开头 → 按当前服务端基地址补全为绝对地址；
+        - 非 http(s) 的裸字段（如误把 id 填进 URL 字段）→ 不可用。
+        """
+        u = (raw or "").strip()
+        if not u or any(c.isspace() for c in u):
+            return ""
+        if u.startswith(("http://", "https://")):
+            return u
+        if u.startswith("/"):
+            import urllib.parse as _up
+            base = SubsonicProvider._cfg()["url"]
+            return _up.urljoin(base + "/", u.lstrip("/"))
+        return ""
+
+    @staticmethod
+    def _image_url_alive(url: str, timeout: float = 3.0) -> bool:
+        """轻量探测图片 URL 是否真的能取到（只读响应头）。
+
+        为什么需要：Navidrome 在艺术家没有图片时，**仍然**会返回一个
+        格式合法的 `artistImageUrl`（签名 URL），但请求结果是
+        `404 Artwork not found`。若不校验就用，艺术家卡片会一直是空白占位。
+
+        只读 1 字节并立即关闭连接：既确认可用，又不把整张图拉下来。
+        """
+        if not url:
+            return False
+        import urllib.request as _ur
+        try:
+            req = _ur.Request(url, method="GET")
+            with _ur.urlopen(req, timeout=timeout) as resp:
+                if resp.status != 200:
+                    return False
+                ct = (resp.headers.get("Content-Type") or "").lower()
+                if ct and not ct.startswith("image/"):
+                    return False
+                resp.read(1)
+                return True
+        except Exception:
+            return False
+
     def all_artists(self) -> list:
-        """艺术家列表 → [{"id", "name", "album_count"}, ...]。"""
+        """艺术家列表 → [{"id", "name", "album_count", "cover_url"}, ...]。"""
         if not self.is_configured():
             return []
         body = self.get_artists()
@@ -376,37 +421,60 @@ class SubsonicProvider(BaseMusicProvider):
                 if not isinstance(a, dict):
                     continue
                 aid = str(a.get("id", ""))
-                if aid:
-                    # 艺术家封面来源（按可靠性排序）：
-                    #   1) artistImageUrl —— Navidrome 直接给完整图片 URL（可含 token）
-                    #   2) coverArt —— 取封面 id，再拼 getCoverArt URL
-                    # 两者都无 → 空串（前端占位；该艺术家在服务端本就无图）。
-                    _img = str(a.get("artistImageUrl", "") or "")
-                    if _img:
-                        cover_url = _img
-                    else:
-                        cover_id = str(a.get("coverArt", "") or "")
-                        cover_url = self.cover_art_url(cover_id) if cover_id else ""
-                    out.append({
-                        "id": aid,
-                        "name": str(a.get("name", "") or ""),
-                        "album_count": int(a.get("albumCount", 0) or 0),
-                        "cover_url": cover_url,
-                    })
-        # 无封面艺术家：用其「第一首歌封面」兜底（主流客户端做法）。
-        # 代价：每个要 getArtist → getAlbum 两次请求，故只补前 _ARTIST_FALLBACK_MAX
-        # 个（艺术家区块本来就只显示前 30），避免艺术家多时拖慢加载。
-        _missing = [x for x in out if not x.get("cover_url")][:self._ARTIST_FALLBACK_MAX]
-        for x in _missing:
+                if not aid:
+                    continue
+                cover_id = str(a.get("coverArt", "") or "")
+                out.append({
+                    "id": aid,
+                    "name": str(a.get("name", "") or ""),
+                    "album_count": int(a.get("albumCount", 0) or 0),
+                    # 先用「服务端艺术家图 / 艺术家封面」占位，下面再择优替换。
+                    "cover_url": self._absolute_image_url(
+                        str(a.get("artistImageUrl", "") or "")
+                    ) or (self.cover_art_url(cover_id) if cover_id else ""),
+                    # 原始值暂存，供下面校验/兜底（最终不对外暴露）。
+                    "_img": str(a.get("artistImageUrl", "") or ""),
+                    "_cover_id": cover_id,
+                })
+
+        # ---- 封面择优（只处理前 _ARTIST_FALLBACK_MAX 个）----
+        #
+        # 优先级（越靠前越「真实」）：
+        #   1) artistImageUrl —— 真的能下载到时才是艺术家照片；
+        #   2) 第一首歌的专辑封面 —— 服务端没有艺术家图时的最佳替代
+        #      （主流客户端做法），拿到的是**真实**封面图；
+        #   3) coverArt —— 服务端保证有的图，但无图时是接近纯白的通用
+        #      占位（Navidrome 实测：9 位艺术家返回同一张 546B 白图），
+        #      视觉上等同「没有封面」，故排在最后。
+        #
+        # 代价：第 1 步 1 次轻量探测 + 第 2 步 2 次请求 / 每位艺术家。
+        # 艺术家区块首屏只显示前 30 个，故只对前 30 个做，避免大曲库拖慢加载。
+        for x in out[:self._ARTIST_FALLBACK_MAX]:
+            img_raw = x.pop("_img", "")
+            cover_id = x.pop("_cover_id", "")
+            img_url = self._absolute_image_url(img_raw)
+            if img_url and self._image_url_alive(img_url):
+                x["cover_url"] = img_url
+                continue
             try:
                 url = self._artist_first_song_cover(x["id"])
-                if url:
-                    x["cover_url"] = url
             except Exception:
-                continue
+                url = ""
+            if url:
+                x["cover_url"] = url
+            elif cover_id:
+                x["cover_url"] = self.cover_art_url(cover_id)
+            elif not img_url:
+                x["cover_url"] = ""
+        # 未参与择优的条目：清掉临时字段，只保留最稳妥的图。
+        for x in out[self._ARTIST_FALLBACK_MAX:]:
+            x.pop("_img", None)
+            cover_id = x.pop("_cover_id", "")
+            if not x.get("cover_url") and cover_id:
+                x["cover_url"] = self.cover_art_url(cover_id)
         return out
 
-    #: 无封面艺术家补图的最大数量（避免大量额外请求拖慢加载）。
+    #: 参与「封面择优」的最大艺术家数（区块首屏只显示前 30 个）。
     _ARTIST_FALLBACK_MAX = 30
 
     def _artist_first_song_cover(self, artist_id: str) -> str:

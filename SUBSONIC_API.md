@@ -280,14 +280,26 @@ quality 缺失时按 maxBitRate：<=128 → 128，<=320 → 320，其余 → fla
 
 客户端解析细节：`index` 与 `artist` 均接受数组或单对象。
 
-#### 艺术家封面：客户端三级兜底（`all_artists`）
+#### 艺术家封面：客户端四级择优（`all_artists`）
 
-1. **`artistImageUrl`** —— 完整图片 URL，有则直接用；
-2. **`coverArt`** —— 封面 id，拼 `getCoverArt` URL；
-3. **第一首歌的封面** —— `getArtist` → 首张 `getAlbum` → 首曲 `coverArt`。
+按「越靠前越真实」排列，逐级尝试：
 
-> 第 3 级每位艺术家要 2 次请求，故**最多补前 30 个**（`_ARTIST_FALLBACK_MAX`）。
-> 建议后端优先返回 `artistImageUrl` 或 `coverArt`。
+1. **`artistImageUrl`** —— 完整图片 URL。**必须先探测真的能下载**
+   （200 且 `Content-Type: image/*`）才采用；
+2. **第一首歌的专辑封面** —— `getArtist` → 首张 `getAlbum` → 首曲 `coverArt`。
+   服务端没有艺术家图时的最佳替代，拿到的是**真实**专辑封面；
+3. **`coverArt`** —— 封面 id 拼 `getCoverArt`。服务端保证有图，
+   但「无艺术家图」时返回的是接近纯白的通用占位图（视觉上等同没有封面），故排最后；
+4. 都没有 → 空串（前端显示占位）。
+
+> ⚠️ **Navidrome 陷阱**：艺术家没有图片时，`getArtists` **仍会返回格式合法的
+> `artistImageUrl`**（签名 URL），但请求结果是 `404 Artwork not found`。
+> 客户端因此会先发一次轻量请求（只读 1 字节）验证，失败则走第 2 级。
+> 后端若能直接给出可下载的地址，可省掉这次探测。
+>
+> 第 1、2 级合计最多 3 次请求 / 位艺术家，故只对**前 30 位**做择优
+> （`_ARTIST_FALLBACK_MAX`，区块首屏显示数量）；其余仅用 `coverArt`，
+> 避免大曲库拖慢加载。
 
 #### getAlbumList2
 
@@ -559,7 +571,10 @@ is_private = type.strip().lower() in _PRIVATE_BACKEND_TYPES
 ### 6.2 艺术家节点
 
 `getArtists` 的 artist 可附 `artistImageUrl`（完整 URL）或 `coverArt`（封面 id），
-用于避免「三级兜底」的额外请求。适配器返回空索引，故未使用。
+用于避免「四级择优」的额外请求。适配器返回空索引，故未使用。
+
+> 注意：`artistImageUrl` **必须真的能下载**，否则客户端要额外探测一次再回落；
+> 无图时不要返回「看似合法但 404」的地址（Navidrome 就是这样做的）。
 
 ### 6.3 歌单节点
 
