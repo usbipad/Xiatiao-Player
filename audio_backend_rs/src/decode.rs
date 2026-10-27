@@ -44,6 +44,7 @@ fn try_network_symphonia(
     url: &str,
     shared: Arc<Shared>,
     output: Arc<crate::output::AudioOut>,
+    cache_key: Option<&str>,
 ) -> Result<(), String> {
     use symphonia::core::formats::FormatOptions;
     use symphonia::core::formats::probe::Hint;
@@ -53,8 +54,9 @@ fn try_network_symphonia(
     // 独立的停止标志：解码线程退出时随 HttpMediaSource 一起释放，
     // 不依赖 Shared.stop（那是内嵌 AtomicBool，无法共享为 Arc）。
     let http_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let source = crate::http_source::HttpMediaSource::open(url, Arc::clone(&http_stop))
-        .map_err(|e| format!("http source: {e}"))?;
+    let source =
+        crate::http_source::HttpMediaSource::open(url, Arc::clone(&http_stop), cache_key)
+            .map_err(|e| format!("http source: {e}"))?;
     let source_len = source.len();
     let mss = MediaSourceStream::new(Box::new(source), Default::default());
     let mut hint = Hint::new();
@@ -86,14 +88,27 @@ fn path_ext_hint(url: &str) -> Option<&'static str> {
     }
 }
 
-/// 解码线程：用 symphonia 解码并写入输出层。
+/// 解码线程：用 symphonia 解码并写入输出层（无磁盘缓存）。
+#[allow(dead_code)]
 pub(crate) fn run_playback(path: &str, shared: Arc<Shared>,
                 output: Arc<crate::output::AudioOut>) -> Result<(), String> {
+    run_playback_cached(path, shared, output, None)
+}
+
+/// 解码线程：同上，但网络流可挂磁盘缓存（`cache_key` 为 None 表示不缓存）。
+pub(crate) fn run_playback_cached(path: &str, shared: Arc<Shared>,
+                output: Arc<crate::output::AudioOut>,
+                cache_key: Option<String>) -> Result<(), String> {
     // ---- 网络流分流 ----
     // 优先走 symphonia + HTTP Range：无子进程、seek 按 Range 直接跳读。
     // 失败（不支持 Range / 格式不受支持 / 探测失败）时回退 ffmpeg。
     if path.starts_with("http://") || path.starts_with("https://") {
-        match try_network_symphonia(path, Arc::clone(&shared), Arc::clone(&output)) {
+        match try_network_symphonia(
+            path,
+            Arc::clone(&shared),
+            Arc::clone(&output),
+            cache_key.as_deref(),
+        ) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 // 失败可能来自探测阶段；此时尚未写出任何输出，回退安全。

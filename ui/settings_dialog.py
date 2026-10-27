@@ -855,6 +855,88 @@ class SettingsWindow(Adw.PreferencesWindow):
     # ------------------------------------------------------------
     # 播放设置页
     # ------------------------------------------------------------
+    # ---- 在线流缓存 ----
+    @staticmethod
+    def _stream_cache_dir() -> str:
+        """在线流缓存目录（与 Rust 侧 `stream_cache::cache_dir` 一致）。"""
+        from config.settings import xdg_cache_dir
+        return os.path.join(xdg_cache_dir(), "stream")
+
+    def _stream_cache_size(self) -> tuple[int, int]:
+        """返回 (总字节数, 文件数)。"""
+        total = 0
+        count = 0
+        d = self._stream_cache_dir()
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    try:
+                        if e.is_file():
+                            total += e.stat().st_size
+                            count += 1
+                    except OSError:
+                        continue
+        except OSError:
+            return (0, 0)
+        return (total, count)
+
+    def _refresh_stream_cache_row(self) -> None:
+        try:
+            total, count = self._stream_cache_size()
+            row = getattr(self, "_cache_row", None)
+            if row is None:
+                return
+            if total <= 0:
+                row.set_subtitle(_("暂无缓存"))
+            else:
+                row.set_subtitle(_("{size}（共 {n} 个文件，上限 2 GiB，超出按最久未用淘汰）").format(
+                    size=self._human_size(total), n=count))
+        except Exception:
+            log.debug("刷新在线流缓存用量失败", exc_info=True)
+
+    @staticmethod
+    def _human_size(n: int) -> str:
+        v = float(n)
+        for unit in ("B", "KiB", "MiB", "GiB"):
+            if v < 1024 or unit == "GiB":
+                return f"{v:.1f} {unit}" if unit != "B" else f"{int(v)} B"
+            v /= 1024.0
+        return f"{v:.1f} GiB"
+
+    def _on_clear_stream_cache(self, _btn) -> None:
+        """删除全部在线流缓存文件。
+
+        Rust 侧对已打开的文件持有 fd；Linux 上 unlink 后仍可继续读，
+        所以正在播放的曲目不受影响（只是下次不再命中缓存）。
+        """
+        d = self._stream_cache_dir()
+        removed = 0
+        freed = 0
+        try:
+            with os.scandir(d) as it:
+                for e in it:
+                    try:
+                        if not e.is_file():
+                            continue
+                        sz = e.stat().st_size
+                        os.unlink(e.path)
+                        removed += 1
+                        freed += sz
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        try:
+            win = self._get_window()
+            toast = getattr(win, "_toast", None)
+            if callable(toast):
+                toast(_("已清空在线流缓存（释放 {size}）").format(
+                    size=self._human_size(freed)))
+        except Exception:
+            pass
+        log.info("清空在线流缓存：删除 %d 个文件，释放 %d 字节", removed, freed)
+        self._refresh_stream_cache_row()
+
     def _build_playback_page(self) -> None:
         page = Adw.PreferencesPage()
         page.set_title(_("播放设置"))
@@ -881,6 +963,23 @@ class SettingsWindow(Adw.PreferencesWindow):
         row.set_active(cfg.get_bool("remember_volume", True))
         row.connect("notify::active", lambda r, _p: cfg.set_bool("remember_volume", r.get_active()))
         group.add(row)
+
+        # ---- 在线流缓存 ----
+        cache_group = Adw.PreferencesGroup()
+        cache_group.set_title(_("在线流缓存"))
+        cache_group.set_description(
+            _("在线歌曲边播边存到本地，重听或回拖到已缓存位置时无需联网"))
+        page.add(cache_group)
+
+        self._cache_row = Adw.ActionRow()
+        self._cache_row.set_title(_("已用空间"))
+        clear_btn = Gtk.Button(label=_("清空"))
+        clear_btn.add_css_class("flat")
+        clear_btn.set_valign(Gtk.Align.CENTER)
+        clear_btn.connect("clicked", self._on_clear_stream_cache)
+        self._cache_row.add_suffix(clear_btn)
+        cache_group.add(self._cache_row)
+        self._refresh_stream_cache_row()
 
         # ---- 输出 / DSD ----
         out_group = Adw.PreferencesGroup()

@@ -95,8 +95,13 @@ class PlayerCore(GObject.Object):
 
 
     # ---- 播放控制（转发后端） ----
-    def play_file(self, path: str) -> bool:
-        return self._backend.play_file(path)
+    def play_file(self, path: str, cache_key: str = "") -> bool:
+        """开始播放。`cache_key` 非空时启用在线流磁盘缓存。"""
+        try:
+            return self._backend.play_file(path, cache_key=cache_key)
+        except TypeError:
+            # 兼容不支持 cache_key 的后端实现。
+            return self._backend.play_file(path)
 
     def pause(self) -> None:
         self._backend.pause()

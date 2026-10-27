@@ -25,6 +25,7 @@ mod decode_ffmpeg;
 mod deps;
 mod output;
 mod http_source;
+mod stream_cache;
 mod output_alsa;
 mod dsd;
 mod reverb;

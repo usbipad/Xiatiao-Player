@@ -83,6 +83,8 @@ class Field:
     EVENT = "event"
     #: 通用载荷字段
     PATH = "path"
+    #: 磁盘缓存键（在线流用；缺省=不缓存）。
+    CACHE_KEY = "cache_key"
     SECONDS = "seconds"
     VALUE = "value"
     PRESET = "preset"

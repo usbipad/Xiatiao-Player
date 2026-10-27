@@ -175,8 +175,8 @@ impl Engine {
     pub fn handle(&mut self, req: Request) -> Event {
         match req {
             Request::Ping => Event::Pong,
-            Request::Play { path } => {
-                self.start_play(&path);
+            Request::Play { path, cache_key } => {
+                self.start_play_with_cache(&path, cache_key.as_deref());
                 Event::Ack { cmd: "play".into() }
             }
             Request::Pause => {
@@ -336,6 +336,11 @@ impl Engine {
     }
 
     fn start_play(&mut self, path: &str) {
+        self.start_play_with_cache(path, None)
+    }
+
+    /// 带磁盘缓存键的播放（网络流用）。
+    fn start_play_with_cache(&mut self, path: &str, cache_key: Option<&str>) {
         crate::logts!("[engine] START_PLAY: {path}");
         // 递增播放代次：此后发出的 Position 都带新 gen，客户端丢弃旧 gen 的。
         self.shared.play_gen.fetch_add(1, Ordering::SeqCst);
@@ -357,10 +362,12 @@ impl Engine {
         self.output.reset_played_frames(0);
         self.output.resume();
         let p = path.to_string();
+        // 缓存键随线程移动（String，避免借用跨线程）。
+        let ck: Option<String> = cache_key.map(|s| s.to_string());
         let sh = Arc::clone(&shared);
         let out = Arc::clone(&self.output);
         let handle = std::thread::spawn(move || {
-            if let Err(e) = crate::decode::run_playback(&p, sh, out) {
+            if let Err(e) = crate::decode::run_playback_cached(&p, sh, out, ck) {
                 eprintln!("[engine] playback error: {e}");
             }
         });

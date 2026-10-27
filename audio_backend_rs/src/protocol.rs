@@ -7,7 +7,13 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     Ping,
-    Play { path: String },
+    Play {
+        path: String,
+        /// 磁盘缓存键（如 `subsonic:<歌曲id>:lossless`）。缺省=不缓存。
+        /// 不能用 URL 当键：私有后端的直链 token 每次都不同。
+        #[serde(default)]
+        cache_key: Option<String>,
+    },
     Pause,
     Resume,
     Stop,

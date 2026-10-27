@@ -2077,7 +2077,8 @@ class MainWindow(Adw.ApplicationWindow):
                             self.player.expect_position(pos)
                         except Exception as exc:
                             log.debug("expect_position 失败: %s", exc)
-                        if self.player.play_file(url):
+                        if self.player.play_file(
+                                url, cache_key=self._stream_cache_key(cur)):
                             if pos > 0.5:
                                 # 稍等新流就绪再 seek 到原位置。
                                 # 竞态保护（与 _seek_resume 同模式）：若 300ms 内
@@ -3067,6 +3068,41 @@ class MainWindow(Adw.ApplicationWindow):
             log.debug("构造在线 stream_url 失败: %s", exc)
             return ""
 
+    def _stream_cache_key(self, track) -> str:
+        """在线流的磁盘缓存键；本地曲目返回空串（不缓存）。
+
+        形如 `subsonic:<source_id>:<quality>`。
+
+        为什么不用 URL 当键：私有后端的直链带随机 token（每次 play 都变），
+        用它做键会导致缓存永不命中、且无限增长。
+        为什么带 quality：不同档位是**不同的字节流**（转码参数不同），
+        混用会播出错误内容。
+        """
+        try:
+            if getattr(track, "source_type", "") != "subsonic":
+                return ""
+            sid = str(getattr(track, "source_id", "") or "")
+            if not sid:
+                return ""
+            # 与 playable_url 的取值口径保持一致：运行时档位优先，回落配置。
+            q = "lossless"
+            try:
+                from providers.subsonic import _RUNTIME_QUALITY
+                q = _RUNTIME_QUALITY
+            except Exception:
+                q = ""
+            if not q:
+                try:
+                    from config.settings import get_config
+                    from core.quality import DEFAULT_ONLINE_QUALITY
+                    q = get_config().get_str("online_quality", DEFAULT_ONLINE_QUALITY)
+                except Exception:
+                    from core.quality import DEFAULT_ONLINE_QUALITY as _d
+                    q = _d
+            return f"subsonic:{sid}:{q or 'lossless'}"
+        except Exception:
+            return ""
+
     def _row_stream_url(self, row: dict) -> str:
         """从历史/收藏的 DB 行，动态构造在线歌的 stream_url。
 
@@ -3581,7 +3617,8 @@ class MainWindow(Adw.ApplicationWindow):
                 self.player.expect_position(resume_pos)
             except Exception as exc:
                 log.debug("expect_position 失败: %s", exc)
-            started = self.player.play_file(url)
+            started = self.player.play_file(
+                url, cache_key=self._stream_cache_key(track))
             # 首次播放且有恢复位置：流加载后 seek 到恢复处。
             # 后端 play 后流就绪需短暂时间，故延迟一小段再 seek（此时 seek 有效）。
             if started and resume_pos > 0.5:

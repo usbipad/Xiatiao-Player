@@ -515,8 +515,16 @@ class RustBackend(AudioBackend):
     # ------------------------------------------------------------
     # AudioBackend 接口
     # ------------------------------------------------------------
-    def play_file(self, path: str) -> bool:
-        log.info("[API] play_file: %s", path)
+    def play_file(self, path: str, cache_key: str = "") -> bool:
+        """开始播放。
+
+        cache_key：在线流的磁盘缓存键（如 `subsonic:<id>:lossless`）。
+        空 = 不缓存（本地文件、投送、无 key 的调用方）。
+        后端据此把已下载字节落到 `$XDG_CACHE_HOME/xiatiao/stream`，
+        使「重听」与「回拖已下载区间」完全不联网。
+        """
+        log.info("[API] play_file: %s%s", path,
+                 f"（缓存键 {cache_key}）" if cache_key else "")
         if not path:
             self.emit("error-occur", _("播放地址为空"))
             return False
@@ -527,7 +535,10 @@ class RustBackend(AudioBackend):
         # 立即本地进入播放态，UI 按钮能马上响应
         self._state = PlayerState.PLAYING
         self._position = 0.0
-        if not self._send({Field.CMD: Cmd.PLAY, Field.PATH: path}):
+        payload = {Field.CMD: Cmd.PLAY, Field.PATH: path}
+        if cache_key:
+            payload[Field.CACHE_KEY] = cache_key
+        if not self._send(payload):
             # 后端未启动/未连接：命令被丢弃。明确告知用户并回退状态，
             # 避免静默失败后由「卡住检测」给出笼统的「播放失败，已跳过」。
             self._state = PlayerState.STOPPED
