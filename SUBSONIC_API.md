@@ -185,12 +185,41 @@ token = md5(password + salt) 的十六进制小写串
 
 #### Range 是硬要求
 
-播放器网络流走 Rust 侧 `HttpMediaSource`：先用 `Range: bytes=0-0` 探测，
-**要求返回 206 且带 `Content-Range`**，否则判定「不支持 Range」并回退 ffmpeg 子进程
-（仍能播放，但切歌/seek 变慢，且失去断流自动续传能力）。
+播放器网络流走 Rust 侧 `HttpMediaSource`，播放一首曲子会发起**两次** Range 请求：
+
+1. `Range: bytes=0-0` —— 探测是否支持 Range 并取 `Content-Range` 的 `/total` 作为总长度；
+2. `Range: bytes=0-` —— 取数据。
+
+**两次都要求返回 206 且带 `Content-Range`**，否则判定「不支持 Range」并回退 ffmpeg
+子进程（仍能播放，但切歌/seek 变慢，且失去断流自动续传能力）。
+
+seek 时按字节位置直接发 `bytes=<offset>-`（不解码、不丢弃），这也是 Range 必须可靠的
+原因：拖动进度条的响应速度完全取决于这一次请求。
 
 适配器 ✅：`proxyAudio` 透传客户端 `Range`，回传上游状态码与
 `Content-Type` / `Content-Length` / `Content-Range` / `Accept-Ranges`。
+
+#### ⚠️ 性能硬要求：服务端必须复用 HTTP 连接
+
+`proxyAudio` **必须**使用进程级共享的 `http.Client`（共享 `Transport`）。
+
+若每次代理请求都新建 `Transport`，连接池恒为空 → 每个 Range 请求都要重新与 CDN
+做 TCP + TLS 握手。实测（在本机 3200 上游 + 模拟远端源站上做的端到端对比，
+源站对「新建连接」计 1.2 s、对「复用连接」计 50 ms）：
+
+| 播放器 Range 序列 | 源站 TCP 建连 | 点到出声 |
+|---|---|---|
+| 复用连接（共享 Transport） | **1 条** | **1.40 s** |
+| 每次新建 Transport | 3 条 | 3.71 s |
+
+`bytes=0-0` 的响应体只有 1 字节，会被**完整读完**并立即连同连接归还连接池，
+后续的 `bytes=0-` 与尾部探测都直接复用这条连接——这是省下 2 个往返的关键。
+（Go 的 `Transport` 只有在 body 被读到 EOF 时才回收连接；播放中途 seek 放弃旧 body
+的那些请求无法复用，属不可避免的代价。）
+
+> 反向结论：**不要**为了「省一次往返」把探测与首读合并成单次 `bytes=0-`。
+> 实测合并后首块 body 会长期持有连接，尾部探测反而被迫新建连接，建连数从 1 升到 2，
+> 端到端从 1.40 s 劣化到 2.50 s。
 
 #### 上游直链失效与 404
 
