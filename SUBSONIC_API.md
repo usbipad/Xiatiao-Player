@@ -686,13 +686,16 @@ toast 提示「所选 X 不可用，实际为 Y」。标准后端无「所选档
 ### 9.1 缓存键与目录
 
 ```
-键：[subsonic:<source_id>:<quality> → 非 subsonic 源则用 url] + 歌 id
+键：subsonic:<服务器指纹>:<歌曲 id>:<quality>
+    （非 subsonic 源则直接用播放 URL）
 目录：$XDG_CACHE_HOME/xiatiao/stream/   （回退 ~/.cache/xiatiao/stream/）
 文件：<stem>.data（稀疏文件，长度 = 音频总字节数） + <stem>.json（区间表）
 ```
 
-- `source_id` 变化（换服务器）或 `quality` 档位变化 → 缓存键变化 → 自然隔离，
-  不会把 128k 的数据当成无损使用。
+- **服务器指纹**是配置里 `subsonic_url` 的 SHA-1 前 8 位。必需：`source_id`
+  是**歌曲 id**而非服务器 id，两家后端映射同一曲库时歌曲 id 可能完全一样，
+  只按 id 做键会把 A 服务器的字节当成 B 的缓存。
+- `quality` 变化 → 缓存键变化 → 自然隔离，不会把 128k 的数据当成无损使用。
 - 文件名对键做十六进制转义，超长键退化为 FNV-1a 哈希。
 
 ### 9.2 区间表（为什么必须支持 Range）

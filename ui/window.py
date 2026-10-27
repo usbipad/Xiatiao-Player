@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from typing import Dict
@@ -3071,12 +3072,15 @@ class MainWindow(Adw.ApplicationWindow):
     def _stream_cache_key(self, track) -> str:
         """在线流的磁盘缓存键；本地曲目返回空串（不缓存）。
 
-        形如 `subsonic:<source_id>:<quality>`。
+        形如 `subsonic:<服务器指纹>:<歌曲 id>:<quality>`。
 
         为什么不用 URL 当键：私有后端的直链带随机 token（每次 play 都变），
         用它做键会导致缓存永不命中、且无限增长。
         为什么带 quality：不同档位是**不同的字节流**（转码参数不同），
         混用会播出错误内容。
+        为什么带服务器指纹：`source_id` 是**歌曲 id**，不是服务器 id；两家
+        上游都映射同一曲库时歌曲 id 可能完全相同，只按 id 做键会把 A 服务器
+        的文件当成 B 的缓存。
         """
         try:
             if getattr(track, "source_type", "") != "subsonic":
@@ -3099,9 +3103,19 @@ class MainWindow(Adw.ApplicationWindow):
                 except Exception:
                     from core.quality import DEFAULT_ONLINE_QUALITY as _d
                     q = _d
-            return f"subsonic:{sid}:{q or 'lossless'}"
+            return f"subsonic:{self._server_fingerprint()}:{sid}:{q or 'lossless'}"
         except Exception:
             return ""
+
+    @staticmethod
+    def _server_fingerprint() -> str:
+        """当前后端地址的短指纹（换服务器时缓存自然隔离）。"""
+        try:
+            from config.settings import get_config
+            url = get_config().get_str("subsonic_url", "").rstrip("/")
+        except Exception:
+            url = ""
+        return hashlib.sha1(url.encode("utf-8")).hexdigest()[:8] if url else "nourl"
 
     def _row_stream_url(self, row: dict) -> str:
         """从历史/收藏的 DB 行，动态构造在线歌的 stream_url。
