@@ -3070,13 +3070,18 @@ class MainWindow(Adw.ApplicationWindow):
             return ""
 
     def _stream_cache_key(self, track) -> str:
-        """在线流的磁盘缓存键；本地曲目返回空串（不缓存）。
+        """在线流的磁盘缓存键；返回空串表示**不缓存**。
 
-        形如 `subsonic:<服务器指纹>:<歌曲 id>:<quality>`。
+        键形如 `subsonic:<服务器指纹>:<歌曲 id>:<quality>`。
 
-        为什么不用 URL 当键：私有后端的直链带随机 token（每次 play 都变），
-        用它做键会导致缓存永不命中、且无限增长。
-        为什么带 quality：不同档位是**不同的字节流**（转码参数不同），
+        只有**私有协议后端**才缓存：
+          - 私有后端的直链带随机 token（每次 play 都变），本地缓存能覆盖
+            「重听 / 回拖 / 断点续播」，收益明确；
+          - 标准 Subsonic（Navidrome 等）保持原有直连流式播放，不落盘。
+            标准后端的 `stream?id=..&maxBitRate=0` 本身稳定，交给服务端
+            处理 Range 即可，无需客户端再存一份。
+
+        为什么带 quality：私有后端不同档位是**不同的字节流**（转码参数不同），
         混用会播出错误内容。
         为什么带服务器指纹：`source_id` 是**歌曲 id**，不是服务器 id；两家
         上游都映射同一曲库时歌曲 id 可能完全相同，只按 id 做键会把 A 服务器
@@ -3084,6 +3089,9 @@ class MainWindow(Adw.ApplicationWindow):
         """
         try:
             if getattr(track, "source_type", "") != "subsonic":
+                return ""
+            # 标准后端不缓存（保持原有流式播放行为）。
+            if not getattr(track, "is_private_backend", False):
                 return ""
             sid = str(getattr(track, "source_id", "") or "")
             if not sid:
