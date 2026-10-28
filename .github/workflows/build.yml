@@ -11,8 +11,23 @@ permissions:
 
 jobs:
   deb:
-    name: Build .deb (Debian 12 baseline)
-    runs-on: ubuntu-22.04
+    name: Build .deb (${{ matrix.deb_arch }})
+    # 双架构矩阵：
+    #   - amd64 用 ubuntu-22.04；arm64 用 ubuntu-24.04-arm（GitHub 提供的
+    #     原生 arm64 托管 runner，公开仓库免费）。**不用 QEMU 模拟**——
+    #     交叉/模拟构建 Rust + bindgen 慢一个数量级，且 ring/alsa 等
+    #     依赖在模拟下容易踩到工具链坑。
+    #   - container: debian:12 会自动拉取与 runner 同架构的镜像，
+    #     因此两者都在 glibc 2.36 基线内构建，产物一致。
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            deb_arch: amd64
+          - runner: ubuntu-24.04-arm
+            deb_arch: arm64
+    runs-on: ${{ matrix.runner }}
     container:
       image: debian:12
     steps:
@@ -46,17 +61,28 @@ jobs:
       - name: Collect artifact
         run: |
           mkdir -p dist
-          cp ../xiatiao-player_*_amd64.deb dist/ 2>/dev/null || true
+          # 通用架构通配：产出 xiatiao-player_<版本>_<deb架构>.deb。
+          # 注意排除 dbgsym（文件名以 xiatiao-player-dbgsym_ 开头，不匹配）。
+          cp ../xiatiao-player_[0-9]*.deb dist/ 2>/dev/null || true
           ls -la dist/
 
       - uses: actions/upload-artifact@v5
         with:
-          name: deb-package
+          name: deb-package-${{ matrix.deb_arch }}
           path: dist/*.deb
 
   rpm:
-    name: Build .rpm (Fedora)
-    runs-on: ubuntu-22.04
+    name: Build .rpm (${{ matrix.rpm_arch }})
+    # 同 deb：用原生 runner，不模拟。
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            rpm_arch: x86_64
+          - runner: ubuntu-24.04-arm
+            rpm_arch: aarch64
+    runs-on: ${{ matrix.runner }}
     container:
       image: fedora:latest
     steps:
@@ -88,12 +114,13 @@ jobs:
       - name: Collect artifact
         run: |
           mkdir -p dist
-          cp ~/rpmbuild/RPMS/x86_64/*.rpm dist/ 2>/dev/null || true
+          # 架构目录随 runner 变化（x86_64 / aarch64），用通配。
+          cp ~/rpmbuild/RPMS/*/*.rpm dist/ 2>/dev/null || true
           ls -la dist/
 
       - uses: actions/upload-artifact@v5
         with:
-          name: rpm-package
+          name: rpm-package-${{ matrix.rpm_arch }}
           path: dist/*.rpm
 
   release:
@@ -108,6 +135,9 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           path: artifacts
+          # 各架构产物是独立 artifact（deb-package-amd64 / rpm-package-aarch64 …），
+          # 合并到同一目录，避免发布步骤里写死架构路径。
+          merge-multiple: true
 
       - name: Determine release notes
         id: notes
@@ -117,11 +147,14 @@ jobs:
             echo "file=release/RELEASE_NOTES_${VER}.md" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: List artifacts
+        run: ls -la artifacts/
+
       - name: Publish
         uses: softprops/action-gh-release@v3
         with:
           name: Xiatiao Player ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.file }}
           files: |
-            artifacts/deb-package/xiatiao-player_[0-9]*.deb
-            artifacts/rpm-package/xiatiao-player-[0-9]*.rpm
+            artifacts/xiatiao-player_[0-9]*.deb
+            artifacts/xiatiao-player-[0-9]*.rpm

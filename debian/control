@@ -8,7 +8,9 @@ Homepage: https://github.com/usbipad/xiatiao-player
 Rules-Requires-Root: no
 
 Package: xiatiao-player
-Architecture: amd64
+# 含编译型 Rust 后端 → 架构相关，可覆盖任意已构建的架构
+# （当前发布 amd64 / arm64；见 .github/workflows/build.yml 的矩阵）。
+Architecture: any
 Depends: ${misc:Depends},
          python3 (>= 3.10),
          python3-gi,

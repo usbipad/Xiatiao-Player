@@ -57,9 +57,10 @@
 
 #### 方式一：Debian 包（推荐）
 
-从 Releases 下载 .deb 后：
+从 Releases 下载对应架构的 .deb（`amd64` = 普通 PC，`arm64` = ARM64 设备）：
 
-    apt install ./xiatiao-player_1.0.6_amd64.deb
+    apt install ./xiatiao-player_1.0.7_amd64.deb     # x86_64
+    apt install ./xiatiao-player_1.0.7_arm64.deb     # ARM64 / aarch64
 
 （需要管理员权限；安装后程序在 /usr/lib/xiatiao-player/，启动器 /usr/bin/xiatiao-player，也可在应用菜单中找到「虾条播放器」。）
 
@@ -68,7 +69,8 @@
 需先启用 **RPM Fusion**（依赖完整 ffmpeg 以支持 DSD 解码）：
 
     sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
-    sudo dnf install ./xiatiao-player-1.0.6-1.fc44.x86_64.rpm
+    sudo dnf install ./xiatiao-player-1.0.7-1.fcXX.x86_64.rpm    # x86_64
+    sudo dnf install ./xiatiao-player-1.0.7-1.fcXX.aarch64.rpm   # ARM64
 
 #### 方式三：从源码运行
 
@@ -140,9 +142,11 @@ A modern player that is local-first yet also supports online sources:
 
 #### Option 1: Debian package (recommended)
 
-Download the `.deb` from Releases, then:
+Download the `.deb` for your architecture from Releases
+(`amd64` = regular PC, `arm64` = ARM64 devices), then:
 
-    sudo apt install ./xiatiao-player_1.0.6_amd64.deb
+    sudo apt install ./xiatiao-player_1.0.7_amd64.deb     # x86_64
+    sudo apt install ./xiatiao-player_1.0.7_arm64.deb     # ARM64 / aarch64
 
 (Requires admin rights. Installed to /usr/lib/xiatiao-player/, launcher at /usr/bin/xiatiao-player, also available in the app menu as "Xiatiao Player".)
 
@@ -151,7 +155,8 @@ Download the `.deb` from Releases, then:
 Requires **RPM Fusion** (for the full ffmpeg with DSD decoding):
 
     sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
-    sudo dnf install ./xiatiao-player-1.0.6-1.fc44.x86_64.rpm
+    sudo dnf install ./xiatiao-player-1.0.7-1.fcXX.x86_64.rpm    # x86_64
+    sudo dnf install ./xiatiao-player-1.0.7-1.fcXX.aarch64.rpm   # ARM64
 
 #### Option 3: Run from source
 
