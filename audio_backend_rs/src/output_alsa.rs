@@ -562,6 +562,11 @@ impl AlsaOutput {
         self.shared.state.store(STATE_DRAINING, Ordering::Release);
     }
 
+    /// 环形缓冲容量（帧）。供解码线程计算 seek 后的预填目标。
+    pub fn ring_capacity_frames(&self) -> usize {
+        self.shared.ring.lock().map(|r| r.frames_cap).unwrap_or(0)
+    }
+
     /// seek 定位后、开始写新数据前：清 ring + 进入 Refilling。
     pub fn mark_refilling(&self) {
         self.shared.ring.lock().unwrap_or_else(|e| e.into_inner()).clear();

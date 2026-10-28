@@ -219,6 +219,13 @@ impl Engine {
                 crate::logts!("[engine] SEEK → {:.3}s", seconds);
                 let ms = (seconds.max(0.0) * 1000.0) as u64;
                 self.shared.seek_target_ms.store(ms, Ordering::SeqCst);
+                // 立刻让输出进入 Draining（RT 淡出到静音）。
+                //
+                // 不做这一步的后果：定位本身（do_seek）要走网络，实测可达
+                // 数百毫秒；这段时间解码线程不写 ring，而输出仍是 Playing，
+                // ring 被抽干后触发欠载 →「补 hold」把最后一帧当直流电平反复
+                // 输出 → 听感是 seek 之后先出现一段「磁带破损」样的断续杂音。
+                self.output.begin_seek();
                 // 关键：中断可能卡在 output.write 的解码线程（ring 满时 sleep
                 // 重试，不响应 seek）。置 abort_write 让它立即返回主循环，
                 // 主循环顶部会检测 seek 并处理（begin_seek → mark_refilling ...）。

@@ -389,6 +389,11 @@ impl PipewireOutput {
     }
 
     /// 重置播放帧计数（切歌 / seek 时调用）。
+    /// 环形缓冲容量（帧）。供解码线程计算 seek 后的预填目标。
+    pub fn ring_capacity_frames(&self) -> usize {
+        self.shared.ring.lock().map(|r| r.frames_cap).unwrap_or(0)
+    }
+
     pub fn reset_played_frames(&self, value: u64) {
         self.shared.played_frames.store(value, Ordering::SeqCst);
     }
@@ -718,6 +723,14 @@ impl AudioOut {
         match self {
             AudioOut::Pipewire(p) => p.flush(),
             AudioOut::Alsa(a) => a.flush(),
+        }
+    }
+
+    /// 环形缓冲容量（帧）；0 表示不可用（调用方应跳过等待）。
+    pub fn ring_capacity_frames(&self) -> usize {
+        match self {
+            AudioOut::Pipewire(p) => p.ring_capacity_frames(),
+            AudioOut::Alsa(a) => a.ring_capacity_frames(),
         }
     }
 

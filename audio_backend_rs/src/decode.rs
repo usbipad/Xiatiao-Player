@@ -346,6 +346,12 @@ fn run_playback_with_format(
     // 若声明在 loop 内，seek 后 decode 返回 Err → continue 会把它重置为 false，
     // mark_playing 永不调用 → 输出卡在 Refilling → 静音。
     let mut just_seeked = false;
+    // seek 后已写入 ring 的帧数（用于「填够再出声」）。
+    let mut prefill_written: u64 = 0;
+    // seek 后预填目标（帧）。0 表示不等待（输出不支持容量查询）。
+    let mut prefill_target: u64 = 0;
+    // seek 后开始预填的时刻，用于超时兜底。
+    let mut prefill_start = std::time::Instant::now();
     loop {
         if shared.stop.load(Ordering::SeqCst) {
             break;
@@ -378,6 +384,18 @@ fn run_playback_with_format(
                 output.begin_seek();
                 output.mark_refilling();
                 just_seeked = true;
+                // 预填：seek 后环形缓冲是空的，而一次 RT 回调可能要取走上百
+                // 毫秒的数据（实测 44.1k 下 want=12288 帧 ≈ 278ms）。若只写
+                // 第一个数据包（≈93ms）就恢复播放，网络稍慢就会连续欠载，
+                // 「补 hold」把上一帧当直流电平反复输出 → 听感是「磁带破损」
+                // 般的断续杂音。故先填够一半容量，再由 RT 淡入恢复播放。
+                let cap = output.ring_capacity_frames() as u64;
+                // 取容量的一半而非接近满：写入是按「数据包」整块 push 的，
+                // 目标一旦接近容量上限，最后一块可能塞不进（ring 满 → write
+                // 阻塞等 RT 消费，而 RT 在 Refilling 下不消费 → 死等到超时）。
+                prefill_target = cap / 2;
+                prefill_written = 0;
+                prefill_start = std::time::Instant::now();
                 frames_written = (seek_ms as f64 / 1000.0 * in_rate as f64) as u64;
                 output.reset_played_frames(frames_written);
                 shared.frames_out.store(frames_written, Ordering::SeqCst);
@@ -528,12 +546,26 @@ fn run_playback_with_format(
                         if frames_written < 100000 {
                         }
                     }
-                    // seek 后第一块新数据写完：恢复 Playing。
+                    // seek 后恢复 Playing：需先填够预填目标，避免开局连续欠载。
                     // 放在 if/else 之外：pwcat 分支不经过 output.write，
                     // 若只在 else 清除，just_seeked 永为 true → 状态机卡 Refilling。
                     if just_seeked {
-                        output.mark_playing();
-                        just_seeked = false;
+                        prefill_written += pcm.len() as u64 / ch.max(1) as u64;
+                        // 兜底：曲目过短（到末尾）或网络太慢（4s 还没填够）时
+                        // 不能再等，否则会一直静音。
+                        let out_of_audio = shared.eof.load(Ordering::SeqCst);
+                        let timed_out = prefill_start.elapsed() > std::time::Duration::from_secs(4);
+                        if prefill_written >= prefill_target || out_of_audio || timed_out {
+                            if prefill_written < prefill_target {
+                                crate::logts!(
+                                    "[engine] seek 预填提前结束：{} / {} 帧（{}）",
+                                    prefill_written, prefill_target,
+                                    if out_of_audio { "已到末尾" } else { "等待超时" }
+                                );
+                            }
+                            output.mark_playing();
+                            just_seeked = false;
+                        }
                     }
             }
             Err(_) => continue,
