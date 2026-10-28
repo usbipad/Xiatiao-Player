@@ -52,6 +52,18 @@ impl HttpMediaSource {
         stop: Arc<AtomicBool>,
         cache_key: Option<&str>,
     ) -> io::Result<Self> {
+        // 探测专用 agent：超时要**长于**服务端自己的上游超时。
+        //
+        // 代理型后端（如 Subsonic 适配器）拿不到缓存直链时会同步去上游
+        // 换链，其自身超时常见为 15s；若这里只等 8s，慢一次就必然探测
+        // 失败、被迫回退 ffmpeg（而 ffmpeg 又走同一条慢路径），用户听到的
+        // 就是「卡住没声音」。实测 192.168.1.139:4535 冷启动 5~43s。
+        let probe_agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(10))
+            .timeout_read(Duration::from_secs(20))
+            .timeout_write(Duration::from_secs(20))
+            .build();
+
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(10))
             // 单次 read 超时：服务器「连接活着但不给数据」时（CDN 限速/挂起）
@@ -99,7 +111,7 @@ impl HttpMediaSource {
         }
 
         // 探测：Range: bytes=0-0 拿 Content-Range 总长。
-        let resp = agent
+        let resp = probe_agent
             .get(url)
             .set("Range", "bytes=0-0")
             .call()

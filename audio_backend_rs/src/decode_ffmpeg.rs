@@ -33,6 +33,11 @@ fn push_input_args(cmd: &mut std::process::Command, path: &str) {
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "2",
             "-reconnect_at_eof", "0",
+            // 读写超时（微秒）：默认 0 = 永不超时。代理型后端「接了连接
+            // 却不给数据」时（上游换链卡住），ffmpeg 会无限期静默等待，
+            // 表现为「状态显示播放中但没有声音」，且永远不会跳到下一首。
+            // 实测 192.168.1.139:4535 可静默 >40s。
+            "-rw_timeout", "15000000",
         ]);
     }
     cmd.arg("-i").arg(path);
