@@ -16,6 +16,7 @@ xiatiao-player (1.0.7) unstable; urgency=medium
     - seek 后先静音并填够缓冲再出声，消除「磁带破损」般的断续
       杂音。
   * 适配器音频代理复用连接，减少每次 seek 的建连开销。
+  * 打包：新增 ARM64（arm64 / aarch64）产物，与 x86_64 同源同基线构建。
 
  -- usbipad <1495941192+usbipad@users.noreply.github.com>  Wed, 28 Oct 2026 20:25:00 +0800
 

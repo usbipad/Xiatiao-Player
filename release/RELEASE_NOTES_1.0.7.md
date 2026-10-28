@@ -43,17 +43,28 @@
 
 ## 安装
 
+本次起同时提供 **x86_64（amd64）** 与 **ARM64（arm64 / aarch64）** 两种架构的包。
+
 ### Debian / Ubuntu
 
+    # x86_64
     sudo apt install ./xiatiao-player_1.0.7_amd64.deb
+    # ARM64（树莓派 64 位系统、ARM 服务器、Asahi Linux 等）
+    sudo apt install ./xiatiao-player_1.0.7_arm64.deb
 
 ### Fedora
 
+    # x86_64
     sudo dnf install ./xiatiao-player-1.0.7-1.fcXX.x86_64.rpm
+    # ARM64
+    sudo dnf install ./xiatiao-player-1.0.7-1.fcXX.aarch64.rpm
 
 ## 兼容性
 
-- **deb**：Rust 后端最高只需 **GLIBC_2.34**，覆盖 Debian 12 / 13 / 14 与
-  Ubuntu 22.04 / 24.04 及更新。
+- **deb**：Rust 后端最高只需 **GLIBC_2.34**，同架构下覆盖
+  Debian 12 / 13 / 14 与 Ubuntu 22.04 / 24.04 及更新。
 - **rpm**：Fedora 专用（需先启用 RPM Fusion 以获取完整 ffmpeg）。
+- **ARM 支持**：两种架构均由 GitHub Actions 在原生 runner 上构建
+  （不做模拟），Debian 包统一在 Debian 12 基线上产出。
+  暂不提供 32 位 armhf。
 - **DSD 输出**：实验性功能，需选择具体 ALSA 输出设备才能尝试直通。
