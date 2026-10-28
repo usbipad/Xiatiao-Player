@@ -47,6 +47,13 @@ const DEFAULT_QUOTA_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// 丢这么一点，重播时补下即可。
 const SAVE_INTERVAL_BYTES: u64 = 256 * 1024;
 
+/// 缓存格式版本。改动**字节与偏移的对应关系**时必须递增，让旧缓存自动作废。
+///
+/// v1 → v2：v1 存在「缓存命中后网络流光标未跟进」的缺陷，会把网络当前位置
+/// 的字节写到错误偏移，听感为「不同片段拼接」。v1 写下的数据不可信，
+/// 必须整份丢弃重下。
+const CACHE_VERSION: u32 = 2;
+
 /// 缓存目录：`$XDG_CACHE_HOME/xiatiao/stream`（与 Python 侧
 /// `config.settings.xdg_cache_dir() + "/stream"` 保持一致）。
 pub(crate) fn cache_dir() -> PathBuf {
@@ -105,6 +112,9 @@ fn file_stem(key: &str) -> String {
 /// sidecar 内容。
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Meta {
+    /// 格式版本；旧 sidecar 没有该字段，serde 默认 0 → 自动判为过期。
+    #[serde(default)]
+    v: u32,
     key: String,
     len: u64,
     /// 已覆盖区间 `[start, end)`，按 start 升序且互不重叠。
@@ -212,9 +222,9 @@ impl StreamCache {
         let data_path = dir.join(format!("{stem}.data"));
         let meta_path = dir.join(format!("{stem}.json"));
 
-        // 旧缓存长度不一致 → 弃用。
-        if let Some(old) = Self::load_meta(key) {
-            if old.len != len {
+        // 旧缓存版本/长度不一致 → 弃用并删除文件。
+        if let Some(old) = Self::load_meta_any(key) {
+            if old.v != CACHE_VERSION || old.len != len {
                 let _ = fs::remove_file(&data_path);
                 let _ = fs::remove_file(&meta_path);
             }
@@ -256,14 +266,21 @@ impl StreamCache {
         Some(me)
     }
 
-    fn load_meta(key: &str) -> Option<Meta> {
+    /// 读取 sidecar，**不做版本校验**（供清理旧版本用）。
+    fn load_meta_any(key: &str) -> Option<Meta> {
         let p = cache_dir().join(format!("{}.json", file_stem(key)));
         let raw = fs::read_to_string(p).ok()?;
         serde_json::from_str::<Meta>(&raw).ok()
     }
 
+    /// 读取 sidecar；版本不符视为不存在（旧格式数据不再可信）。
+    fn load_meta(key: &str) -> Option<Meta> {
+        Self::load_meta_any(key).filter(|m| m.v == CACHE_VERSION)
+    }
+
     fn save_meta(&mut self) {
         let meta = Meta {
+            v: CACHE_VERSION,
             key: self.key.clone(),
             len: self.len,
             ranges: self.ranges.clone(),

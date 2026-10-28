@@ -30,13 +30,24 @@ use std::time::Duration;
 
 use crate::stream_cache::StreamCache;
 
+/// 一条已打开的网络响应体 + 它下一个字节在音频中的逻辑位置。
+///
+/// `pos` 是正确性的关键：缓存命中时 `HttpMediaSource::pos` 会跳进，
+/// 而响应体自己的光标不会跟着走。若不记录并据此对齐，后续从网络读到的
+/// 字节会被当成「当前位置」的数据写回缓存、送给解码器，造成
+/// 「声音像不同片段拼起来」。
+struct Body {
+    reader: Box<dyn Read + Send>,
+    pos: u64,
+}
+
 /// 基于 HTTP Range 的只读媒体源。
 pub(crate) struct HttpMediaSource {
     agent: ureq::Agent,
     url: String,
     pos: u64,
     len: u64,
-    body: Mutex<Option<Box<dyn Read + Send>>>,
+    body: Mutex<Option<Body>>,
     /// 外部停止标志：为真时 read 立即返回 0，让解码线程尽快退出。
     stop: Arc<AtomicBool>,
     /// 磁盘缓存（None = 未启用 / 不可用）。
@@ -183,8 +194,50 @@ impl HttpMediaSource {
                 self.cache = None;
             }
         }
+        // 响应体的逻辑起点：正常 206 从 pos 开始；若服务端忽略 Range 返回
+        // 200（整文件），则从 0 开始，多出来的前缀由 align_body 前跳丢弃。
+        let start = if status == 200 { 0 } else { self.pos };
         let mut guard = self.body.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(Box::new(resp.into_reader()));
+        *guard = Some(Body {
+            reader: Box::new(resp.into_reader()),
+            pos: start,
+        });
+        Ok(())
+    }
+
+    /// 保证已打开的网络流光标与 `self.pos` 一致。
+    ///
+    /// 缓存命中会让 `self.pos` 跳进，而响应体光标不动；不对齐就会把
+    /// 「网络流当前位置」的字节当成 `self.pos` 处的数据。能前跳就前跳
+    /// （不重连），需要倒退（不可能）就丢弃，下次 read 重新发 Range。
+    fn align_body(&mut self) -> io::Result<()> {
+        let mut guard = self.body.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut body) = guard.take() else {
+            return Ok(());
+        };
+        if body.pos == self.pos {
+            *guard = Some(body);
+            return Ok(());
+        }
+        if body.pos > self.pos {
+            // 网络流不能倒流：丢弃（已 take 走，调用方会重新 open_from_pos）。
+            return Ok(());
+        }
+        let mut skip = self.pos - body.pos;
+        let mut scratch = vec![0u8; 65536];
+        while skip > 0 {
+            let want = skip.min(scratch.len() as u64) as usize;
+            match body.reader.read(&mut scratch[..want]) {
+                // 读空/出错：丢弃这条流，交由调用方重开。
+                Ok(0) => return Ok(()),
+                Ok(n) => {
+                    skip -= n as u64;
+                    body.pos += n as u64;
+                }
+                Err(_) => return Ok(()),
+            }
+        }
+        *guard = Some(body);
         Ok(())
     }
 }
@@ -212,6 +265,9 @@ impl Read for HttpMediaSource {
             }
         }
         // ---- 2) 缓存未覆盖：走网络 ----
+        // 先对齐光标：缓存命中过若干字节后，网络流仍停在旧位置，
+        // 不对齐就会把旧位置的字节当成当前位置的数据（听感为「片段拼接」）。
+        self.align_body()?;
         {
             let guard = self.body.lock().unwrap_or_else(|e| e.into_inner());
             if guard.is_none() {
@@ -221,13 +277,17 @@ impl Read for HttpMediaSource {
         }
         let start = self.pos;
         let mut guard = self.body.lock().unwrap_or_else(|e| e.into_inner());
-        let n = match guard.as_mut().unwrap().read(buf) {
+        let body = guard.as_mut().unwrap();
+        let n = match body.reader.read(buf) {
             Ok(0) => {
-                // 读到 0 表示这条响应体已耗尽或被对端关闭。丢弃死连接：
-                // 下次 read 会按当前 pos 重新发起 Range 请求续传，而不是
-                // 一直对着已关闭的连接读到 0/错误、卡在重试循环里。
+                // 未到文件末尾却读到 0：这条响应体异常结束。丢弃死连接并
+                // 报错（而不是返回 Ok(0)）——返回 0 会被解码器当成 EOF，
+                // 导致本曲提前「播完」；报错则走上层重试，按当前 pos 续传。
                 *guard = None;
-                return Ok(0);
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!("http body ended early at {start}/{}", self.len),
+                ));
             }
             Ok(n) => n,
             Err(e) => {
@@ -237,6 +297,7 @@ impl Read for HttpMediaSource {
                 return Err(e);
             }
         };
+        body.pos += n as u64;
         drop(guard);
         // ---- 3) 落盘（边拉边存）----
         if let Some(c) = self.cache.as_mut() {
