@@ -22,6 +22,13 @@
 //! seek 只改 `pos`，**不清缓存**——这正是它相对「连接复用」的价值：
 //! 播放器 seek 时会放弃当前响应体，Go/ureq 的连接只能关闭，回到已下载
 //! 位置一定得重新建连；而本地文件没有这个问题。
+//!
+//! ## 整曲预取（P4）
+//!
+//! 上面那条路径是「按需」的：播到哪存到哪。只听半首就切走，缓存里就
+//! 只有半首。故 `open` 成功后另起一个预取线程（`spawn_prefetch`），
+//! **不限速**地把整首从首个缺口按序拉到 EOF，与解码线程共享同一份缓存。
+//! 这样即使只听了一会儿，整首也已落盘，下次完整离线重听。
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,7 +58,9 @@ pub(crate) struct HttpMediaSource {
     /// 外部停止标志：为真时 read 立即返回 0，让解码线程尽快退出。
     stop: Arc<AtomicBool>,
     /// 磁盘缓存（None = 未启用 / 不可用）。
-    cache: Option<StreamCache>,
+    /// 主动预取线程与解码线程共享同一份，Mutex 串行化对稀疏文件与
+    /// sidecar 区间的读写（字节相同、幂等，无竞争损坏）。
+    cache: Option<Arc<Mutex<StreamCache>>>,
 }
 
 impl HttpMediaSource {
@@ -96,7 +105,7 @@ impl HttpMediaSource {
                     len,
                     body: Mutex::new(None),
                     stop,
-                    cache: Some(cache),
+                    cache: Some(Arc::new(Mutex::new(cache))),
                 });
             }
         }
@@ -110,6 +119,8 @@ impl HttpMediaSource {
                 len as f64 / 1048576.0,
                 key = cache_key.unwrap_or_default()
             );
+            let shared = Arc::new(Mutex::new(cache));
+            spawn_prefetch(url, Arc::clone(&stop), Arc::clone(&shared));
             return Ok(Self {
                 agent,
                 url: url.to_string(),
@@ -117,7 +128,7 @@ impl HttpMediaSource {
                 len,
                 body: Mutex::new(None),
                 stop,
-                cache: Some(cache),
+                cache: Some(shared),
             });
         }
 
@@ -141,13 +152,16 @@ impl HttpMediaSource {
                 format!("range unsupported: status={status} len={len}"),
             ));
         }
-        let cache = cache_key.and_then(|k| StreamCache::open(k, len));
-        if let Some(c) = cache.as_ref() {
+        let cache = cache_key.and_then(|k| StreamCache::open(k, len)).map(|c| {
             let cov = c.covered();
             if cov > 0 {
                 crate::logts!("[cache] 已有 {:.1}/{:.1} MiB，继续续传",
                     cov as f64 / 1048576.0, len as f64 / 1048576.0);
             }
+            Arc::new(Mutex::new(c))
+        });
+        if let Some(shared) = cache.as_ref() {
+            spawn_prefetch(url, Arc::clone(&stop), Arc::clone(shared));
         }
         Ok(Self {
             agent,
@@ -242,6 +256,86 @@ impl HttpMediaSource {
     }
 }
 
+impl Drop for HttpMediaSource {
+    fn drop(&mut self) {
+        // 解码结束（播完/停止/切歌）时通知预取线程退出，避免它继续为
+        // 已被放弃的曲目占带宽/磁盘。
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// 主动预取：点播后后台把整首曲目顺序拉完，写入与解码线程共享的缓存。
+///
+/// 解码线程「边播边读」只会覆盖已播放区间；这里从首个缺口按序拉到 EOF，
+/// 使「只听一半就切走」的曲目也能形成完整缓存，下次完整离线重听。
+/// 与解码线程并发写同一份 StreamCache（Mutex 串行化），字节相同、幂等。
+///
+/// **不限速**：不做任何 sleep/限流，能拉多快拉多快。预取走的是独立
+/// HTTP 连接，与解码线程的连接由内核公平调度，不会让「边播」饿着；
+/// 且预取填的是解码线程尚未读到的区间，命中后解码线程反而零网络。
+fn spawn_prefetch(url: &str, stop: Arc<AtomicBool>, cache: Arc<Mutex<StreamCache>>) {
+    let url = url.to_string();
+    std::thread::spawn(move || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(10))
+            .timeout_read(std::time::Duration::from_secs(20))
+            .build();
+        let len = cache.lock().map(|c| c.len()).unwrap_or(0);
+        if len == 0 {
+            return;
+        }
+        // 1 MiB 一块：减少 Range 请求次数（每次请求都要重新建连/握手）。
+        // 不限速：整首有多少拉多少，尽量在用户听完前把余量补齐。
+        // 与解码线程抢带宽由内核按连接公平调度，解码线程读的是自己的
+        // Range 连接，不会因预取而拿不到数据。
+        let mut buf = vec![0u8; 1024 * 1024];
+        let mut next: u64 = 0;
+        let mut errs: u32 = 0;
+        loop {
+            if stop.load(Ordering::SeqCst) || next >= len {
+                break;
+            }
+            let gap = {
+                let c = match cache.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                c.next_gap(next)
+            };
+            let (start, end) = match gap {
+                Some(g) => g,
+                None => break,
+            };
+            let fetch_end = (start + buf.len() as u64 - 1).min(end - 1);
+            let range = format!("bytes={start}-{fetch_end}");
+            match agent.get(&url).set("Range", &range).call() {
+                Ok(resp) if resp.status() == 206 => {
+                    let mut data = Vec::new();
+                    let mut reader = resp.into_reader();
+                    if reader.read_to_end(&mut data).is_err() || data.is_empty() {
+                        errs += 1;
+                    } else {
+                        let n = data.len() as u64;
+                        if let Ok(mut c) = cache.lock() {
+                            c.store(start, &data);
+                        }
+                        next = start + n;
+                        errs = 0;
+                    }
+                }
+                _ => {
+                    // 非 206（源站忽略 Range / 异常状态）：无法按偏移对齐，放弃。
+                    break;
+                }
+            }
+            if errs > 10 {
+                break;
+            }
+        }
+        crate::logts!("[prefetch] 结束：{url}");
+    });
+}
+
 impl Read for HttpMediaSource {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.stop.load(Ordering::SeqCst) {
@@ -258,8 +352,9 @@ impl Read for HttpMediaSource {
         // ---- 1) 先看缓存 ----
         // 命中即返回，不碰网络。seek 回到已下载位置时走的就是这条路径，
         // 也是「重听已缓存曲目」完全不联网的原因。
-        if let Some(c) = self.cache.as_mut() {
-            if let Some(n) = c.try_read(self.pos, buf) {
+        if let Some(c) = self.cache.as_ref() {
+            let mut guard = c.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(n) = guard.try_read(self.pos, buf) {
                 self.pos += n as u64;
                 return Ok(n);
             }
@@ -300,8 +395,10 @@ impl Read for HttpMediaSource {
         body.pos += n as u64;
         drop(guard);
         // ---- 3) 落盘（边拉边存）----
-        if let Some(c) = self.cache.as_mut() {
-            c.store(start, &buf[..n]);
+        if let Some(c) = self.cache.as_ref() {
+            if let Ok(mut guard) = c.lock() {
+                guard.store(start, &buf[..n]);
+            }
         }
         self.pos += n as u64;
         Ok(n)

@@ -380,6 +380,37 @@ impl StreamCache {
     pub(crate) fn covered(&self) -> u64 {
         self.ranges.iter().map(|(a, b)| b - a).sum()
     }
+
+    /// 返回从 `from` 起的首个未覆盖缺口 `[start, end)`（end 可能等于 len）。
+    /// 已完全覆盖（from 到 len 之间无缺口）时返回 None。
+    ///
+    /// 依赖 `ranges` 按 start 升序且互不重叠（由 add_range 维护）。
+    /// 供主动预取线程按序补齐整首曲目使用。
+    pub(crate) fn next_gap(&self, from: u64) -> Option<(u64, u64)> {
+        gap_after(&self.ranges, self.len, from)
+    }
+}
+
+/// 在已覆盖区间 `ranges`（按 start 升序、互不重叠）中，找 `from` 之后的
+/// 首个缺口 `[start, end)`；`end` 可能等于 `len`。全覆盖时返回 None。
+///
+/// 抽成自由函数以便单元测试（不依赖真实磁盘文件）。
+fn gap_after(ranges: &[(u64, u64)], len: u64, from: u64) -> Option<(u64, u64)> {
+    let mut cursor = from;
+    for &(s, e) in ranges {
+        if e <= cursor {
+            continue;
+        }
+        if s > cursor {
+            return Some((cursor, s));
+        }
+        cursor = cursor.max(e);
+    }
+    if cursor < len {
+        Some((cursor, len))
+    } else {
+        None
+    }
 }
 
 impl Drop for StreamCache {
@@ -452,4 +483,60 @@ pub(crate) fn clear_all() -> u64 {
         }
     }
     freed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gap_after;
+
+    /// 全空：从头开始补整首。
+    #[test]
+    fn gap_empty_cache_is_whole_file() {
+        assert_eq!(gap_after(&[], 1000, 0), Some((0, 1000)));
+    }
+
+    /// 已完整覆盖：无缺口。
+    #[test]
+    fn gap_full_coverage_is_none() {
+        assert_eq!(gap_after(&[(0, 1000)], 1000, 0), None);
+    }
+
+    /// 已覆盖前缀：缺口从已覆盖末尾开始。
+    #[test]
+    fn gap_after_covered_prefix() {
+        assert_eq!(gap_after(&[(0, 400)], 1000, 0), Some((400, 1000)));
+    }
+
+    /// 起点落在已覆盖区间内部：需前跳到区间末尾再找缺口。
+    #[test]
+    fn gap_from_inside_covered_range() {
+        assert_eq!(gap_after(&[(0, 400), (600, 800)], 1000, 200), Some((400, 600)));
+    }
+
+    /// 起点落在缺口内部：缺口保留剩余部分（不回头补已跳过的字节）。
+    #[test]
+    fn gap_from_inside_hole() {
+        assert_eq!(gap_after(&[(0, 100), (500, 1000)], 1000, 300), Some((300, 500)));
+    }
+
+    /// 起点已越过全部覆盖区间：补到文件末尾。
+    #[test]
+    fn gap_after_all_ranges() {
+        assert_eq!(gap_after(&[(0, 100)], 1000, 300), Some((300, 1000)));
+    }
+
+    /// 起点已在 EOF：无缺口。
+    #[test]
+    fn gap_at_eof_is_none() {
+        assert_eq!(gap_after(&[(0, 1000)], 1000, 1000), None);
+    }
+
+    /// 多个缺口：按序返回第一个。
+    #[test]
+    fn gap_returns_first_hole_only() {
+        assert_eq!(
+            gap_after(&[(0, 100), (200, 300), (400, 500)], 1000, 0),
+            Some((100, 200))
+        );
+    }
 }
